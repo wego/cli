@@ -235,7 +235,9 @@ function parsePromoteTarget(): Ring {
   // byte-identity check against `cli/<tag>/`) are the ones that decide whether a
   // given ring may be advanced.
   if (v && isRing(v)) return v;
-  console.error(`--to must name a ring: edge, next or stable (got "${v ?? ""}").`);
+  console.error(
+    `--to must name a ring: edge, next or stable (got "${v ?? ""}").`,
+  );
   process.exit(1);
 }
 /**
