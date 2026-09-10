@@ -1,0 +1,436 @@
+name: Promote (cli)
+
+# THE SECOND HUMAN ACTION IN A CLI RELEASE (#74 rung 7).
+#
+# `release-cli.yml` published `cli-vX.Y.Z` and advanced `cli/next`. People have been
+# running that build against the real production API. This workflow is somebody
+# saying it is good: it moves `cli/stable` — what everyone receives — onto the SAME
+# bytes, and moves `skill/stable` behind it.
+#
+# PROMOTION IS A POINTER MOVE, NEVER A REBUILD. `wego update` compares CHECKSUMS,
+# not versions (`apps/cli/src/update.ts`), so what a ring serves is what its install
+# base receives on the next `update`. Rebuilding to promote would mean the bytes that
+# were exercised are not the bytes that ship — the single defect this whole rework
+# exists to remove. `upload-release-blob.ts --promote` server-side copies the frozen
+# `cli/<tag>` blobs, which is why the barrier below can assert that `next` and
+# `stable` end up byte-identical rather than merely equivalent.
+#
+# A PUBLISHED CLI BINARY CANNOT BE RECALLED (issue constraint 1). Nothing here
+# reaches a machine that already installed. So every check this lane has is spent
+# BEFORE the pointer moves: the tag must exist, `cli/next` must currently serve it,
+# and the two rings' manifests must match afterwards. There is no undo step, because
+# there is no undo — the recovery is promoting an earlier good tag over the top.
+#
+# ROLLBACK is this same workflow with an older `tag`. It is a promote like any other:
+# the older tag's frozen bytes are copied onto `cli/stable`, and every install
+# self-updates onto them because the checksums differ. Note `VERSION` on the ring
+# then advertises the older version, which is correct — that IS what stable serves.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The cli-vX.Y.Z tag to promote to cli/stable. Must already be published and, unless you are rolling back, should be what cli/next serves.'
+        required: true
+        type: string
+      allow_not_next:
+        description: 'ROLLBACK / RECOVERY. Promote a tag that cli/next does not currently serve. Normally false: the promote decision is about the build people have been running.'
+        required: false
+        default: false
+        type: boolean
+
+# contents:read — this workflow creates no tag and no Release; both already exist
+# (release-please cut them). It only copies blobs.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: apps/cli
+
+jobs:
+  promote:
+    name: Promote ${{ inputs.tag }} to cli/stable
+    runs-on: github-runner-small
+    timeout-minutes: 30
+    # Serialized against itself AND against nothing else: `release-cli.yml` writes
+    # `cli/next`, this writes `cli/stable`, so the two lanes share no pointer and must
+    # not share a queue slot. cancel-in-progress is FALSE for the same reason it is
+    # there: a promote aborted between copying binaries and copying the manifest
+    # leaves `stable` half-moved.
+    concurrency:
+      group: promote-cli
+      cancel-in-progress: false
+    env:
+      WEGO_CLI_TELEMETRY: "0"
+    steps:
+      # `ref` is the PROMOTED TAG, not the default branch. `publish-skill-blob.ts`
+      # below reads `SKILLS` from `apps/cli/src/skill-embed` in the CHECKED-OUT tree,
+      # so a default checkout would publish main's skill body beside the tag's
+      # binaries: `cli/stable` from `${{ inputs.tag }}` and `skill/stable` from
+      # whatever main happened to be. A promote is a pointer move onto ONE revision's
+      # bytes, and the skill is part of that revision.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-bun
+
+      # Shape-gate the typed tag before it reaches the store. This is the ONE input a
+      # human types in the whole release, so it is the one place a typo can enter:
+      # `validate-release-tag.ts` is the same authority the release lane uses, and
+      # `ring-rules.ts` refuses a prerelease on `stable` independently at publish
+      # time. Checked here so a bad tag costs one cheap step, not a Blob round trip.
+      - name: Validate the tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          bun run scripts/validate-release-tag.ts "$TAG"
+          case "${TAG#cli-v}" in
+            *-*)
+              echo "::error::$TAG is a prerelease. cli/stable serves only a plain X.Y.Z - a prerelease belongs on cli/edge, which edge-cli.yml publishes."
+              exit 1 ;;
+          esac
+          echo "ok: $TAG is a plain release version."
+
+      # foundations#101 rung 5(f). ASKED BEFORE THE RINGS MOVE, ON PURPOSE.
+      #
+      # The two plugin steps below exit 0 when the tag's tree carries no publisher.
+      # That guard is right - a promote must not hard-fail on a missing file after
+      # cli/stable has moved - but with REQUIRE_PUBLISH on it produces the one shape
+      # this workflow refuses everywhere else: a promote that published nothing and
+      # reported success. REQUIRE_PUBLISH cannot catch it, because the variable is
+      # read inside `publish-plugin.ts` and the guard fires before that script runs.
+      #
+      # So the question moves here, where "no" is free: nothing has moved yet.
+      #
+      # A ROLLBACK IS THE ONE CASE WHERE SKIPPING IS CORRECT. Rolling back to a
+      # pre-lane tag is the documented recovery path, and such a tag has no plugin
+      # content to publish - there is nothing to roll the plugin repo back TO. That
+      # path stays open and warns instead, because a rollback that cannot run is a
+      # worse failure than a plugin repo that lags by one tag.
+      - name: Refuse a tag whose tree cannot publish the plugin
+        if: vars.SKILLS_PUBLISH_ENABLED == 'true'
+        env:
+          TAG: ${{ inputs.tag }}
+          ALLOW_NOT_NEXT: ${{ inputs.allow_not_next }}
+        run: |
+          set -euo pipefail
+          missing=''
+          for f in scripts/publish-plugin.ts scripts/verify-plugin-published.ts; do
+            [ -f "$f" ] || missing="$missing $f"
+          done
+          if [ -z "$missing" ]; then
+            echo "ok: $TAG carries the plugin publish lane."
+            exit 0
+          fi
+          if [ "$ALLOW_NOT_NEXT" = "true" ]; then
+            echo "::warning::$TAG predates the plugin publish lane (missing:$missing). This is the rollback path, so the promote continues - but wego/skills will keep serving the plugin content of a NEWER tag than cli/stable. Promote a plugin-carrying tag to resynchronise."
+            exit 0
+          fi
+          echo "::error::$TAG has no plugin publish lane in its tree (missing:$missing) and SKILLS_PUBLISH_ENABLED is on. Refusing before cli/stable moves: promoting would move both rings and then skip the publish, which reports success for a promote that published nothing. Re-run with allow_not_next if this is a deliberate rollback to a pre-lane tag."
+          exit 1
+
+      # THE PROMOTE DECISION IS ABOUT A BUILD PEOPLE RAN, and that gate lives in the
+      # publisher (`--require-serving next`), not here.
+      #
+      # It has to, because of WHICH STORE it asks. A step here could only reach a
+      # `GET /install?dl=VERSION&ring=next`, which resolves against that deploy's own
+      # `CLI_DOWNLOAD_BASE_URL` — while the promote writes to the Blob origin the
+      # publisher discovers from `cli/<tag>/`. Nothing enforces that those are the
+      # same store, so a workflow-side gate can pass or refuse on a fact about the
+      # wrong place. The publisher already holds the origin it is about to write, so
+      # it is the only place the gate and the write are the same store by
+      # construction.
+      #
+      # `allow_not_next` drops the flag rather than adding a bypass: a rollback
+      # promotes an OLDER tag, which by definition is not what `next` serves.
+
+      # THE MOVE. A server-side copy of the frozen cli/<tag> blobs onto cli/stable.
+      # REQUIRE_PUBLISH: an absent token must FAIL here rather than exit 0 having
+      # promoted nothing - a "successful" promote that moved no pointer would read as
+      # shipped when the whole install base is still on the old build.
+      - name: Advance cli/stable
+        id: promote
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          REQUIRE_PUBLISH: 'true'
+          TAG: ${{ inputs.tag }}
+          ALLOW_NOT_NEXT: ${{ inputs.allow_not_next }}
+        run: |
+          set -euo pipefail
+          if [ "$ALLOW_NOT_NEXT" = "true" ]; then
+            echo "::warning::allow_not_next is set - promoting $TAG to cli/stable without requiring that cli/next serves it. This is the rollback path."
+            bun run scripts/upload-release-blob.ts --promote "$TAG" --to stable
+          else
+            bun run scripts/upload-release-blob.ts --promote "$TAG" --to stable --require-serving next
+          fi
+
+      # Verify the ring now serves this version, every asset hash-checked against the
+      # manifest it just committed to.
+      - name: Verify cli/stable
+        if: steps.promote.outputs.store_origin != ''
+        env:
+          BASE: ${{ steps.promote.outputs.store_origin }}/cli/stable
+          VERSION: ${{ inputs.tag }}
+        run: sh scripts/verify-published.sh "$BASE" "${VERSION#cli-v}" all
+
+      # THE BYTE-IDENTITY PROOF the issue's End state asks for: `SHA256SUMS.txt` read
+      # from BOTH rings and compared at promote time.
+      #
+      # This is the claim the whole design rests on - that what the candidate group
+      # exercised is exactly what everyone receives - and it is checkable in one line
+      # precisely because a promote is a copy. If these ever differ, something
+      # rebuilt, and the rebuild is the bug.
+      #
+      # Skipped when `allow_not_next` is set: a rollback deliberately puts `stable`
+      # on a DIFFERENT build from `next`, so the manifests are expected to differ and
+      # asserting otherwise would fail every rollback.
+      - name: Prove cli/next and cli/stable are byte-identical
+        if: ${{ steps.promote.outputs.store_origin != '' && !inputs.allow_not_next }}
+        env:
+          ORIGIN: ${{ steps.promote.outputs.store_origin }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "$ORIGIN/cli/next/SHA256SUMS.txt"   > "$RUNNER_TEMP/next.sums"
+          curl -fsSL "$ORIGIN/cli/stable/SHA256SUMS.txt" > "$RUNNER_TEMP/stable.sums"
+          # `sort` because the manifests are generated by separate `sha256sum *` runs
+          # and the shell glob's order is not a promise; the SET of name→digest pairs
+          # is the claim, not the line order.
+          if ! diff -u <(sort "$RUNNER_TEMP/next.sums") <(sort "$RUNNER_TEMP/stable.sums"); then
+            echo "::error::cli/next and cli/stable do not serve identical bytes. A promote is a server-side COPY of the frozen cli/<tag> blobs, so this can only mean something rebuilt between publish and promote. Do not paper over it - find the rebuild."
+            exit 1
+          fi
+          echo "ok: cli/next and cli/stable serve byte-identical artifacts."
+          cat "$RUNNER_TEMP/stable.sums"
+
+      # The skill everyone receives moves WITH the binary everyone receives, and
+      # strictly after it. `release-cli.yml` moved `skill/next` alongside
+      # `cli/next` for the same reason: a ring's agent instructions should describe
+      # the binary that ring serves.
+      #
+      # Ordered, not atomic - independent side effects, so a failure here can leave
+      # the binary promoted and the skill behind. The step fails and a re-run
+      # reconciles (publish-skill-blob.ts is idempotent).
+      - name: Advance skill/stable
+        if: steps.promote.outputs.store_origin != ''
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          REQUIRE_PUBLISH: 'true'
+        run: bun run scripts/publish-skill-blob.ts stable
+
+      # The public plugin repo (foundations#101 rung 4). Writes exactly three
+      # paths to wego/skills - the manifest, the readme, and the skill body -
+      # and REFUSES if the repo holds a file this publish does not write.
+      #
+      # REQUIRE_PUBLISH-gated as of rung 5(f). This step was deliberately
+      # lenient until the lane had been proved against the real remote: with no
+      # token every promote took the graceful-skip branch, and a promote whose
+      # binary ring had already moved must not fail on a lane that had never
+      # run. Rungs 5(c)-(e) spent that excuse. The publish, the read-back, an
+      # idempotent re-promote and a fail-closed refusal have each now been
+      # watched against wego/skills, so a skipped publish is no longer a lane
+      # that has not started - it is a lane that has silently stopped, and this
+      # workflow's whole argument is that a promote which moved no pointer must
+      # not read as success.
+      #
+      # CONSEQUENCE, AND IT IS THE POINT: `SKILLS_PUBLISH_ENABLED` STOPS BEING
+      # AN OFF SWITCH HERE. The mint step above is conditioned on it, so setting
+      # it to anything but `true` leaves this step with no token - which now
+      # FAILS the promote instead of skipping it, after cli/stable has already
+      # moved. That is correct for a lane that is meant to be permanently on:
+      # the variable existed to defer the FIRST publish, not to toggle the
+      # channel. To retire the lane, delete these steps; do not disarm the
+      # variable and expect a green promote.
+      #
+      # THE ARMING SWITCH IS `SKILLS_PUBLISH_ENABLED`, AND IT IS DELIBERATE.
+      # The retired deploy key held a safety property by accident: the lane
+      # could not publish until a human provisioned the credential, and rung
+      # 5(b) was that moment. An App installation token is minted from
+      # credentials that already exist, so wiring the App WITHOUT this variable
+      # would arm the lane on the very next promote - before rung 5(a) has
+      # rehearsed the publisher against any real remote, before `main` on
+      # wego/skills is branch-protected, and before anyone has watched
+      # `git push origin HEAD` resolve a branch on an empty GitHub repo. The
+      # variable restores the human gesture on purpose instead of by accident.
+      - name: Mint the plugin publish token
+        id: plugin-token
+        if: steps.promote.outputs.store_origin != '' && vars.SKILLS_PUBLISH_ENABLED == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.SKILLS_PUBLISH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SKILLS_PUBLISH_APP_PRIVATE_KEY }}
+          owner: wego
+          repositories: skills
+          permission-contents: write
+
+      - name: Publish the plugin repo
+        if: steps.promote.outputs.store_origin != ''
+        env:
+          SKILLS_PUBLISH_TOKEN: ${{ steps.plugin-token.outputs.token }}
+          REQUIRE_PUBLISH: 'true'
+        run: |
+          # THE WORKFLOW IS main'S; THE TREE IS THE TAG'S. This job checks out
+          # `ref: inputs.tag`, but a workflow_dispatch runs the step definitions
+          # from the default branch - so a promote of any tag cut before this
+          # lane landed runs THESE steps against a tree that does not contain
+          # its scripts. Without this guard that is a hard failure on a missing
+          # file, AFTER cli/stable and skill/stable have already moved, which is
+          # the one thing this workflow's own comments say must never happen.
+          if [ ! -f "scripts/publish-plugin.ts" ]; then
+            echo "scripts/publish-plugin.ts is not in this tag's tree - skipping."
+            exit 0
+          fi
+          if [ -n "${SKILLS_PUBLISH_TOKEN:-}" ]; then
+            # `http.extraheader`, NOT a token in the remote URL. The publisher
+            # prints the remote in three places, one of them a `git clone` line
+            # an operator is told to paste; a URL-embedded token would ride into
+            # all three, and a pasteable command containing `***` is a broken
+            # command rather than a safe one.
+            AUTH=$(printf 'x-access-token:%s' "$SKILLS_PUBLISH_TOKEN" | base64 | tr -d '\n')
+            # The base64 is a DERIVED value: Actions masks the token it minted,
+            # not this encoding of it, so a verbose git trace would otherwise
+            # print the header in clear.
+            echo "::add-mask::$AUTH"
+            # THE CREDENTIAL NEVER TOUCHES DISK. `GIT_CONFIG_COUNT` injects
+            # config into git's process environment, so there is no file to
+            # leak, nothing to clean up, and nothing left behind when a run is
+            # killed before its cleanup step - which matters because
+            # `github-runner-small` is self-hosted (.github/actionlint.yaml),
+            # `$HOME` outlives the job, and this repo already records that a run
+            # killed by a timeout or an OOM never reaches its own cleanup
+            # (post-deploy-staging-smoke.yml).
+            #
+            # It ADDS to the runner's real config rather than replacing it, which
+            # `GIT_CONFIG_GLOBAL` does not: measured, redirecting that variable
+            # hides `~/.gitconfig` entirely, `init.defaultBranch` included - and
+            # which branch `git push origin HEAD` resolves to on an empty remote
+            # is the one failure rung 4b's read-back exists to catch, so this
+            # lane must not quietly change its inputs.
+            #
+            # Measured: the injected key is visible to git, the real global
+            # config is still visible beside it, `~/.gitconfig` is untouched,
+            # and the value survives into the `git` that `bun` spawns.
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+            export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH"
+            # `http.<url>.extraheader` matches by URL PREFIX, so this
+            # write-scoped token would attach to ANY github.com git command that
+            # ran later in this step. Nothing else here runs git - keep it that
+            # way, or scope the header to the exact remote first.
+            export SKILLS_PLUGIN_REPO="https://github.com/wego/skills.git"
+          fi
+          bun run scripts/publish-plugin.ts
+
+      # foundations#101 rung 4b. The publish above proves the repo holds only
+      # paths the plan names; it never reads back what those paths CONTAIN. This
+      # does, from an independent clone - the only vantage point that can see a
+      # push which landed on a branch the clone does not check out, which exits 0
+      # in the step above and leaves the channel empty.
+      #
+      # It builds its own credential rather than inheriting one: the publish
+      # step's lives only in that step's process environment, so there is
+      # nothing to reuse and nothing left behind if this step is removed.
+      - name: Verify the plugin repo
+        if: steps.promote.outputs.store_origin != ''
+        env:
+          SKILLS_PUBLISH_TOKEN: ${{ steps.plugin-token.outputs.token }}
+        run: |
+          # THE WORKFLOW IS main'S; THE TREE IS THE TAG'S. This job checks out
+          # `ref: inputs.tag`, but a workflow_dispatch runs the step definitions
+          # from the default branch - so a promote of any tag cut before this
+          # lane landed runs THESE steps against a tree that does not contain
+          # its scripts. Without this guard that is a hard failure on a missing
+          # file, AFTER cli/stable and skill/stable have already moved, which is
+          # the one thing this workflow's own comments say must never happen.
+          if [ ! -f "scripts/verify-plugin-published.ts" ]; then
+            echo "scripts/verify-plugin-published.ts is not in this tag's tree - skipping."
+            exit 0
+          fi
+          if [ -n "${SKILLS_PUBLISH_TOKEN:-}" ]; then
+            AUTH=$(printf 'x-access-token:%s' "$SKILLS_PUBLISH_TOKEN" | base64 | tr -d '\n')
+            echo "::add-mask::$AUTH"
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+            export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH"
+            export SKILLS_PLUGIN_REPO="https://github.com/wego/skills.git"
+          fi
+          bun run scripts/verify-plugin-published.ts
+
+      - name: Verify skill/stable channel
+        if: steps.promote.outputs.store_origin != ''
+        env:
+          BASE: ${{ steps.promote.outputs.store_origin }}/skill/stable
+        run: bun run scripts/verify-skill-published.ts "$BASE"
+
+      - name: Summary
+        if: steps.promote.outputs.store_origin != ''
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          {
+            echo "### Promoted \`$TAG\` to \`cli/stable\`"
+            echo
+            echo "Everyone on \`wego update\` receives this build from now on."
+            echo "It is byte-identical to what \`cli/next\` served."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # P9 (foundations#109): the ONLY outbound channel these lanes have.
+  #
+  # Nothing here has ever told a person that a release, promote or rollback
+  # failed. The triggering actor on the production lanes is a bot, so GitHub's
+  # own "your run failed" mail reaches nobody and the red run just sits on the
+  # Actions tab. The action this calls opens one issue per lane; see its header
+  # for why an issue and not a chat webhook.
+  #
+  # `cancelled` is reported next to `failure` deliberately: a job killed by its
+  # `timeout-minutes` bound (H1, wego-ai#1863) reports as `cancelled`, NOT as
+  # `failure`. A lane that hung is exactly the case nobody hears about.
+  report:
+    name: Report a failed promote
+    needs: [promote]
+    if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: github-runner-small
+    timeout-minutes: 5
+    # Job-level, so the wide token never reaches the jobs that do the work.
+    #
+    # `contents: read` IS REQUIRED and is not decoration. A job-level block
+    # REPLACES the workflow-level one rather than adding to it, so `issues: write`
+    # alone leaves the job with no read on the repository - and this repository is
+    # private, so the checkout below fails with `fatal: repository '…' not found`,
+    # which is a 403 wearing a 404's clothes. Proved by run 34210254253, the first
+    # deliberate exercise of this reporter: the lane failed, the reporter started,
+    # and it could not check out the action it exists to run.
+    #
+    # This is the SAME defect wego-ai#1863 shipped on the Neon job with
+    # `permissions: {}`. Twice now, so `workflows-gate.test.ts` asserts both scopes.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # The action's own directory. Cone mode also brings the root files, which
+      # is where `package.json` comes from - `bun-version-file` needs it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/actions/report-failure
+          persist-credentials: false
+
+      # The bare pinned binary, not `.github/actions/setup-bun`: the reporter
+      # needs a JSON encoder, not this repository's dependencies. Same reasoning
+      # as H9 took off the promote path (wego-ai#1863).
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - uses: ./.github/actions/report-failure
+        with:
+          lane: promote-cli
+          title: "CLI promote failed: cli/stable may be part-moved"
+          details: |
+            `promote-cli.yml` did not finish. The pointer move is a NON-ATOMIC copy of
+            several objects, so `cli/stable` can be left holding a manifest and bytes
+            that disagree (foundations#109 P10, observed once on run 33604924659).
+
+            Check what `cli/stable` is serving before re-running the promote.

@@ -1,0 +1,831 @@
+name: Release (cli)
+
+# Build the self-contained `wego` CLI binaries and publish them to the PUBLIC
+# Vercel Blob store that backs `apps/api`'s `GET /install` (curl … | bash).
+#
+# TWO WAYS TO RELEASE. This workflow RESOLVES NO VERSION — release-please owns that
+# axis (#74 rung 6, release-please-config.json):
+#   1. Merge the release PR (the ordinary release, and the first of the two human
+#      actions in it). release-please computes the version from the merged commits,
+#      writes the changelog, cuts `cli-vX.Y.Z`, then CALLS this workflow with that tag.
+#   2. Tag push (advanced/recovery): `git push origin cli-vX.Y.Z` (tag must be on
+#      main). The tag IS the version, so nothing is typed here either.
+#
+# Only main is releasable (a `workflow_call` runs on the caller's ref, which is
+# main; a pushed tag must point at a commit merged to main) — the public curl|bash
+# channel must never serve an unreviewed commit.
+#
+# THIS WORKFLOW PUBLISHES TO ONE RING: `cli/next` (#74 rung 7). The three rings are
+# `scripts/ring-rules.ts`:
+#   cli/edge    unreleased main, dogfood      ← edge-cli.yml, never this workflow
+#   cli/next    the candidate real people run ← THIS workflow, on every release
+#   cli/stable  what everyone receives        ← promote-cli.yml, a human decision
+#
+# `next` and `stable` serve the SAME byte-identical `X.Y.Z` build. Promotion is a
+# server-side copy of the frozen `cli/<tag>` bytes, never a rebuild, which is what
+# lets `SHA256SUMS.txt` on both rings be compared and found identical at promote
+# time. So the release is BUILD ONCE: what a candidate group exercised is exactly
+# what everyone later receives.
+#
+# ONE BINARY, no prerelease line (#74 rung 7). A single `wego-*` build carries the
+# prod endpoints, and `--target prod|staging|local` picks the backend at RUN time
+# (`src/target.ts`, rung 2). The staging API HOST stays — it is the cheap backend,
+# not a build flavour.
+#
+# Binaries: `wego-*` for macOS (arm64/x64), Linux (arm64/x64), and Windows (x64),
+# plus SHA256SUMS.txt. Each is self-contained (embeds the Bun runtime) with its
+# endpoints + the public PKCE client_id baked in — see apps/cli/scripts/build-release.ts.
+#
+# The GitHub Release is the human changelog + rollback reference ONLY — the
+# distribution channel is still Blob (`GET /install`), not Release assets.
+on:
+  push:
+    tags:
+      - 'cli-v*'
+  # THE RELEASE ENTRY (#74 rung 6). release-please.yml calls this after the release
+  # PR merged and it cut `cli-vX.Y.Z`; the tag arrives as an input because a ref
+  # created with the workflow token does not start a workflow run. There is no manual
+  # run button and no typed version: the caller passes a tag release-please computed,
+  # and this workflow resolves nothing.
+  workflow_call:
+    inputs:
+      tag:
+        description: 'The cli-vX.Y.Z tag release-please created for the merged release PR.'
+        required: true
+        type: string
+
+# NO workflow-level `concurrency:` here, deliberately. Serialization belongs on the
+# ONE job that advances a ring — `release` — and it lives there instead.
+#
+# A workflow-level group is evaluated before any job runs, so it held a slot for the
+# whole run: gate + build + the smoke, ~18-20 minutes, when the ring write inside
+# `release` takes ~5. GitHub also keeps at most ONE pending run per group and cancels
+# the older pending one when a newer arrives — so on a busy queue runs were dropped
+# with no trace. Scope the group to the job, so anything that never reaches the
+# protected resource never enters the queue for it.
+
+# contents:write — the Release step reuses release-please's GitHub Release and
+# attaches SHA256SUMS.txt to it. No tag is created here: both entrypoints arrive
+# with one (#74 rungs 6 and 7).
+# pull-requests:read — the Release step filters the auto-generated notes to the
+# PRs that actually touched apps/cli or apps/api (listFiles per PR), so a monorepo
+# PR from another app never lands in a CLI changelog.
+permissions:
+  contents: write
+  pull-requests: read
+
+defaults:
+  run:
+    working-directory: apps/cli
+
+jobs:
+  prepare:
+    name: Gate and resolve CLI release
+    runs-on: github-runner-small
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      # The plain release immediately below this one, or empty on the first ever
+      # release. Two consumers - the update smoke's predecessor and the GitHub
+      # Release's compare range - and it used to be computed twice, once here in
+      # shell and once as inline JS in the Release step.
+      prev_tag: ${{ steps.resolve.outputs.prev_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Need tags (compute the next version + guard against re-releasing) and
+          # full history for the GitHub Release notes + the on-main ancestry check.
+          # persist-credentials:false: the tag is created via the GitHub API
+          # (github-script), not `git push`, so no git creds are persisted
+          # (artipacked; flagged by zizmor).
+          persist-credentials: false
+          fetch-depth: 0
+          # Pin every job to the commit that triggered this workflow so a moving
+          # branch cannot change the source between gate and publish.
+          ref: ${{ github.sha }}
+
+      # CICD-SEC-4: the public curl|bash channel must never serve an unreviewed
+      # commit. A called run must be on main; a pushed tag must point at a commit
+      # merged to main. This runs FIRST so a non-main ref never even builds.
+      #
+      # The proof follows the REF TYPE, not the event — a tag needs an ancestry
+      # check however it arrived, and a branch ref never does:
+      #
+      #   branch ref (`workflow_call` from release-please.yml) — the ref IS the
+      #     proof. That caller only ever runs on `main`, and on a branch push HEAD is
+      #     that branch's tip by construction, so asserting `github.ref` settles it
+      #     with no network at all.
+      #   tag ref (`git push origin cli-vX.Y.Z`) — a tag can point at any commit, so
+      #     the ancestry check is real and stays.
+      #
+      # The ancestry check reads the LOCAL `refs/remotes/origin/main`, never the
+      # network. The checkout above sets `persist-credentials: false` (artipacked),
+      # so this step holds no git credential: a `git fetch` here would be an
+      # unauthenticated fetch of a private repo and would exit 128 before checking
+      # anything. `fetch-depth: 0` already fetched
+      # `+refs/heads/*:refs/remotes/origin/*`, which is exactly what that checkout
+      # comment says the full history is for.
+      # If the ref is somehow absent the step FAILS with the remedy named — a
+      # missing ref must never read as "on main". See docs/ci-and-deploys.md.
+      - name: Refuse to release a non-main commit
+        env:
+          REF: ${{ github.ref }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ]; then
+            git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null || {
+              echo "::error::refs/remotes/origin/main is missing, so the on-main check cannot run. Restore 'fetch-depth: 0' on this job's actions/checkout (it is what fetches refs/remotes/origin/*) and re-run."
+              exit 1; }
+            git merge-base --is-ancestor HEAD refs/remotes/origin/main || {
+              echo "::error::Tag $REF is not merged to main - refusing to publish it."
+              exit 1; }
+            echo "ok: $REF points at a commit on main."
+          else
+            [ "$REF" = "refs/heads/main" ] || {
+              echo "::error::Only main is releasable (got $REF)."
+              exit 1; }
+            echo "ok: $REF is main."
+          fi
+
+      # Composite action: setup-bun + restore cache + frozen install.
+      - uses: ./.github/actions/setup-bun
+
+      # QUALITY GATE — never build/publish binaries from a red commit. Both entries
+      # arrive with the tag already cut, so a failure here leaves that tag pointing at
+      # a commit that published nothing; re-run after fixing, or cut the next version.
+      - name: Lint & format check
+        run: bun run lint
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Unit tests
+        run: bun run test
+
+      # READ the release tag. Nothing here computes or assembles a version
+      # (#74 rungs 6 and 7) - a tag arrives, it is validated, and it is used:
+      #   merged release PR → `inputs.tag`, the tag release-please cut
+      #   tag push          → github.ref_name, the tag the human pushed
+      - name: Read the release tag
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          IN_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$IN_TAG" ]; then
+            TAG="$IN_TAG"
+            echo "release-please cut $TAG for the merged release PR."
+          elif [ "$EVENT" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
+          else
+            echo "::error::No release tag. This workflow releases a tag that already exists - either release-please passes one as inputs.tag, or you push a cli-vX.Y.Z tag. There is no version to compute here."
+            exit 1
+          fi
+          # Validate through the CLI's OWN comparator, not a second regex here: the
+          # tag becomes the baked version, and the installed binary compares that
+          # string with `parseSemver`. A tag this step accepts but that parser
+          # rejects (`cli-v0.4.3-rc.01`) ships an install whose new-version notice
+          # can never fire. One authority, so the grammars cannot drift.
+          bun run scripts/validate-release-tag.ts "$TAG"
+          # REFUSE A PRERELEASE (#74 rung 7). `cli/next` and `cli/stable` are the one
+          # stable line and serve only a plain X.Y.Z; the single prerelease line is
+          # `cli/edge`, which has its OWN publisher (edge-cli.yml) and its own
+          # `-edge.<sha>` grammar. So a prerelease reaching this workflow - a
+          # leftover `-rc.N` tag pushed by hand, most likely - has no ring to land on
+          # and must stop HERE, at the gate, rather than at the publisher after a
+          # full build. `ring-rules.ts` is the authority and refuses it there too;
+          # this is the early, cheap statement of the same rule.
+          case "${TAG#cli-v}" in
+            *-*)
+              echo "::error::$TAG is a prerelease. The -rc.N scheme is gone (#74 rung 7): this workflow publishes a plain X.Y.Z to cli/next, and the only prerelease line is cli/edge, published by edge-cli.yml on every merge to main. Release a plain version, or let the edge lane serve the unreleased build."
+              exit 1 ;;
+          esac
+          # The predecessor: the highest PLAIN cli-vX.Y.Z strictly below this tag.
+          # Prereleases are filtered out - `-edge.*` is a different line and the
+          # `-rc.N` scheme is gone (#74 rung 7). `awk` rather than `sed` so a tag's
+          # dots are never read as regex metacharacters. Empty on the first release,
+          # which the smoke below reads as "nothing to update FROM".
+          # `$TAG` is echoed into the stream before sorting so it is ALWAYS present:
+          # awk exits at the first match, and without that guarantee a tag sorting
+          # below every existing one would fall through to END and print the HIGHEST
+          # tag instead of nothing. `-u` because the tag is normally already there.
+          PREV=$( { git tag -l 'cli-v*' \
+                      | grep -E '^cli-v[0-9]+\.[0-9]+\.[0-9]+$'; \
+                    echo "$TAG"; } \
+                  | sort -V -u \
+                  | awk -v t="$TAG" '$0==t{exit} {p=$0} END{print p}')
+          {
+            echo "tag=$TAG"
+            echo "version=${TAG#cli-v}"
+            echo "prev_tag=$PREV"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG to cli/next (predecessor: ${PREV:-none})"
+
+  build:
+    name: Build CLI
+    needs: prepare
+    runs-on: github-runner-small
+    timeout-minutes: 30
+    # ONE environment, one build (#74 rung 7). The matrix that built a `staging – cli`
+    # flavour beside this one is gone: the binary bakes the PRODUCTION endpoints and
+    # `--target staging|local` swaps the whole bundle at run time, so there is nothing
+    # a second Environment could supply that a run-time flag does not.
+    environment:
+      name: "Production – cli"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-bun
+
+      # Cross-compiles all targets (Bun downloads each target runtime on demand).
+      # RELEASE_TAG → the baked `wego version` (build-release.ts strips `cli-v`).
+      - name: Build binaries
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          WEGO_AUTH_AUTHORIZE_URL: ${{ vars.WEGO_AUTH_AUTHORIZE_URL }}
+          WEGO_AUTH_TOKEN_URL: ${{ vars.WEGO_AUTH_TOKEN_URL }}
+          WEGO_API_URL: ${{ vars.WEGO_API_URL }}
+          WEGO_CLI_CLIENT_ID: ${{ vars.WEGO_CLI_CLIENT_ID }}
+          # Optional: the Blob store ORIGIN `wego skill install` fetches from — a
+          # bare origin, never a channel URL. Baked as WEGO_BUILD_SKILL_ORIGIN;
+          # absent → `skill install` degrades to the embedded copy (no code change).
+          #
+          # The `skill/<ring>` half is composed at RUN time from the install record
+          # (#1751), so no ring reaches the binary from here. That is now true of
+          # every axis: the update and notice bases read the same record (#74 rung
+          # 3), which is what makes a promote a pointer move rather than a rebuild.
+          # This variable was the last one that named a channel, and it drifted
+          # exactly as that invites — it still said `skill/latest` after the rename
+          # retired that prefix, so 0.8.0 shipped fetching a frozen body. The
+          # builder now REFUSES a value carrying any path, so the same mistake fails
+          # the build instead of shipping.
+          WEGO_CLI_SKILL_ORIGIN: ${{ vars.WEGO_CLI_SKILL_ORIGIN }}
+          # Optional: the write-only PostHog PROJECT key the binary posts its one
+          # per-invocation event with (issue #1302). Baked as
+          # WEGO_BUILD_POSTHOG_PROJECT_KEY; absent → the binary emits nothing at
+          # all, so the feature stays dead until the var exists in the Environment
+          # (no code change). A `vars` entry, not a secret, deliberately: the key
+          # is write-only and ships inside a public binary, so it is not a secret,
+          # and `readReleaseEnvSpec` refuses anything that is not a `phc_` project
+          # key. A non-prod `--target` sends no usage event at all at run time
+          # (`src/target.ts`), which is what keeps staging traffic out of the project
+          # now that there is no separate silent binary.
+          WEGO_CLI_POSTHOG_PROJECT_KEY: ${{ vars.WEGO_CLI_POSTHOG_PROJECT_KEY }}
+        run: bun run scripts/build-release.ts
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-binaries
+          path: apps/cli/dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish CLI binaries to cli/next
+    needs: [prepare, build]
+    # The ONLY job that advances a ring, so the only one that needs a slot. ONE
+    # group, because every release writes the SAME pointer (`cli/next`): a split
+    # would let two releases interleave on it and leave the ring holding whichever
+    # finished last.
+    #
+    # cancel-in-progress stays FALSE: a mid-flight publish aborted between uploading
+    # bytes and advancing the pointer leaves the ring half-moved.
+    concurrency:
+      group: release-cli
+      cancel-in-progress: false
+    runs-on: github-runner-small
+    timeout-minutes: 30
+    # `id-token: write` is what makes keyless signing possible: cosign exchanges this
+    # job's OIDC token for a short-lived Fulcio certificate naming THIS workflow on
+    # THIS ref, and that name is what the installer and `wego update` pin
+    # (foundations#74 rung 9). There is no signing key anywhere - nothing to store,
+    # rotate or leak - and nothing outside this workflow can obtain a certificate a
+    # client will accept.
+    permissions:
+      contents: write
+      pull-requests: read
+      id-token: write
+    env:
+      # Smoke steps run the keyed prod binary; without this they post CI events as product data.
+      WEGO_CLI_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Download built binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-binaries
+          path: apps/cli/dist
+
+      # `VERSION` is written BEFORE the manifest, so it enters SHA256SUMS.txt with
+      # everything else and needs no publisher change: `upload-release-blob.ts`
+      # picks it up from `dist/`, copies it before the manifest commit point, and
+      # `waitChannelConsistent` + `verify-published.sh all` hash-verify it. It is
+      # the ONLY version string in the channel — `wego update --check` compares
+      # checksums and so can never name a release — and the proactive new-version
+      # notice (`src/version-notice.ts`) reads it. Same value the smoke step below
+      # asserts `wego version` prints, which is what makes the notice go quiet
+      # immediately after a successful self-update.
+      - name: Checksums
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          cd dist
+          printf '%s\n' "$VERSION" > VERSION
+          sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      # Sign the MANIFEST, not each asset (foundations#74 rung 9). The manifest
+      # already names every file by sha256, so one record covers the whole release
+      # and cannot disagree with itself the way N records could; the installer and
+      # `wego update` check the record, then check each file against the manifest.
+      #
+      # Keyless, via this job's OIDC token: cosign gets a ~10-minute Fulcio
+      # certificate whose SAN names this workflow on this ref, and records the
+      # signature in Sigstore's public transparency log. Clients pin that name plus
+      # GitHub as the issuer, so store write access alone cannot produce a record
+      # they accept.
+      #
+      # The bundle is written into dist/ and `upload-release-blob.ts` publishes it to
+      # the SEPARATE `cli-sig/<tag>` prefix - never beside the manifest it signs,
+      # which would fall to the same store write it exists to detect.
+      # ONE signing definition, shared with the other publishing lane
+      # (foundations#74 rung 9). The copies drifted twice - see the action's header.
+      - uses: ./.github/actions/sign-manifest
+
+      # SMOKE 1 — the built binaries actually run and carry the right baked
+      # version + complete baked public config (linux-x64 runs natively on the
+      # runner). `logout` loads config without making a network request, so it
+      # catches a missed/misspelled static WEGO_BUILD_* read before publication.
+      - name: Smoke test built binaries
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          # These binaries are newer than the channel they'd read, so the
+          # new-version notice would stay quiet on its own — but relying on that
+          # makes a comparison rule load-bearing for CI. Switch it off outright so
+          # this step never depends on it, and never reaches the network.
+          WEGO_CLI_NO_UPDATE_NOTICE: "1"
+        run: |
+          set -euo pipefail
+          # One binary, one name (#74 rung 7): a second name here would mean a
+          # second build.
+          binary="./dist/wego-linux-x64"
+          chmod +x "$binary"
+          got=$("$binary" version)
+          echo "wego version -> $got"
+          [ "$got" = "$VERSION" ] || { echo "version mismatch: expected $VERSION, got $got" >&2; exit 1; }
+          WEGO_CREDENTIALS_PATH="${RUNNER_TEMP}/wego-missing-credentials.json" "$binary" logout
+
+      # Publish to the IMMUTABLE cli/<tag>/ ONLY (--freeze). cli/next is NOT
+      # moved here — it advances only after SMOKE-2 verifies these exact bytes,
+      # so a transport-corrupted upload can never become the served candidate.
+      # REQUIRE_PUBLISH makes a deliberate release FAIL if the token is missing
+      # (no silent "green but published nothing"); the tag-push path keeps the
+      # graceful pre-go-live skip.
+      #
+      # Every release requires it: a run that quietly published nothing would report
+      # green while `cli/next` still served the previous build, and the promote that
+      # followed would move `cli/stable` onto bytes nobody meant to ship.
+      #
+      # No guard here against two runs colliding on one tag, and none is needed: a tag
+      # names the commit whoever created it chose, and both entrypoints arrive with it
+      # already created. The immutable prefix protects itself regardless of who writes
+      # it - `putImmutableAssets` puts with `allowOverwrite: false`, and the
+      # `cli/<tag>/COMMIT` sidecar refuses a resume from a different commit
+      # (`upload-release-blob.ts`).
+
+      - name: Publish immutable artifact (cli/<tag>)
+        id: publish
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          REQUIRE_PUBLISH: ${{ inputs.tag != '' || (github.event_name == 'push' && github.ref_type != 'tag') }}
+          # Bind this tag's blobs to the built commit — a rerun after main moved
+          # (non-reproducible builds) is refused rather than mixing builds.
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: bun run scripts/upload-release-blob.ts --freeze "$TAG"
+
+      # SMOKE 2 — verify EVERY published asset in cli/<tag>/ against its
+      # SHA256SUMS.txt (not just the runner-native one) before cli/next is
+      # advanced. `bun build --compile` is non-reproducible, so a partial --freeze
+      # re-run could leave a non-Linux asset whose bytes don't match the frozen
+      # sums; checking only wego-linux-x64 would miss it. The shared script also
+      # runs the native binary and asserts its version. Only when something was
+      # actually published (token present → store_origin set).
+      - name: Verify immutable artifact (all assets)
+        if: steps.publish.outputs.store_origin != ''
+        env:
+          BASE: ${{ steps.publish.outputs.store_origin }}/cli/${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: sh scripts/verify-published.sh "$BASE" "$VERSION" all
+
+      # This workflow writes ONE ring, `cli/next`, and it is a constant rather than
+      # a resolution (#74 rung 7): every release publishes a plain X.Y.Z to it, and
+      # `prepare` already refused anything else. The other ring move, `next` →
+      # `stable`, is a human decision and lives in `promote-cli.yml`.
+      #
+      # `wego-linux-x64` below is the one `wego-*` family (`RELEASE_ASSET_BASENAME`
+      # in ring-rules.ts) on the runner's own platform, which is what makes the
+      # predecessor capture and the self-update smoke executable here.
+
+      # SMOKE 3's predecessor, read from the IMMUTABLE `cli/<prev-tag>/` prefix.
+      #
+      # It used to be read from `cli/next` - the pointer THIS JOB advances a few steps
+      # later. That one choice cost five steps and an artifact: the read had to happen
+      # before the pointer moved, so a rerun could no longer see the old bytes, so the
+      # binary was uploaded as a run artifact, so a probe was needed to tell an
+      # attempt-1 miss from a real download failure, so a 404 needed a persisted
+      # sentinel to stay rerun-recoverable, so a separate gate had to read the
+      # resulting directory. Every one of those existed to work around reading a
+      # moving pointer.
+      #
+      # An immutable prefix does not move: any rerun reads the same bytes, in any
+      # order, with nothing persisted. `prepare` already knows the predecessor tag, and
+      # "no previous release" is now knowable UP FRONT instead of discovered as a 404.
+      #
+      # ONE FIDELITY TRADE, STATED. `cli/next` served what consumers actually run; the
+      # previous TAG may be a version no ring ever pointed at, because a release can
+      # fail after publishing its immutable objects but before advancing the pointer -
+      # cli-v0.7.0 and cli-v0.7.1 are both exactly that. This is acceptable because
+      # SMOKE 3 tests the PREDECESSOR's update code path, not which bytes a ring
+      # served: an unpublished-but-built binary exercises that path identically, and it
+      # was built by this same pipeline. If the smoke ever needs "what consumers really
+      # run", it needs the pointer read back, and the five steps come back with it.
+      - name: Capture the predecessor binary (for the update smoke)
+        id: prev_channel
+        if: steps.publish.outputs.store_origin != '' && needs.prepare.outputs.prev_tag != ''
+        env:
+          BASE: ${{ steps.publish.outputs.store_origin }}/cli/${{ needs.prepare.outputs.prev_tag }}
+          ASSET: wego-linux-x64
+        run: |
+          set -eu
+          dir="${RUNNER_TEMP}/prev-channel"
+          mkdir -p "$dir"
+          # Both the binary and its manifest: the fail-closed verify-then-execute in
+          # the next step checks one against the other before running anything.
+          #
+          # A 404 is SKIP, not failure - and this is the one place that distinction
+          # decides whether a release can ship. A tag exists from the moment the
+          # release PR merges; its `cli/<tag>/` objects exist only if that release's
+          # job got as far as `--freeze`. So a release that failed EARLIER than the
+          # publish (a build break, a runner outage) leaves a tag in git with no
+          # prefix behind it - and that tag is the next release's predecessor. Under
+          # `curl -f` this step would then abort AFTER this job published its own
+          # immutable objects and BEFORE it advanced the pointer, identically on
+          # every re-run, and the only way out would be deleting a git tag. A missing
+          # predecessor is not evidence that self-update is broken, so it skips
+          # SMOKE 3 instead. Any OTHER status stays fatal: a 403 or a 500 says the
+          # store is misbehaving, which is not something to shrug at.
+          usable=1
+          for obj in "$ASSET" SHA256SUMS.txt; do
+            code=$(curl -sSL --connect-timeout 15 --max-time 600 \
+                     -w '%{http_code}' -o "$dir/$obj" "$BASE/$obj") \
+              || { echo "::error::transport failure fetching $BASE/$obj (curl exit $?)." >&2; exit 1; }
+            case "$code" in
+              200) ;;
+              404) usable=0; break ;;
+              *) echo "::error::unexpected HTTP $code for $BASE/$obj." >&2; exit 1 ;;
+            esac
+          done
+          if [ "$usable" = 0 ]; then
+            # Drop the partial directory so nothing downstream can mistake a 404
+            # body for a captured binary.
+            rm -rf "$dir"
+            echo "::notice::predecessor ${BASE##*/} has no published objects (404) - SMOKE 3 skipped. This release is unaffected."
+          else
+            echo "Captured predecessor $BASE (verified before execution below)."
+          fi
+          echo "usable=$usable" >> "$GITHUB_OUTPUT"
+
+      # Advance `cli/next` by server-side copying the verified cli/<tag> bytes (#74
+      # rung 7). `cli/stable` and `cli/edge` are never touched here: stable is a human
+      # promote (`promote-cli.yml`) of these exact bytes, and edge has its own lane.
+      # Runs after SMOKE-2, so a pointer is only ever advanced to verified bytes;
+      # upload-release-blob.ts independently refuses a crossed target, so a wrong
+      # `name` here fails rather than mis-publishing.
+      #
+      # ORDERING — this runs BEFORE Smoke 3, and has to: Smoke 3 proves a real
+      # consumer self-update by pulling THIS ring over live HTTPS, which cannot
+      # happen until the pointer has moved. That is still safe, because Smoke 3 tests the
+      # PREDECESSOR's update code path, not these bytes — the bytes were already
+      # verified fail-closed by SMOKE-2 on cli/<tag> and re-verified on the pointer
+      # below. A Smoke-3 failure therefore means "consumers on the previous build
+      # cannot self-update", which un-advancing the pointer would not fix.
+      - name: Advance cli/next
+        if: steps.publish.outputs.store_origin != ''
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          REQUIRE_PUBLISH: 'true'
+          TAG: ${{ needs.prepare.outputs.tag }}
+          TO: next
+        run: bun run scripts/upload-release-blob.ts --promote "$TAG" --to "$TO"
+
+      # Confirm the channel now serves this version. Light `native` check: the
+      # pointer is a byte-identical server-side copy of the cli/<tag> just fully
+      # verified above.
+      - name: Verify cli/next
+        if: steps.publish.outputs.store_origin != ''
+        env:
+          BASE: ${{ steps.publish.outputs.store_origin }}/cli/next
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: sh scripts/verify-published.sh "$BASE" "$VERSION" native
+
+      # Verify-then-execute. SMOKE 3 executes the predecessor as `wego update`, so its
+      # bytes are checksum-verified fail-closed first: the capture step above only
+      # downloads the binary and its SHA256SUMS.txt, and this step checks one against
+      # the other before anything is chmod'd or run. Separate from the capture so the
+      # verification is a step in its own right rather than a branch inside a download.
+      # Gated on `usable` as well as on the tag, because a predecessor that 404'd has
+      # no binary to verify.
+      - name: Verify predecessor checksum
+        if: steps.publish.outputs.store_origin != '' && needs.prepare.outputs.prev_tag != '' && steps.prev_channel.outputs.usable == '1'
+        env:
+          DIR: ${{ runner.temp }}/prev-channel
+          ASSET: wego-linux-x64
+        run: |
+          set -eu
+          bin="$DIR/$ASSET"
+          sums="$DIR/SHA256SUMS.txt"
+          [ -f "$sums" ] || { echo "predecessor SHA256SUMS.txt missing — cannot verify before execution, failing." >&2; exit 1; }
+          exp="$(awk -v f="$ASSET" '$2==f {print $1}' "$sums")"
+          [ -n "$exp" ] || { echo "predecessor $ASSET not listed in SHA256SUMS.txt — failing." >&2; exit 1; }
+          act="$(sha256sum "$bin" | awk '{print $1}')"
+          [ "$exp" = "$act" ] || { echo "predecessor checksum mismatch (expected $exp, got $act) — failing before execution." >&2; exit 1; }
+          chmod +x "$bin"
+          echo "Predecessor verified fail-closed against SHA256SUMS.txt (capture or restore): $("$bin" version)"
+
+      # SMOKE 3 — the REAL consumer self-update, end-to-end, on WHICHEVER channel
+      # this release advanced. Run the predecessor binary for that channel (an
+      # actual older published build, captured or restored above) through its own
+      # `wego update -y`: it fetches the just-advanced pointer over real HTTPS,
+      # verifies the checksum fail-closed, and atomically swaps itself in place —
+      # the byte-for-byte path a user's `wego update` takes. Asserts the binary now
+      # reports this release's version.
+      #
+      # Before the flavour channels were split, only cli/staging was
+      # ever advanced mid-job, so the prod `wego update` path was exercised solely
+      # through its staging twin. Now there is one binary and one ring here: every
+      # release smokes `wego` against cli/next, so no release ships an unexercised
+      # self-update, and what `stable` later receives is these same verified bytes.
+      #
+      # --require-replace is ALWAYS on: the predecessor comes from an IMMUTABLE
+      # `cli/<prev-tag>/` prefix, so every attempt reads the same genuine older bytes
+      # rather than the pointer this job just advanced, and a real byte-swap must
+      # occur — a broken self-update can never be shipped by re-running the job.
+      # Skipped on a channel's first release (no predecessor), when that predecessor
+      # published no objects (`usable != 1`), or when it predates the baked update
+      # channel (the script SKIPs, exit 0). Predecessor is linux-x64
+      # (this runner); the macOS-only quarantine-clear is the sole path not exercised
+      # here.
+      - name: Smoke test real self-update (cli/next)
+        if: steps.publish.outputs.store_origin != '' && needs.prepare.outputs.prev_tag != '' && steps.prev_channel.outputs.usable == '1'
+        env:
+          OLD_BINARY: ${{ runner.temp }}/prev-channel/wego-linux-x64
+          VERSION: ${{ needs.prepare.outputs.version }}
+          # The ring this channel IS. A predecessor from foundations#74 rung 3 or
+          # later follows the ring its INSTALLER recorded and refuses to guess one,
+          # so the smoke — which places a binary rather than installing it — has to
+          # name the ring it is smoking. The install URL is not passed: the script
+          # reads it from the predecessor's own refusal, so no host is hardcoded.
+          RING: next
+        # The exec bit is already restored by the verify step above (and update-smoke.sh
+        # chmods its own working copy regardless), so no chmod is needed here.
+        run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING"
+
+      # SKILL channels (issue #1171 Part B). The agent SKILL.md ships out-of-band
+      # from the binary, on skill/<channel> in the SAME Blob store (reuses
+      # BLOB_READ_WRITE_TOKEN — no new store). `skill/next` is advanced HERE, in
+      # the same job as `cli/next`, so it moves in a fixed ORDER behind the binary
+      # ring — ordered, not atomic: they are independent side effects, so a later
+      # failure can leave one advanced and the other behind (the step fails;
+      # re-running reconciles, see publish-skill-blob.ts). `skill/stable` moves
+      # with `cli/stable` and now lives in `promote-cli.yml`. The Blob steps use
+      # REQUIRE_PUBLISH (the token is expected once the binary channel is live).
+      #
+      # skill/next moves on EVERY release, paired with the ring this workflow
+      # writes: `skill/next` with `cli/next` here, and `skill/stable` with
+      # `cli/stable` in `promote-cli.yml`. So the agent instructions a ring's
+      # users receive are the ones written for the binary that ring serves.
+      # `publish-skill.yml` also advances staging on any `main` push touching a
+      # SKILL.md, independently of releases.
+      - name: Advance skill/next
+        if: steps.publish.outputs.store_origin != ''
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          REQUIRE_PUBLISH: 'true'
+        run: bun run scripts/publish-skill-blob.ts next
+
+      # Gated identically to the advance above: verifying a channel this run did not
+      # move would assert someone else's write and pass for the wrong reason.
+      - name: Verify skill/next channel
+        if: steps.publish.outputs.store_origin != ''
+        env:
+          BASE: ${{ steps.publish.outputs.store_origin }}/skill/next
+        run: bun run scripts/verify-skill-published.ts "$BASE"
+
+      # `skill/stable` is NOT advanced here (#74 rung 7). It is what EVERYONE
+      # receives, and it moves with `cli/stable` — in `promote-cli.yml`, on the
+      # human promote. Pairing them that way is the point:
+      # the skill a ring's users get is the skill that was written for the binary that
+      # ring serves, so a candidate's agent instructions never reach the whole install
+      # base ahead of the binary they describe.
+
+      # The human record: filtered notes + a rollback reference. Idempotent
+      # (skips if a Release for the tag already exists, e.g. a partial-failure
+      # re-run). Every release this workflow cuts is a plain X.Y.Z (#74 rung 7), so it
+      # always takes the "Latest" badge — there is no prerelease line here to withhold
+      # it from.
+      #
+      # NOTES ARE ANCHORED TO THE LAST STABLE TAG, THEN FILTERED TO THIS RELEASE'S
+      # APPS. Two fixes over GitHub's default auto-generated notes:
+      #
+      #  1. Anchor. Left to itself GitHub picks the "previous tag" heuristically,
+      #     and for a stable that follows its rc it usually picks the rc — so the
+      #     stable (the "Latest"/rollback record) diffs rc→stable and comes up
+      #     near-empty while the throwaway rc holds the real changelog. We instead
+      #     pin previous_tag_name to the latest STABLE cli-v* tag before this
+      #     version (prereleases excluded): every stable spans the full range since
+      #     the previous stable, and every rc is cumulative since the last stable
+      #     ("what's new on staging vs prod"). No prior stable (first release) →
+      #     omit it and let GitHub fall back to the first commit.
+      #  2. Filter. This is a monorepo, so the range still lists PRs from every app.
+      #     We keep only the PR bullets whose changed files touch apps/cli/ or
+      #     apps/api/ (the CLI binary plus the API that serves /install and the
+      #     endpoints it calls) — the accurate signal, since PR-title scopes are
+      #     unreliable (`refactor(api-cli)`, unscoped `feat: …`, repo-wide `docs:`).
+      #
+      # The compare link GitHub generates for the anchored range is preserved.
+      - name: GitHub Release (changelog + record)
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          PREV_TAG: ${{ needs.prepare.outputs.prev_tag }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const tag = process.env.TAG;
+            // Always a plain X.Y.Z here — `prepare` refuses a prerelease outright.
+            const prerelease = false;
+            const { owner, repo } = context.repo;
+
+            // Generate notes anchored to the previous stable tag, then keep only PR
+            // bullets that touched apps/cli/ or apps/api/. A "bullet" is GitHub's
+            // `* … in <pull-url>` line; the trailing `**Full Changelog**` compare
+            // link is kept as-is. The "New Contributors" section is dropped — it can
+            // credit a PR we filtered out, misleading in a CLI-only changelog.
+            const filteredNotes = async () => {
+              // `prepare` computed this from the same rule (highest plain cli-vX.Y.Z
+              // below this tag) and the update smoke reads the same value. It used to
+              // be re-derived here in JS over a paginated listTags walk - two copies
+              // of one rule, either of which could drift.
+              const previous_tag_name = process.env.PREV_TAG || undefined;
+              const { data: gen } = await github.rest.repos.generateReleaseNotes({
+                owner, repo, tag_name: tag, target_commitish: context.sha,
+                ...(previous_tag_name ? { previous_tag_name } : {}),
+              });
+              const lines = gen.body.split("\n");
+              const footer = lines.find((l) => l.startsWith("**Full Changelog**:"));
+              const bulletRe = /^\* .*\/pull\/(\d+)\s*$/;
+              const kept = [];
+              for (const line of lines) {
+                const m = line.match(bulletRe);
+                if (!m) continue;
+                const files = await github.paginate(github.rest.pulls.listFiles, {
+                  owner, repo, pull_number: Number(m[1]), per_page: 100,
+                });
+                const inApp = files.some(
+                  (f) => f.filename.startsWith("apps/cli/") || f.filename.startsWith("apps/api/"),
+                );
+                if (inApp) kept.push(line);
+              }
+              const out = ["## What's Changed"];
+              out.push(kept.length ? kept.join("\n") : "_No apps/cli or apps/api changes in this release._");
+              if (footer) out.push("", footer);
+              return out.join("\n");
+            };
+
+            // Idempotent AND recovers a partial failure: if the release already
+            // exists but SHA256SUMS.txt didn't attach (a prior run's upload blip),
+            // re-attach it rather than skipping. Only a release that already has
+            // the asset is a clean skip.
+            let release;
+            try {
+              const { data } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              release = data;
+              if (release.assets.some((a) => a.name === "SHA256SUMS.txt")) {
+                core.info(`Release ${tag} already complete — skipping.`);
+                return;
+              }
+              core.info(`Release ${tag} exists but missing SHA256SUMS.txt — attaching.`);
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              const rel = await github.rest.repos.createRelease({
+                owner, repo,
+                tag_name: tag,
+                name: tag,
+                prerelease,
+                make_latest: prerelease ? "false" : "true",
+                body: await filteredNotes(),
+              });
+              release = rel.data;
+            }
+            // Attach SHA256SUMS.txt. github-script's cwd is the workspace root, so
+            // the defaults.run working-directory (apps/cli) does not apply here.
+            await github.rest.repos.uploadReleaseAsset({
+              owner, repo,
+              release_id: release.id,
+              name: "SHA256SUMS.txt",
+              data: fs.readFileSync("apps/cli/dist/SHA256SUMS.txt"),
+            });
+            core.info(`Release ${tag} ready (SHA256SUMS.txt attached).`);
+
+  # NO POST-RELEASE SMOKE JOB HERE (#74 rung 7).
+  #
+  # There used to be an `rc-smoke` job: it drove the just-published rc against the
+  # deployed staging API and posted the PAIRED STAGING VERDICT as a commit status,
+  # which `release-prod.yml` then read as its permission to ship. That whole
+  # apparatus is gone - the status, its only reader, and the dispatch-driven
+  # production release.
+  #
+  # What replaced it is not another automated verdict but the RING itself. `cli/next`
+  # is a build real people install and run against the real production API, and the
+  # promote to `cli/stable` is a human saying it is good (`promote-cli.yml`). A
+  # machine verdict on a staging run was always a proxy for that judgement, and a
+  # COUPLED one at that: it graded the CLI and the API together, so an API-only change
+  # could not clear a CLI it never touched, and vice versa. The two lanes are
+  # independent now, and each one's evidence is its own.
+  #
+  # `post-deploy-staging-smoke.yml` still exists and still runs on an `apps/api`
+  # deploy. It is a smoke of that deployment, reporting through its own run status.
+
+  # P9 (foundations#109): the ONLY outbound channel these lanes have.
+  #
+  # Nothing here has ever told a person that a release, promote or rollback
+  # failed. The triggering actor on the production lanes is a bot, so GitHub's
+  # own "your run failed" mail reaches nobody and the red run just sits on the
+  # Actions tab. The action this calls opens one issue per lane; see its header
+  # for why an issue and not a chat webhook.
+  #
+  # `cancelled` is reported next to `failure` deliberately: a job killed by its
+  # `timeout-minutes` bound (H1, wego-ai#1863) reports as `cancelled`, NOT as
+  # `failure`. A lane that hung is exactly the case nobody hears about.
+  report:
+    name: Report a failed release
+    needs: [prepare, build, release]
+    if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: github-runner-small
+    timeout-minutes: 5
+    # Job-level, so the wide token never reaches the jobs that do the work.
+    #
+    # `contents: read` IS REQUIRED and is not decoration. A job-level block
+    # REPLACES the workflow-level one rather than adding to it, so `issues: write`
+    # alone leaves the job with no read on the repository - and this repository is
+    # private, so the checkout below fails with `fatal: repository '…' not found`,
+    # which is a 403 wearing a 404's clothes. Proved by run 34210254253, the first
+    # deliberate exercise of this reporter: the lane failed, the reporter started,
+    # and it could not check out the action it exists to run.
+    #
+    # This is the SAME defect wego-ai#1863 shipped on the Neon job with
+    # `permissions: {}`. Twice now, so `workflows-gate.test.ts` asserts both scopes.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # The action's own directory. Cone mode also brings the root files, which
+      # is where `package.json` comes from - `bun-version-file` needs it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/actions/report-failure
+          persist-credentials: false
+
+      # The bare pinned binary, not `.github/actions/setup-bun`: the reporter
+      # needs a JSON encoder, not this repository's dependencies. Same reasoning
+      # as H9 took off the promote path (wego-ai#1863).
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - uses: ./.github/actions/report-failure
+        with:
+          lane: release-cli
+          title: "Release lane failed: no CLI published to cli/next"
+          details: |
+            `release-cli.yml` did not finish, so `cli/next` was not advanced.
+
+            While this is unfixed the tag and its GitHub Release are already public and
+            name a build nobody can download (foundations#109 P5). Two tags are in that
+            state today from earlier failures of this lane.
+
+            Job results: prepare `${{ needs.prepare.result }}`, build
+            `${{ needs.build.result }}`, release `${{ needs.release.result }}`.

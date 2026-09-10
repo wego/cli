@@ -1,0 +1,65 @@
+name: Sign the release manifest
+description: >-
+  Sign SHA256SUMS.txt with keyless cosign in the format the publish gate reads,
+  and fail next to the signer if the bundle is not that format.
+
+# WHY THIS IS AN ACTION AND NOT A STEP IN EACH LANE (foundations#74 rung 9).
+#
+# Two lanes publish signed builds: `edge-cli.yml` on every merge, `release-cli.yml`
+# when a human releases. They carried the SAME signing call, copied - and the copies
+# drifted, twice, in the only way that matters:
+#
+#   - edge run 32930712877 died because the call omitted `--new-bundle-format`;
+#   - the fix landed on `edge-cli.yml` alone, so `release-cli.yml` kept the broken
+#     call and the FIRST REAL RELEASE died identically (run 32977203696, cli-v0.7.0).
+#
+# A gate test now pins the format, but a test only pins what it is pointed at. The
+# structural problem is that only ONE lane is rehearsed: edge signs on every merge,
+# the release lane signs when someone ships. So the unrehearsed copy is exactly the
+# one that rots, and a test is the wrong shape for "these two must not diverge".
+#
+# One definition removes the class. Every merge to main now rehearses the same bytes
+# the release lane will run, because there is only one copy to run.
+inputs:
+  dist:
+    description: >-
+      Directory holding SHA256SUMS.txt. The bundle is written beside it. Relative
+      to the workspace root - a composite action does not inherit the caller's
+      `defaults.run.working-directory`, which is why this is an input rather than
+      an assumed `cd`.
+    required: false
+    default: apps/cli/dist
+
+runs:
+  using: composite
+  steps:
+    - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+    - name: Sign SHA256SUMS.txt
+      shell: bash
+      working-directory: ${{ inputs.dist }}
+      run: |
+        set -euo pipefail
+        # `--new-bundle-format` is load-bearing, not decoration. On cosign 2.5.x
+        # `sign-blob --bundle` defaults to the LEGACY cosign bundle
+        # (`{base64Signature, cert, rekorBundle}`), and `@wego/release-signing`'s
+        # `parseBundle` reads only the Sigstore protobuf bundle - it goes straight
+        # for `verificationMaterial`, which the legacy shape has no key for. The
+        # publish gate then refuses the ring it just uploaded to. The flag becomes
+        # the default in cosign 3.x; stating it here keeps the format pinned across
+        # an installer bump.
+        cosign sign-blob --yes \
+          --new-bundle-format \
+          --bundle SHA256SUMS.txt.sigstore.json \
+          SHA256SUMS.txt
+        # Fail here rather than at publish or promote time if signing produced
+        # nothing usable.
+        test -s SHA256SUMS.txt.sigstore.json
+        # The gate reads `verificationMaterial`; fail next to the SIGNER if cosign
+        # ever writes a bundle without one. A refusal at the gate names the ring,
+        # not the signer, which is the wrong end of the lane to start reading from.
+        grep -q '"verificationMaterial"' SHA256SUMS.txt.sigstore.json || {
+          echo "cosign wrote a bundle with no verificationMaterial - the publish gate would refuse it." >&2
+          exit 1
+        }
+        echo "Signed SHA256SUMS.txt -> SHA256SUMS.txt.sigstore.json"

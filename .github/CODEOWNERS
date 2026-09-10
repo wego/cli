@@ -1,0 +1,12 @@
+# Release-path ownership. Every path here can change what a published binary is,
+# where it comes from, or who may sign it - so each needs a review from someone
+# who holds those rights, not just any writer.
+#
+# Deliberately NOT a catch-all `*` line: the rest of the tree is ordinary CLI code
+# reviewed the ordinary way. Branch protection on `main` requires a code-owner
+# review, so a `*` line would make these three people a bottleneck on every change.
+.github/workflows/   @sunny-wego @yeouchien-wego @chuyeowego
+.github/actions/     @sunny-wego @yeouchien-wego @chuyeowego
+.github/CODEOWNERS   @sunny-wego @yeouchien-wego @chuyeowego
+src/release-signing/ @sunny-wego @yeouchien-wego @chuyeowego
+scripts/             @sunny-wego @yeouchien-wego @chuyeowego

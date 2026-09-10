@@ -1,0 +1,460 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { z } from "zod";
+import { programName } from "./program-name";
+import { INSTALL_RECORD_FILE } from "./ring-follow";
+import {
+  type ResolvedTarget,
+  resolveTarget,
+  TARGET_ENV_VAR,
+  type Target,
+  type TargetSource,
+  targetConfigScope,
+  targetEndpointOverrides,
+} from "./target";
+import { formatZodError } from "./zod-error";
+
+/**
+ * `wego` CLI configuration (issue #883, M1 client side).
+ *
+ * The CLI is a **public + PKCE** OAuth client that logs in directly with
+ * `auth.wego.com` (loopback, RFC 8252) and calls `apps/api` with the resulting
+ * Bearer token. It stores no secret — only the issued tokens, locally.
+ *
+ * Environment-specific endpoints have no source-code defaults. A source run
+ * receives them from `.env.local`; a published binary receives the same public
+ * values from the GitHub release environment and bakes them at build time.
+ */
+
+export interface CliConfig {
+  authorizeUrl: string;
+  tokenUrl: string;
+  /** The seeded public CLI client_id (upstream B1). */
+  clientId: string;
+  scopes: string;
+  /** Base URL of the deployed `apps/api` resource server. */
+  apiBaseUrl: string;
+  /** Loopback callback path. Default `/callback`; set `WEGO_CLI_REDIRECT_PATH=`
+   *  (empty) for a bare-origin redirect_uri when a client registers one. */
+  redirectPath: string;
+  /** Loopback port. 0 = ephemeral (default, RFC 8252 any-port). Set
+   *  `WEGO_CLI_REDIRECT_PORT` to a fixed port when a client registers a
+   *  specific loopback port rather than relying on the AS's port override. */
+  redirectPort: number;
+  /** Where issued tokens are persisted. */
+  credentialsPath: string;
+  /** The resolved backend target (foundations#74 rung 2). One binary, one axis:
+   *  `prod` unless a `--target` flag or `WEGO_TARGET` said otherwise. */
+  target: Target;
+  /** Which of those said it, so a report can name the thing to change. */
+  targetSource: TargetSource;
+}
+
+const DEFAULTS = {
+  scopes: "openid profile users",
+  redirectPath: "/callback",
+};
+
+/**
+ * Build-time baked configuration for the published single-file binaries
+ * (`wegostaging` → staging, `wego` → prod; see `scripts/build-release.ts`).
+ *
+ * These are read through **static** `process.env.WEGO_BUILD_*` member accesses so
+ * `bun build --compile --env 'WEGO_BUILD_*'` inlines the literals set at build
+ * time into the executable — a *dynamic* `env[key]` read would NOT be inlined
+ * (verified). Unset (e.g. `bun run` from source, or `bun test`) they are
+ * `undefined`, so a from-source run must obtain the values from `.env.local`.
+ *
+ * They are **build-only** knobs, deliberately NOT part of the runtime-config
+ * contract: excluded from `CLI_ENV_VARS`, never declared in `.env.local.example`.
+ * A runtime `WEGO_*` env var still overrides the corresponding baked value.
+ * All baked values are PUBLIC (host URLs + the public PKCE client_id) — no
+ * secret is ever embedded.
+ */
+interface BuildDefaults {
+  authorizeUrl?: string;
+  tokenUrl?: string;
+  clientId?: string;
+  apiBaseUrl?: string;
+  /** The baked build flavor (`wego` | `wegostaging`) — the RELEASE identity: the
+   *  published asset's name prefix, and what user-facing text calls this tool. It
+   *  no longer scopes the config dir; `installScope()` (the command name) does,
+   *  so a renamed second install isolates itself. `undefined` from source (falls
+   *  back to `"wego"`); same static-read/inline mechanism as the other fields. */
+  flavor?: string;
+}
+
+const BUILD: BuildDefaults = {
+  authorizeUrl: process.env.WEGO_BUILD_AUTHORIZE_URL,
+  tokenUrl: process.env.WEGO_BUILD_TOKEN_URL,
+  clientId: process.env.WEGO_BUILD_CLIENT_ID,
+  apiBaseUrl: process.env.WEGO_BUILD_API_URL,
+  flavor: process.env.WEGO_BUILD_FLAVOR,
+};
+
+/** The config root: `$XDG_CONFIG_HOME` when set, else `~/.config`. */
+function configRoot(env: NodeJS.ProcessEnv): string {
+  return env.XDG_CONFIG_HOME || join(homedir(), ".config");
+}
+
+/**
+ * **The command name is the install's identity.** Every per-install file lives
+ * under `<root>/<the name this binary was invoked as>/`, so a second install
+ * isolates itself by being named differently and by nothing else: `wego-next`
+ * reads and writes `~/.config/wego-next/`, `wego` keeps `~/.config/wego/`.
+ *
+ * It used to be the baked FLAVOR, which made renaming a binary cosmetic: three
+ * differently-named prod binaries all shared one `~/.config/wego/install.json`,
+ * the last install written won the ring record, and every other one's `update`
+ * then fetched from a ring nobody chose - checksum-clean and invisible, because
+ * `update` compares checksums rather than versions. The only way out was to give
+ * each install its own `XDG_CONFIG_HOME` and a wrapper script to re-supply it at
+ * run time, i.e. two coupled knobs where the user had said the thing they meant
+ * once, by naming the command.
+ *
+ * Deriving it from the name instead makes the isolating act and the invoking act
+ * the same act. It is also what every message about an install already says:
+ * `programName()` is what the update notice prints, so the command the notice
+ * names is the command that owns the config it is talking about.
+ *
+ * From source (`bun run src/index.ts`) `programName()` answers `wego`, which is
+ * the historical source path - unchanged.
+ *
+ * A SYMLINK does not create a second identity: `process.execPath` resolves to the
+ * real file (verified on Bun 1.3), so `ln -s wego wego-next` still scopes to
+ * `wego`. Copy or install a second binary; do not link one.
+ */
+export function installScope(execPath: string = process.execPath): string {
+  return programName(execPath);
+}
+
+/** One rule for every `<root>/<scope>/` path. `scope` is the install identity
+ *  above, plus an auth-host leaf on a non-prod target (`targetConfigScope`). */
+function installConfigPath(
+  fileName: string,
+  env: NodeJS.ProcessEnv,
+  scope: string,
+): string {
+  return join(configRoot(env), scope, fileName);
+}
+
+/**
+ * Where a PRE-RENAME install of this binary kept its files: the same root, keyed
+ * by the baked flavor instead of the command name. `undefined` when the two agree
+ * (every default install: the command is named after the flavor), which is why
+ * this is a transition aid and not a second lookup path.
+ *
+ * Nothing reads state through it. It exists so the two places that FAIL over a
+ * moved file - the ring-record refusal, and the telemetry opt-out - can name the
+ * directory the user has to move, instead of leaving them to guess why a working
+ * install suddenly reports itself unconfigured.
+ */
+export function legacyScopeDir(
+  env: NodeJS.ProcessEnv = process.env,
+  build: BuildDefaults = BUILD,
+  execPath: string = process.execPath,
+): string | undefined {
+  const flavor = flavorOf(build);
+  if (flavor === installScope(execPath)) return undefined;
+  return join(configRoot(env), flavor);
+}
+
+/** Issued tokens, under this install's own scope, so a second install's login
+ *  cannot clobber — or 401 — the first one's session. */
+export function defaultCredentialsPath(
+  env = process.env,
+  scope = installScope(),
+): string {
+  return installConfigPath("credentials.json", env, scope);
+}
+
+/** The update-notice throttle: CONTENT is the version last advertised, MTIME is
+ *  when we last asked. Not movable by `WEGO_CREDENTIALS_PATH`, which names a FILE. */
+export function defaultUpdateCheckPath(
+  env = process.env,
+  scope = installScope(),
+): string {
+  return installConfigPath(".update-check", env, scope);
+}
+
+/** Which release ring this install came from (`ring-follow.ts`), written by the
+ *  INSTALLER and followed by `wego update`. Scoped like the rest — the installer
+ *  writes it under the name it installs the command as, which is the same rule
+ *  `installScope()` reads it back by — and deliberately not in
+ *  `credentials.json`: the ring survives a `logout`, and `update` must be able to
+ *  read it while logged out. */
+export function defaultInstallRecordPath(
+  env = process.env,
+  scope = installScope(),
+): string {
+  return installConfigPath(INSTALL_RECORD_FILE, env, scope);
+}
+
+/** The telemetry machine id + opt-out. Deliberately not in `credentials.json`,
+ *  which `logout` deletes — the machine id must survive that. */
+export function defaultTelemetryPath(
+  env = process.env,
+  scope = installScope(),
+): string {
+  return installConfigPath("telemetry.json", env, scope);
+}
+
+/** The analytics session id. Deliberately NOT inside `telemetry.json`, which
+ *  fails closed when unreadable: a session write must not flip the opt-out. */
+export function defaultSessionPath(
+  env = process.env,
+  scope = installScope(),
+): string {
+  return installConfigPath("session.json", env, scope);
+}
+
+/** The user's travel preferences (currency / site / locale, issue #1386). Not in
+ *  `credentials.json`, which `logout` deletes — a preference must survive it. */
+export function defaultSettingsPath(
+  env = process.env,
+  scope = installScope(),
+): string {
+  return installConfigPath("settings.json", env, scope);
+}
+
+/** The most recent failed token exchange (investigation #1360). Deliberately NOT
+ *  in `credentials.json`, which `logout` and a re-login delete — the trace of WHY
+ *  a session died must survive the re-login that would otherwise erase it. Not
+ *  moved by `WEGO_CREDENTIALS_PATH`, which names a credentials *file*. */
+export function defaultAuthFailurePath(
+  env = process.env,
+  scope = installScope(),
+): string {
+  return installConfigPath("last-auth-failure.json", env, scope);
+}
+
+/**
+ * The env vars the CLI reads as configuration — the single source of truth for
+ * what may appear in `.env.local` / `.env.local.example`. `loadCliConfig` reads
+ * only through the `CliEnvVar`-typed accessor below, so a mistyped key is a
+ * *compile* error and this list cannot silently drift from actual usage;
+ * `env-example.test.ts` asserts the committed example declares nothing outside
+ * this set (a typo guard for the template). `XDG_CONFIG_HOME` is a standard
+ * system var, not part of the wego config contract, so `defaultCredentialsPath`
+ * reads it directly and it is intentionally excluded here.
+ */
+export const CLI_ENV_VARS = [
+  "WEGO_AUTH_AUTHORIZE_URL",
+  "WEGO_AUTH_TOKEN_URL",
+  "WEGO_CLI_CLIENT_ID",
+  "WEGO_CLI_SCOPES",
+  "WEGO_API_URL",
+  "WEGO_CLI_REDIRECT_PATH",
+  "WEGO_CLI_REDIRECT_PORT",
+  "WEGO_CREDENTIALS_PATH",
+  "WEGO_TARGET",
+] as const;
+
+export type CliEnvVar = (typeof CLI_ENV_VARS)[number];
+
+function requiredValue(
+  runtime: string | undefined,
+  baked: string | undefined,
+  runtimeName: CliEnvVar,
+  buildName: string,
+): string {
+  const value = runtime?.trim() || baked?.trim();
+  if (!value) {
+    throw new Error(
+      `${runtimeName} is required for source usage (or ${buildName} when compiling a release)`,
+    );
+  }
+  return value;
+}
+
+/** Read a config var through a key typed as `CliEnvVar`: a mistyped name (e.g.
+ *  "WEGO_CLI_CLINET_ID") fails to compile, and adding a new read forces a
+ *  matching CLI_ENV_VARS entry — keeping that list an honest source of truth. */
+function read(env: NodeJS.ProcessEnv, key: CliEnvVar): string | undefined {
+  return env[key];
+}
+
+/** The baked flavor, normalized. `?.trim() || "wego"`, not `?? "wego"`: an
+ *  empty/whitespace baked flavor (e.g. `WEGO_BUILD_FLAVOR=`) survives `??`, and
+ *  an empty release name would make `legacyScopeDir` point at the config root
+ *  itself rather than at a directory inside it. */
+function flavorOf(build: BuildDefaults): string {
+  return build.flavor?.trim() || "wego";
+}
+
+/** The resolved target, from the two places every caller must agree on: the
+ *  `--target` flag, then `WEGO_TARGET`, then prod. Throws on a value that is not
+ *  a target — a typo must never fall through to prod. */
+export function resolveCliTarget(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: readonly string[] = process.argv,
+): ResolvedTarget {
+  return resolveTarget(argv, read(env, TARGET_ENV_VAR));
+}
+
+/**
+ * The `~/.config/<scope>/` segment for the state that belongs to a **token
+ * issuer**: the credentials, and the record of why one died. Keyed by the
+ * resolved auth host on a non-prod target, so two targets on one binary never
+ * read — or 401 on — each other's tokens; `prod` keeps the bare `<scope>/` leaf
+ * (see `targetConfigScope`).
+ *
+ * Exported because `index.ts` derives the same paths without a full config —
+ * `uninstall` and the pre-command telemetry snapshot both run from source, where
+ * no endpoint is baked — and the two derivations must not drift.
+ *
+ * Takes no `BuildDefaults`: the leading segment is this install's own name now, so
+ * nothing baked into the binary decides where its files live.
+ */
+export function resolveConfigScope(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: readonly string[] = process.argv,
+): string {
+  const { target } = resolveCliTarget(env, argv);
+  const bundle = targetEndpointOverrides(target, read(env, "WEGO_API_URL"));
+  // Non-prod always carries an authorize URL from the bundle; `prod` returns
+  // before that argument is read.
+  return targetConfigScope(installScope(), target, bundle.authorizeUrl ?? "");
+}
+
+export function loadCliConfig(
+  env = process.env,
+  // Baked build defaults; the parameter exists so tests can inject them (the
+  // real binaries get them via `--env` inlining into `BUILD`). Endpoint/client
+  // precedence: named target bundle > runtime env override > baked build value >
+  // configuration error.
+  build: BuildDefaults = BUILD,
+  argv: readonly string[] = process.argv,
+): CliConfig {
+  const { target, source } = resolveCliTarget(env, argv);
+  // A named non-prod target imposes its whole endpoint bundle, beating the
+  // ambient `WEGO_*` vars: a `--target staging` that a loaded `.env.local` could
+  // silently cancel would not be a switch at all. `prod` imposes nothing, so the
+  // default path stays byte-for-byte what it was before this axis existed.
+  const bundle = targetEndpointOverrides(target, read(env, "WEGO_API_URL"));
+  return {
+    authorizeUrl:
+      bundle.authorizeUrl ??
+      requiredValue(
+        read(env, "WEGO_AUTH_AUTHORIZE_URL"),
+        build.authorizeUrl,
+        "WEGO_AUTH_AUTHORIZE_URL",
+        "WEGO_BUILD_AUTHORIZE_URL",
+      ),
+    tokenUrl:
+      bundle.tokenUrl ??
+      requiredValue(
+        read(env, "WEGO_AUTH_TOKEN_URL"),
+        build.tokenUrl,
+        "WEGO_AUTH_TOKEN_URL",
+        "WEGO_BUILD_TOKEN_URL",
+      ),
+    clientId: requiredValue(
+      read(env, "WEGO_CLI_CLIENT_ID"),
+      build.clientId,
+      "WEGO_CLI_CLIENT_ID",
+      "WEGO_BUILD_CLIENT_ID",
+    ),
+    scopes: read(env, "WEGO_CLI_SCOPES") || DEFAULTS.scopes,
+    apiBaseUrl:
+      bundle.apiUrl ??
+      requiredValue(
+        read(env, "WEGO_API_URL"),
+        build.apiBaseUrl,
+        "WEGO_API_URL",
+        "WEGO_BUILD_API_URL",
+      ),
+    // `?? ` not `||`: an explicit empty WEGO_CLI_REDIRECT_PATH means a
+    // bare-origin redirect_uri and must override the default. Parsed but NOT
+    // validated here — only `login` uses these, so a malformed login-only env
+    // var must not break `whoami`/`logout` (validation lives in assertLoopback).
+    redirectPath: read(env, "WEGO_CLI_REDIRECT_PATH") ?? DEFAULTS.redirectPath,
+    redirectPort: read(env, "WEGO_CLI_REDIRECT_PORT")
+      ? Number(read(env, "WEGO_CLI_REDIRECT_PORT"))
+      : 0,
+    credentialsPath:
+      read(env, "WEGO_CREDENTIALS_PATH") ||
+      defaultCredentialsPath(
+        env,
+        targetConfigScope(installScope(), target, bundle.authorizeUrl ?? ""),
+      ),
+    target,
+    targetSource: source,
+  };
+}
+
+/** Loopback hosts that may be reached over plaintext `http` (local dev). */
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+
+/** Loopback settings, validated as a unit. `redirectPort` uses `z.custom` (not
+ *  `z.number().int()...`) so a `NaN` from a non-numeric `WEGO_CLI_REDIRECT_PORT`
+ *  yields the named message rather than zod's generic "expected number". */
+const loopbackSchema = z.object({
+  redirectPort: z.custom<number>(
+    (n) => typeof n === "number" && Number.isInteger(n) && n >= 0 && n <= 65535,
+    {
+      message:
+        "WEGO_CLI_REDIRECT_PORT must be an integer 0-65535 (0 = ephemeral)",
+    },
+  ),
+  redirectPath: z.string().refine((p) => p === "" || p.startsWith("/"), {
+    message: 'WEGO_CLI_REDIRECT_PATH must be empty or start with "/"',
+  }),
+});
+
+/** Validate the loopback settings. Called by `login` (their only consumer) so a
+ *  malformed `WEGO_CLI_REDIRECT_PORT`/`PATH` fails the login flow cleanly without
+ *  breaking `whoami`/`logout`, which never touch the loopback. */
+export function assertLoopback(config: CliConfig): void {
+  const result = loopbackSchema.safeParse({
+    redirectPort: config.redirectPort,
+    redirectPath: config.redirectPath,
+  });
+  if (!result.success) throw new Error(formatZodError(result.error));
+}
+
+/** A string that must be a valid URL with a secure transport: `https` anywhere,
+ *  `http` only for a loopback host. The CLI sends auth codes / refresh tokens to
+ *  the token URL and the access token to the API — none may travel in cleartext. */
+function secureUrlSchema(name: string) {
+  return z.string().superRefine((raw, ctx) => {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      ctx.addIssue({
+        code: "custom",
+        message: `${name} is not a valid URL: ${raw}`,
+      });
+      return;
+    }
+    const isLocalHttp =
+      url.protocol === "http:" && LOOPBACK_HOSTS.includes(url.hostname);
+    if (url.protocol !== "https:" && !isLocalHttp) {
+      ctx.addIssue({
+        code: "custom",
+        message: `${name} must be HTTPS (http allowed only for localhost); got "${url.protocol}//${url.hostname}".`,
+      });
+    }
+  });
+}
+
+/** Reject a plaintext `http://` endpoint for a non-localhost host. Called
+ *  per-command so a bad endpoint for one command doesn't break the others. */
+export function assertSecureUrl(raw: string, name: string): void {
+  const result = secureUrlSchema(name).safeParse(raw);
+  if (!result.success) throw new Error(formatZodError(result.error));
+}
+
+const clientIdSchema = z.string().min(1, {
+  message:
+    "WEGO_CLI_CLIENT_ID is not set – the wego CLI OAuth client must be seeded " +
+    "upstream (issue #883, B1) and its client_id exported as WEGO_CLI_CLIENT_ID.",
+});
+
+/** Assert a client_id is configured; used by `login` before starting the flow. */
+export function requireClientId(config: CliConfig): string {
+  const result = clientIdSchema.safeParse(config.clientId);
+  if (!result.success) throw new Error(formatZodError(result.error));
+  return result.data;
+}

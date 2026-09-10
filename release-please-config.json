@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": false,
+  "commit-search-depth": 500,
+  "release-search-depth": 40,
+  "include-component-in-tag": true,
+  "include-v-in-tag": true,
+  "tag-separator": "-",
+  "pull-request-title-pattern": "chore(cli): release ${version}",
+  "pull-request-header": "The release PR for the `wego` CLI. Merging it is what releases: release-please computes the version from the commits below, writes the changelog, and tags `cli-vX.Y.Z`. That tag starts `release-cli.yml`, which builds and publishes the binaries. Nobody types a version.",
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "revert", "section": "Reverts" },
+    { "type": "refactor", "section": "Refactors" },
+    { "type": "docs", "section": "Docs", "hidden": true },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "build", "section": "Build", "hidden": true },
+    { "type": "ci", "section": "CI", "hidden": true },
+    { "type": "chore", "section": "Chores", "hidden": true }
+  ],
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "component": "cli",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}
