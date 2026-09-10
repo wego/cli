@@ -11,7 +11,7 @@ name: Release (cli)
 #   2. Tag push (advanced/recovery): `git push origin cli-vX.Y.Z` (tag must be on
 #      main). The tag IS the version, so nothing is typed here either.
 #
-# Only main is releasable (a `workflow_call` runs on the caller's ref, which is
+# Only main is releasable (the tag must be an ancestor of main, which is
 # main; a pushed tag must point at a commit merged to main) — the public curl|bash
 # channel must never serve an unreviewed commit.
 #
@@ -34,7 +34,7 @@ name: Release (cli)
 #
 # Binaries: `wego-*` for macOS (arm64/x64), Linux (arm64/x64), and Windows (x64),
 # plus SHA256SUMS.txt. Each is self-contained (embeds the Bun runtime) with its
-# endpoints + the public PKCE client_id baked in — see apps/cli/scripts/build-release.ts.
+# endpoints + the public PKCE client_id baked in — see scripts/build-release.ts.
 #
 # The GitHub Release is the human changelog + rollback reference ONLY — the
 # distribution channel is still Blob (`GET /install`), not Release assets.
@@ -42,17 +42,12 @@ on:
   push:
     tags:
       - 'cli-v*'
-  # THE RELEASE ENTRY (#74 rung 6). release-please.yml calls this after the release
-  # PR merged and it cut `cli-vX.Y.Z`; the tag arrives as an input because a ref
-  # created with the workflow token does not start a workflow run. There is no manual
-  # run button and no typed version: the caller passes a tag release-please computed,
-  # and this workflow resolves nothing.
-  workflow_call:
-    inputs:
-      tag:
-        description: 'The cli-vX.Y.Z tag release-please created for the merged release PR.'
-        required: true
-        type: string
+  # THE ONE WAY IN. A `cli-v*` tag push and nothing else: no `workflow_call`, no
+  # `workflow_dispatch`, no manual run button and no typed version. release-please
+  # pushes that tag as a GitHub App, which is what makes the push start this run at
+  # all - a ref created with the workflow token starts nothing. In wego-ai this also
+  # accepted a `workflow_call` with the tag as an input, for the no-App fallback;
+  # with the App required there is a single path and nothing to deduplicate.
 
 # NO workflow-level `concurrency:` here, deliberately. Serialization belongs on the
 # ONE job that advances a ring — `release` — and it lives there instead.
@@ -67,16 +62,11 @@ on:
 # contents:write — the Release step reuses release-please's GitHub Release and
 # attaches SHA256SUMS.txt to it. No tag is created here: both entrypoints arrive
 # with one (#74 rungs 6 and 7).
-# pull-requests:read — the Release step filters the auto-generated notes to the
-# PRs that actually touched apps/cli or apps/api (listFiles per PR), so a monorepo
-# PR from another app never lands in a CLI changelog.
+# No pull-requests scope: the Release step no longer filters the notes by changed
+# paths (every pull request here is a CLI one), so it makes no `listFiles` call.
 permissions:
   contents: write
   pull-requests: read
-
-defaults:
-  run:
-    working-directory: apps/cli
 
 jobs:
   prepare:
@@ -112,12 +102,13 @@ jobs:
       # The proof follows the REF TYPE, not the event — a tag needs an ancestry
       # check however it arrived, and a branch ref never does:
       #
-      #   branch ref (`workflow_call` from release-please.yml) — the ref IS the
-      #     proof. That caller only ever runs on `main`, and on a branch push HEAD is
-      #     that branch's tip by construction, so asserting `github.ref` settles it
-      #     with no network at all.
-      #   tag ref (`git push origin cli-vX.Y.Z`) — a tag can point at any commit, so
-      #     the ancestry check is real and stays.
+      #   tag ref (release-please's App pushing `cli-vX.Y.Z`, the only entry) — a
+      #     tag can point at any commit, so the ancestry check is real and does the
+      #     work.
+      #   branch ref — unreachable today (there is no `workflow_call` and no
+      #     `workflow_dispatch` any more), but the branch arm is kept rather than
+      #     deleted: it is three lines, and if an entry is ever added back the
+      #     absence of the check would be the silent failure, not its presence.
       #
       # The ancestry check reads the LOCAL `refs/remotes/origin/main`, never the
       # network. The checkout above sets `persist-credentials: false` (artipacked),
@@ -162,26 +153,21 @@ jobs:
       - name: Unit tests
         run: bun run test
 
-      # READ the release tag. Nothing here computes or assembles a version
-      # (#74 rungs 6 and 7) - a tag arrives, it is validated, and it is used:
-      #   merged release PR → `inputs.tag`, the tag release-please cut
-      #   tag push          → github.ref_name, the tag the human pushed
+      # READ the release tag. Nothing here computes or assembles a version - a tag
+      # arrives on the ref, it is validated, and it is used. One entry, so one
+      # source: `github.ref_name`.
       - name: Read the release tag
         id: resolve
         env:
           EVENT: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-          IN_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          if [ -n "$IN_TAG" ]; then
-            TAG="$IN_TAG"
-            echo "release-please cut $TAG for the merged release PR."
-          elif [ "$EVENT" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
+          if [ "$EVENT" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
             TAG="$REF_NAME"
           else
-            echo "::error::No release tag. This workflow releases a tag that already exists - either release-please passes one as inputs.tag, or you push a cli-vX.Y.Z tag. There is no version to compute here."
+            echo "::error::No release tag. This workflow releases a cli-v* tag that already exists, pushed by release-please's App. There is no version to compute here and no other way to start it."
             exit 1
           fi
           # Validate through the CLI's OWN comparator, not a second regex here: the
@@ -229,12 +215,14 @@ jobs:
     needs: prepare
     runs-on: github-runner-small
     timeout-minutes: 30
-    # ONE environment, one build (#74 rung 7). The matrix that built a `staging – cli`
-    # flavour beside this one is gone: the binary bakes the PRODUCTION endpoints and
-    # `--target staging|local` swaps the whole bundle at run time, so there is nothing
-    # a second Environment could supply that a run-time flag does not.
-    environment:
-      name: "Production – cli"
+    # NO `environment:` on this job, deliberately: it never touches the store and
+    # must not be able to. The store token lives in the `production` environment,
+    # which only the `release` job below enters - so a build cannot write a byte to
+    # a ring even if something in it went wrong.
+    #
+    # ONE build, not a matrix. The binary bakes the PRODUCTION endpoints and
+    # `--target staging|local` swaps the whole bundle at run time, so there is
+    # nothing a second environment could supply that a run-time flag does not.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -252,20 +240,6 @@ jobs:
           WEGO_AUTH_TOKEN_URL: ${{ vars.WEGO_AUTH_TOKEN_URL }}
           WEGO_API_URL: ${{ vars.WEGO_API_URL }}
           WEGO_CLI_CLIENT_ID: ${{ vars.WEGO_CLI_CLIENT_ID }}
-          # Optional: the Blob store ORIGIN `wego skill install` fetches from — a
-          # bare origin, never a channel URL. Baked as WEGO_BUILD_SKILL_ORIGIN;
-          # absent → `skill install` degrades to the embedded copy (no code change).
-          #
-          # The `skill/<ring>` half is composed at RUN time from the install record
-          # (#1751), so no ring reaches the binary from here. That is now true of
-          # every axis: the update and notice bases read the same record (#74 rung
-          # 3), which is what makes a promote a pointer move rather than a rebuild.
-          # This variable was the last one that named a channel, and it drifted
-          # exactly as that invites — it still said `skill/latest` after the rename
-          # retired that prefix, so 0.8.0 shipped fetching a frozen body. The
-          # builder now REFUSES a value carrying any path, so the same mistake fails
-          # the build instead of shipping.
-          WEGO_CLI_SKILL_ORIGIN: ${{ vars.WEGO_CLI_SKILL_ORIGIN }}
           # Optional: the write-only PostHog PROJECT key the binary posts its one
           # per-invocation event with (issue #1302). Baked as
           # WEGO_BUILD_POSTHOG_PROJECT_KEY; absent → the binary emits nothing at
@@ -283,8 +257,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cli-binaries
-          path: apps/cli/dist/*
+          path: dist/*
           if-no-files-found: error
+          # A handoff between two jobs of one run, not a kept artifact: the
+          # immutable `cli/<tag>/` prefix the release job writes is the durable
+          # copy, so this only has to outlive the run.
+          retention-days: 1
 
   release:
     name: Publish CLI binaries to cli/next
@@ -297,10 +275,16 @@ jobs:
     # cancel-in-progress stays FALSE: a mid-flight publish aborted between uploading
     # bytes and advancing the pointer leaves the ring half-moved.
     concurrency:
-      group: release-cli
+      group: ring-next
       cancel-in-progress: false
     runs-on: github-runner-small
     timeout-minutes: 30
+    # The store token and the baked public config live here. This is the ONLY job
+    # in the lane that enters it, and the environment's deployment policy admits
+    # only `main` and `cli-v*` - so nothing but a release or a promote can read
+    # the token that selects a store.
+    environment:
+      name: production
     # `id-token: write` is what makes keyless signing possible: cosign exchanges this
     # job's OIDC token for a short-lived Fulcio certificate naming THIS workflow on
     # THIS ref, and that name is what the installer and `wego update` pin
@@ -309,7 +293,6 @@ jobs:
     # client will accept.
     permissions:
       contents: write
-      pull-requests: read
       id-token: write
     env:
       # Smoke steps run the keyed prod binary; without this they post CI events as product data.
@@ -327,7 +310,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: cli-binaries
-          path: apps/cli/dist
+          path: dist
 
       # `VERSION` is written BEFORE the manifest, so it enters SHA256SUMS.txt with
       # everything else and needs no publisher change: `upload-release-blob.ts`
@@ -410,7 +393,11 @@ jobs:
         env:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
-          REQUIRE_PUBLISH: ${{ inputs.tag != '' || (github.event_name == 'push' && github.ref_type != 'tag') }}
+          # Unconditional now that a tag push is the only entry: a release that
+          # published nothing (missing token) must fail loudly rather than report
+          # green. In wego-ai this tested `inputs.tag` to stay lenient for the
+          # `workflow_call` path, which no longer exists.
+          REQUIRE_PUBLISH: 'true'
           # Bind this tag's blobs to the built commit — a rerun after main moved
           # (non-reproducible builds) is refused rather than mixing builds.
           RELEASE_COMMIT: ${{ github.sha }}
@@ -599,49 +586,24 @@ jobs:
           # name the ring it is smoking. The install URL is not passed: the script
           # reads it from the predecessor's own refusal, so no host is hardcoded.
           RING: next
+          # WHERE the predecessor is told it was installed from. Without this the
+          # script reads the URL out of the predecessor's own reinstall hint, and a
+          # predecessor built against production names production - so the
+          # self-update would follow the real store instead of the one this run
+          # published to. Naming it here is what points the smoke at the rehearsal
+          # store through its preview API.
+          SMOKE_INSTALL_URL: ${{ vars.SMOKE_INSTALL_URL }}
         # The exec bit is already restored by the verify step above (and update-smoke.sh
         # chmods its own working copy regardless), so no chmod is needed here.
-        run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING"
+        run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING" --install-url "$SMOKE_INSTALL_URL"
 
-      # SKILL channels (issue #1171 Part B). The agent SKILL.md ships out-of-band
-      # from the binary, on skill/<channel> in the SAME Blob store (reuses
-      # BLOB_READ_WRITE_TOKEN — no new store). `skill/next` is advanced HERE, in
-      # the same job as `cli/next`, so it moves in a fixed ORDER behind the binary
-      # ring — ordered, not atomic: they are independent side effects, so a later
-      # failure can leave one advanced and the other behind (the step fails;
-      # re-running reconciles, see publish-skill-blob.ts). `skill/stable` moves
-      # with `cli/stable` and now lives in `promote-cli.yml`. The Blob steps use
-      # REQUIRE_PUBLISH (the token is expected once the binary channel is live).
-      #
-      # skill/next moves on EVERY release, paired with the ring this workflow
-      # writes: `skill/next` with `cli/next` here, and `skill/stable` with
-      # `cli/stable` in `promote-cli.yml`. So the agent instructions a ring's
-      # users receive are the ones written for the binary that ring serves.
-      # `publish-skill.yml` also advances staging on any `main` push touching a
-      # SKILL.md, independently of releases.
-      - name: Advance skill/next
-        if: steps.publish.outputs.store_origin != ''
-        env:
-          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
-          REQUIRE_PUBLISH: 'true'
-        run: bun run scripts/publish-skill-blob.ts next
+      # NO skill steps. The skill channel did not move to this repository: the
+      # SKILL.md ships embedded in the binary, and `update` re-runs the new
+      # binary's `skill install --owned-only` after it swaps. In wego-ai this job
+      # also advanced `skill/next` beside `cli/next`, and `promote-cli.yml`
+      # advanced `skill/stable` beside `cli/stable`.
 
-      # Gated identically to the advance above: verifying a channel this run did not
-      # move would assert someone else's write and pass for the wrong reason.
-      - name: Verify skill/next channel
-        if: steps.publish.outputs.store_origin != ''
-        env:
-          BASE: ${{ steps.publish.outputs.store_origin }}/skill/next
-        run: bun run scripts/verify-skill-published.ts "$BASE"
-
-      # `skill/stable` is NOT advanced here (#74 rung 7). It is what EVERYONE
-      # receives, and it moves with `cli/stable` — in `promote-cli.yml`, on the
-      # human promote. Pairing them that way is the point:
-      # the skill a ring's users get is the skill that was written for the binary that
-      # ring serves, so a candidate's agent instructions never reach the whole install
-      # base ahead of the binary they describe.
-
-      # The human record: filtered notes + a rollback reference. Idempotent
+      # The human record: anchored notes + a rollback reference. Idempotent
       # (skips if a Release for the tag already exists, e.g. a partial-failure
       # re-run). Every release this workflow cuts is a plain X.Y.Z (#74 rung 7), so it
       # always takes the "Latest" badge — there is no prerelease line here to withhold
@@ -659,11 +621,6 @@ jobs:
       #     the previous stable, and every rc is cumulative since the last stable
       #     ("what's new on staging vs prod"). No prior stable (first release) →
       #     omit it and let GitHub fall back to the first commit.
-      #  2. Filter. This is a monorepo, so the range still lists PRs from every app.
-      #     We keep only the PR bullets whose changed files touch apps/cli/ or
-      #     apps/api/ (the CLI binary plus the API that serves /install and the
-      #     endpoints it calls) — the accurate signal, since PR-title scopes are
-      #     unreliable (`refactor(api-cli)`, unscoped `feat: …`, repo-wide `docs:`).
       #
       # The compare link GitHub generates for the anchored range is preserved.
       - name: GitHub Release (changelog + record)
@@ -679,12 +636,13 @@ jobs:
             const prerelease = false;
             const { owner, repo } = context.repo;
 
-            // Generate notes anchored to the previous stable tag, then keep only PR
-            // bullets that touched apps/cli/ or apps/api/. A "bullet" is GitHub's
-            // `* … in <pull-url>` line; the trailing `**Full Changelog**` compare
-            // link is kept as-is. The "New Contributors" section is dropped — it can
-            // credit a PR we filtered out, misleading in a CLI-only changelog.
-            const filteredNotes = async () => {
+            // Notes anchored to the previous stable tag. In wego-ai this then kept
+            // only the PR bullets whose changed files touched apps/cli/ or
+            // apps/api/, because the range listed PRs from every app in the
+            // monorepo - which needed `pull-requests: read` and one `listFiles`
+            // call per bullet. Every pull request in this repository is a CLI pull
+            // request, so the filter is gone and so is the permission.
+            const anchoredNotes = async () => {
               // `prepare` computed this from the same rule (highest plain cli-vX.Y.Z
               // below this tag) and the update smoke reads the same value. It used to
               // be re-derived here in JS over a paginated listTags walk - two copies
@@ -694,25 +652,7 @@ jobs:
                 owner, repo, tag_name: tag, target_commitish: context.sha,
                 ...(previous_tag_name ? { previous_tag_name } : {}),
               });
-              const lines = gen.body.split("\n");
-              const footer = lines.find((l) => l.startsWith("**Full Changelog**:"));
-              const bulletRe = /^\* .*\/pull\/(\d+)\s*$/;
-              const kept = [];
-              for (const line of lines) {
-                const m = line.match(bulletRe);
-                if (!m) continue;
-                const files = await github.paginate(github.rest.pulls.listFiles, {
-                  owner, repo, pull_number: Number(m[1]), per_page: 100,
-                });
-                const inApp = files.some(
-                  (f) => f.filename.startsWith("apps/cli/") || f.filename.startsWith("apps/api/"),
-                );
-                if (inApp) kept.push(line);
-              }
-              const out = ["## What's Changed"];
-              out.push(kept.length ? kept.join("\n") : "_No apps/cli or apps/api changes in this release._");
-              if (footer) out.push("", footer);
-              return out.join("\n");
+              return gen.body;
             };
 
             // Idempotent AND recovers a partial failure: if the release already
@@ -736,17 +676,17 @@ jobs:
                 name: tag,
                 prerelease,
                 make_latest: prerelease ? "false" : "true",
-                body: await filteredNotes(),
+                body: await anchoredNotes(),
               });
               release = rel.data;
             }
             // Attach SHA256SUMS.txt. github-script's cwd is the workspace root, so
-            // the defaults.run working-directory (apps/cli) does not apply here.
+            // this repository is the CLI, so the path is repo-relative.
             await github.rest.repos.uploadReleaseAsset({
               owner, repo,
               release_id: release.id,
               name: "SHA256SUMS.txt",
-              data: fs.readFileSync("apps/cli/dist/SHA256SUMS.txt"),
+              data: fs.readFileSync("dist/SHA256SUMS.txt"),
             });
             core.info(`Release ${tag} ready (SHA256SUMS.txt attached).`);
 
@@ -780,52 +720,3 @@ jobs:
   # `cancelled` is reported next to `failure` deliberately: a job killed by its
   # `timeout-minutes` bound (H1, wego-ai#1863) reports as `cancelled`, NOT as
   # `failure`. A lane that hung is exactly the case nobody hears about.
-  report:
-    name: Report a failed release
-    needs: [prepare, build, release]
-    if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
-    runs-on: github-runner-small
-    timeout-minutes: 5
-    # Job-level, so the wide token never reaches the jobs that do the work.
-    #
-    # `contents: read` IS REQUIRED and is not decoration. A job-level block
-    # REPLACES the workflow-level one rather than adding to it, so `issues: write`
-    # alone leaves the job with no read on the repository - and this repository is
-    # private, so the checkout below fails with `fatal: repository '…' not found`,
-    # which is a 403 wearing a 404's clothes. Proved by run 34210254253, the first
-    # deliberate exercise of this reporter: the lane failed, the reporter started,
-    # and it could not check out the action it exists to run.
-    #
-    # This is the SAME defect wego-ai#1863 shipped on the Neon job with
-    # `permissions: {}`. Twice now, so `workflows-gate.test.ts` asserts both scopes.
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      # The action's own directory. Cone mode also brings the root files, which
-      # is where `package.json` comes from - `bun-version-file` needs it.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: .github/actions/report-failure
-          persist-credentials: false
-
-      # The bare pinned binary, not `.github/actions/setup-bun`: the reporter
-      # needs a JSON encoder, not this repository's dependencies. Same reasoning
-      # as H9 took off the promote path (wego-ai#1863).
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version-file: package.json
-
-      - uses: ./.github/actions/report-failure
-        with:
-          lane: release-cli
-          title: "Release lane failed: no CLI published to cli/next"
-          details: |
-            `release-cli.yml` did not finish, so `cli/next` was not advanced.
-
-            While this is unfixed the tag and its GitHub Release are already public and
-            name a build nobody can download (foundations#109 P5). Two tags are in that
-            state today from earlier failures of this lane.
-
-            Job results: prepare `${{ needs.prepare.result }}`, build
-            `${{ needs.build.result }}`, release `${{ needs.release.result }}`.
