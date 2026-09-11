@@ -23,14 +23,22 @@
  *
  * WHAT THIS IS.
  *
- * The API's entire contract for this path is a pure, stateless redirect:
+ * The API's contract for this path is a pure, stateless redirect:
  *
- *     GET /install?dl=<asset>&ring=<ring>  ->  302  <store>/cli/<ring>/<asset>
+ *     GET /install?dl=<asset>&ring=<ring>         ->  302  <store>/cli/<ring>/<asset>
+ *     GET /install?dl=<asset>&ring=<ring>&sig=1   ->  302  <store>/cli-sig/<ring>/<asset>
  *
  * verified against production across `VERSION`, `SHA256SUMS.txt`, a `.gz`
- * binary and `COMMIT`, with no exceptions. `assertSecureUrl` (src/config.ts)
+ * binary, `COMMIT` and the ring record. `assertSecureUrl` (src/config.ts)
  * allows plaintext on loopback, so a redirector on `127.0.0.1` is a faithful
  * stand-in for that one hop.
+ *
+ * The `sig=1` line was MISSING until wego/foundations#129. The original note here
+ * claimed the `?dl=` form covered the contract "with no exceptions", because the
+ * four assets it was checked against are all downloads — and `wego update`'s
+ * record fetch, the one thing rung 9 exists for, is not a download. The omission
+ * could not surface until a run got past the identity gate and actually reached
+ * SMOKE 3, which first happened in release run 34588318406.
  *
  * It PROXIES NOTHING. The 302 sends the binary straight to the real store over
  * public HTTPS, so the download, the checksum comparison, the signature check
@@ -222,6 +230,21 @@ Bun.serve({
     // build record before serving this; a redirector cannot.
     const asset = sums ? MANIFEST_ASSET : dl;
     const queryRing = url.searchParams.get("ring");
+
+    // `&sig=1` selects the RECORD prefix, not the download prefix. This is not a
+    // variant spelling of `?dl=` — it is the other half of rung 9. `cli-sig/<ring>`
+    // is deliberately a separate top-level prefix from `cli/<ring>` (see
+    // `sigPrefixForRing`), because a record stored beside the manifest it signs
+    // falls to the same store write it exists to detect. `ring-follow.ts`'s
+    // `ringRecordUrl` appends it, and production honours it:
+    //
+    //   ?dl=SHA256SUMS.txt.sigstore.json&ring=stable         -> cli/stable/…
+    //   ?dl=SHA256SUMS.txt.sigstore.json&ring=stable&sig=1    -> cli-sig/stable/…
+    //
+    // Without this, `wego update` asks for the ring's record, is pointed into the
+    // download prefix, gets a 404 and refuses to update — which is exactly how
+    // SMOKE 3 failed in release run 34588318406.
+    const prefix = url.searchParams.get("sig") === "1" ? "cli-sig" : "cli";
     if (!asset || !queryRing) {
       return new Response(
         "ring is required, with either dl=<asset> or sums=1\n",
@@ -234,7 +257,7 @@ Bun.serve({
       });
     }
 
-    const target = `${storeOrigin}/cli/${queryRing}/${asset}`;
+    const target = `${storeOrigin}/${prefix}/${queryRing}/${asset}`;
     // Logged so the run's own output shows what the smoke resolved, which is
     // the first thing anyone reads when a rehearsal self-update goes wrong.
     console.log(`302 ${url.pathname}${url.search} -> ${target}`);
