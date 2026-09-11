@@ -170,21 +170,38 @@ jobs:
       #
       # `branch=<tag>` is how the Actions API filters runs by ref name; a tag-push
       # run is recorded under the tag's own name.
+      # `actions/github-script`, NOT `gh api`. This runs on `github-runner-small`,
+      # a self-hosted image with no GitHub CLI on PATH: `gh api` here exited 127
+      # `gh: command not found` and took the whole promote down with it
+      # (wego/foundations#129, run 34609251560). GitHub-HOSTED runners ship `gh`,
+      # which is why the shape looks fine until you run it. `release-cli.yml`
+      # already reaches the API this way and uses no `gh` anywhere; this was the
+      # only `gh` invocation in either workflow. The job's `actions: read` is
+      # what authorises the listing.
       - name: Require a completed, successful release run for the tag
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const tag = process.env.TAG;
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "release-cli.yml",
+              branch: tag,
+              per_page: 100,
+            });
+            const ok = data.workflow_runs.filter(
+              (r) => r.status === "completed" && r.conclusion === "success",
+            ).length;
+            if (ok < 1) {
+              core.setFailed(
+                `No completed, successful release-cli.yml run for ${tag}. cli/stable serves every install, so it is only ever advanced onto bytes a release run finished and verified. Re-run or fix the release for ${tag} first; allow_not_next does not bypass this.`,
+              );
+              return;
+            }
+            core.info(`ok: release-cli.yml completed successfully for ${tag} (${ok} run(s)).`);
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          ok=$(gh api \
-                 "repos/$REPO/actions/workflows/release-cli.yml/runs?branch=$TAG&per_page=100" \
-                 --jq '[.workflow_runs[] | select(.status == "completed" and .conclusion == "success")] | length')
-          if [ "${ok:-0}" -lt 1 ]; then
-            echo "::error::No completed, successful release-cli.yml run for $TAG. cli/stable serves every install, so it is only ever advanced onto bytes a release run finished and verified. Re-run or fix the release for $TAG first; allow_not_next does not bypass this."
-            exit 1
-          fi
-          echo "ok: release-cli.yml completed successfully for $TAG ($ok run(s))."
 
       # foundations#101 rung 5(f). ASKED BEFORE THE RINGS MOVE, ON PURPOSE.
       #
