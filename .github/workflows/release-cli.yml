@@ -629,10 +629,18 @@ jobs:
           # distinguishes our process from any other thing on the port. Polling
           # rather than sleeping because a smoke that starts too early fails as a
           # download error, which reads as a publish fault.
+          # `|| loc=` is load-bearing, not defensive noise. This step runs under
+          # `set -e` with `pipefail`, so until the resolver has bound the port the
+          # probe curl exits 7 (couldn't connect), pipefail hands that 7 to the
+          # pipeline, and the assignment — a simple command, not a condition —
+          # takes it as its own status. `set -e` then kills the step on the FIRST
+          # poll iteration, which is the one guaranteed to race the server's bind.
+          # The loop could never wait for anything: it had 50 attempts and could
+          # only ever survive the zeroth.
           ready=
           for _ in $(seq 1 50); do
             loc=$(curl -sS -m 2 -o /dev/null -D - "http://127.0.0.1:$PORT/install?dl=VERSION&ring=next" 2>/dev/null \
-                    | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+                    | tr -d '\r' | sed -n 's/^[Ll]ocation: //p') || loc=
             if [ -n "$loc" ]; then ready=$loc; break; fi
             sleep 0.2
           done
