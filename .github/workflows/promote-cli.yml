@@ -47,22 +47,51 @@ permissions:
   contents: read
 
 jobs:
-  # THE HUMAN GATE, and nothing else. Its only job is to be a job that cannot
-  # start until a required reviewer approves it, which is what the
-  # `stable-approval` environment does.
+  # THE HUMAN GATE, and nothing else.
   #
-  # Separate from `promote` on purpose: an environment's reviewers gate ENTRY to a
-  # job, so folding the approval into the job that holds the store token would mean
-  # the approval and the write share one step's blast radius. This job holds NO
-  # secrets and NO variables - there is nothing in it to leak or misuse while it
-  # waits, possibly for hours - and `promote` cannot begin until it has passed.
+  # It is NOT an environment. On a private repository a GitHub Team plan cannot
+  # carry required-reviewer protection rules - that rule is Enterprise-only, and
+  # `PUT .../environments/stable-approval` answers 422 "Please ensure the billing
+  # plan supports the required reviewers protection rule". Declaring the
+  # environment anyway would be worse than leaving it out: GitHub creates it
+  # unprotected on first use, so the job would advertise an approval gate and
+  # wave every dispatch straight through.
+  #
+  # What gates a promote instead, both enforced:
+  #   1. This workflow has NO trigger but `workflow_dispatch`, so a promote only
+  #      ever happens because a person with write access typed a tag.
+  #   2. This job refuses to continue unless that person is a named promoter.
+  # The allow-list is meaningful because this file is itself protected: `main`
+  # requires a code-owner review, so widening the list is a reviewed change.
+  #
+  # WHAT THIS GIVES UP, and the `stable-approval` environment did not: four eyes.
+  # With environment reviewers the dispatcher and the approver were necessarily
+  # different people ("prevent self-review"); here one person does both. Restoring
+  # that needs GitHub Enterprise. See wego/foundations#128.
+  #
+  # Separate from `promote` on purpose: this job holds NO secrets and NO variables
+  # - there is nothing in it to leak or misuse - and `promote` cannot begin until
+  # it has passed.
   approve:
     name: Approve promoting ${{ inputs.tag }} to cli/stable
     runs-on: github-runner-small
     timeout-minutes: 5
-    environment:
-      name: stable-approval
     steps:
+      - name: Only a named promoter may promote
+        env:
+          ACTOR: ${{ github.actor }}
+          PROMOTERS: sunny-wego yeouchien-wego chuyeowego
+        run: |
+          set -euo pipefail
+          for promoter in $PROMOTERS; do
+            if [ "$promoter" = "$ACTOR" ]; then
+              echo "$ACTOR is a named promoter."
+              exit 0
+            fi
+          done
+          echo "::error::$ACTOR is not a named promoter. Allowed: $PROMOTERS"
+          exit 1
+
       - name: Record what is being approved
         env:
           TAG: ${{ inputs.tag }}
@@ -87,7 +116,7 @@ jobs:
     concurrency:
       group: ring-stable
       cancel-in-progress: false
-    # The store token lives here. `stable-approval` gated entry to `approve`; this
+    # The store token lives here. `approve` gated entry to this job; this
     # environment is what actually holds the credential that selects a store.
     environment:
       name: production
