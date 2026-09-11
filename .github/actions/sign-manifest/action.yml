@@ -27,8 +27,15 @@ inputs:
       to the workspace root - a composite action does not inherit the caller's
       `defaults.run.working-directory`, which is why this is an input rather than
       an assumed `cd`.
+
+      `dist`, not `apps/cli/dist`: in wego-ai the workspace root was the monorepo
+      root and the CLI sat two levels down, so the default carried that prefix.
+      Here the CLI IS the repository - `build-release.ts` writes `dist/` relative
+      to its cwd and both lanes' Checksums step does `cd dist` - so the prefix
+      names a directory that does not exist. Neither lane passes this input, so
+      the default is the only thing that decides it for both.
     required: false
-    default: apps/cli/dist
+    default: dist
 
 runs:
   using: composite
