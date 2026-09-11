@@ -4,14 +4,14 @@ name: release-please
 # this repository.
 #
 # On every push to main this keeps ONE open release PR: it reads the
-# conventional-commit subjects since `cli-v<manifest version>`, computes the next
+# conventional-commit subjects since `v<manifest version>`, computes the next
 # version, and writes `CHANGELOG.md`, `package.json`'s `version` and
 # `.release-please-manifest.json` into that PR. The PR body is the changelog a
 # user would read, assembled from the notes their authors wrote.
 #
-# MERGING THAT PR IS THE RELEASE. release-please then creates the `cli-vX.Y.Z`
+# MERGING THAT PR IS THE RELEASE. release-please then creates the `vX.Y.Z`
 # tag, and that tag - not this workflow - starts `release-cli.yml`, which builds
-# and publishes the binaries. `release-cli.yml` is reachable ONLY by a `cli-v*`
+# and publishes the binaries. `release-cli.yml` is reachable ONLY by a `v*`
 # tag push: it has no `workflow_call` and no `workflow_dispatch`, so there is one
 # way in and nothing to deduplicate.
 #
@@ -35,7 +35,7 @@ on:
     branches:
       - main
 
-# contents:write - creates the release branch and the `cli-v*` tag.
+# contents:write - creates the release branch and the `v*` tag.
 # pull-requests:write - opens and updates the release PR.
 #
 # Both are the WORKFLOW token's scopes, which the release-please action does not

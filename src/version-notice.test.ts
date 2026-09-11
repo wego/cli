@@ -124,7 +124,7 @@ describe("parseSemver / isNewerVersion", () => {
     ["0.4.2", "0.4.3\n", true, "the published file ends in a newline"],
     ["0.4.2", "  0.4.3  ", true, "surrounding whitespace"],
     ["0.4.2", "v0.4.3", false, "a `v` prefix is not our format"],
-    ["0.4.2", "cli-v0.4.3", false, "the tag, not the version"],
+    ["0.4.2", "v0.4.3", false, "the tag, not the version"],
     ["0.4.2", "0.4.3\n0.4.4", false, "multi-line body is garbage"],
     ["0.4.2", "<!DOCTYPE html>", false, "an HTML error page served 200"],
     ["0.4.2", "0.4", false, "too few components"],
@@ -442,7 +442,7 @@ describe("maybeNotifyNewVersion", () => {
     // `200` carrying a captive-portal page is short enough to pass the byte cap, so
     // persisting it verbatim would erase a genuine known version and silence the
     // notice for the rest of the window — one flukey response, 24h of silence.
-    for (const body of ["", "\n", "v0.4.3", "cli-v0.4.3", "<!DOCTYPE html>"]) {
+    for (const body of ["", "\n", "v0.4.3", "v0.4.3", "<!DOCTYPE html>"]) {
       const d = deps({
         readState: stored(LATEST, NOTICE_INTERVAL_PROD_MS + 1_000),
         fetch: (async () => new Response(body)) as unknown as typeof fetch,

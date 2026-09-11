@@ -71,7 +71,7 @@ const VERSION_OBJECT = "VERSION";
 
 /** The bare `X.Y.Z-edge.<sha>` version this run publishes, or a one-line reason. */
 export interface EdgeTarget {
-  /** The bare version (`cli-v` stripped) — also the immutable dir name. */
+  /** The bare version (`v` stripped) — also the immutable dir name. */
   version: string;
   /** The immutable per-version prefix `cli/<version>`. */
   versionPrefix: string;
@@ -80,20 +80,20 @@ export interface EdgeTarget {
 }
 
 /**
- * Resolve the edge target for a raw version or `cli-v` tag, or a one-line refusal.
+ * Resolve the edge target for a raw version or `v` tag, or a one-line refusal.
  * Pure: no I/O, so the guards are unit-tested without the Blob store.
  *
  * Two gates, both from the shared authorities so this publisher cannot drift:
  *   1. `releaseTagError` — the SAME parser the binary's version comparator uses, so
- *      an edge tag it would reject (`cli-v0.0.0-edge.` with an empty id, a leading
+ *      an edge tag it would reject (`v0.0.0-edge.` with an empty id, a leading
  *      zero) never ships.
  *   2. `ringForVersion === "edge"` — the crossed-pair rule from `ring-rules.ts`: a
  *      plain `X.Y.Z` (which routes to `next`) or an `-rc.*` must never land on edge,
  *      because whatever the ring serves is what its install base receives next.
  */
 export function resolveEdgeTarget(raw: string): EdgeTarget | { error: string } {
-  const version = raw.replace(/^cli-v/, "");
-  const tagError = releaseTagError(`cli-v${version}`);
+  const version = raw.replace(/^v/, "");
+  const tagError = releaseTagError(`v${version}`);
   if (tagError) return { error: tagError };
   if (ringForVersion(version) !== "edge") {
     // `ringAcceptsVersion` phrases the edge-specific refusal.

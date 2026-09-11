@@ -229,7 +229,7 @@ describe("malformed input", () => {
 
 /**
  * The RULE SET, on its own. `release-cli.yml` has two documented entries — a
- * `workflow_call` from release-please (which runs on main) and a `cli-v*` tag push
+ * `workflow_call` from release-please (which runs on main) and a `v*` tag push
  * (the recovery release) — so the release rings accept two identities. These cases
  * pin BOTH directions: the tag path is accepted, and everything adjacent to it is
  * not. Asserted through the exported rules rather than through a minted certificate,
@@ -250,28 +250,26 @@ describe("the identities a ring accepts", () => {
     expect(accepts("stable", SIGNING_IDENTITY)).toBe(true);
   });
 
-  it("accepts the release workflow on a cli-vX.Y.Z tag — the recovery release", () => {
-    expect(accepts("next", tag("cli-v1.2.3"))).toBe(true);
-    expect(accepts("next", tag("cli-v10.0.11"))).toBe(true);
+  it("accepts the release workflow on a vX.Y.Z tag — the recovery release", () => {
+    expect(accepts("next", tag("v1.2.3"))).toBe(true);
+    expect(accepts("next", tag("v10.0.11"))).toBe(true);
   });
 
   it("refuses a prerelease tag: the -rc.N line is gone", () => {
-    expect(accepts("next", tag("cli-v1.2.3-rc.1"))).toBe(false);
+    expect(accepts("next", tag("v1.2.3-rc.1"))).toBe(false);
   });
 
   it("refuses a tag that is not a bare version", () => {
-    expect(accepts("next", tag("cli-v1.2"))).toBe(false);
-    expect(accepts("next", tag("cli-vnext"))).toBe(false);
-    expect(accepts("next", tag("cli-v1.2.3/../evil"))).toBe(false);
+    expect(accepts("next", tag("v1.2"))).toBe(false);
+    expect(accepts("next", tag("vnext"))).toBe(false);
+    expect(accepts("next", tag("v1.2.3/../evil"))).toBe(false);
   });
 
   it("refuses the pattern as a SUBSTRING of a longer SAN", () => {
     // What the anchors buy: a SAN the signer chose that merely CONTAINS an
     // acceptable one must not pass.
-    expect(accepts("next", `${tag("cli-v1.2.3")}@refs/heads/attacker`)).toBe(
-      false,
-    );
-    expect(accepts("next", `https://evil.example/${tag("cli-v1.2.3")}`)).toBe(
+    expect(accepts("next", `${tag("v1.2.3")}@refs/heads/attacker`)).toBe(false);
+    expect(accepts("next", `https://evil.example/${tag("v1.2.3")}`)).toBe(
       false,
     );
   });
@@ -287,7 +285,7 @@ describe("the identities a ring accepts", () => {
     expect(
       accepts(
         "next",
-        "https://github.com/evil/wego-ai/.github/workflows/release-cli.yml@refs/tags/cli-v1.2.3",
+        "https://github.com/evil/wego-ai/.github/workflows/release-cli.yml@refs/tags/v1.2.3",
       ),
     ).toBe(false);
   });
@@ -297,6 +295,6 @@ describe("the identities a ring accepts", () => {
     // record must never be able to pass as a release record.
     expect(accepts("edge", EDGE_SIGNING_IDENTITY)).toBe(true);
     expect(accepts("edge", SIGNING_IDENTITY)).toBe(false);
-    expect(accepts("edge", tag("cli-v1.2.3"))).toBe(false);
+    expect(accepts("edge", tag("v1.2.3"))).toBe(false);
   });
 });

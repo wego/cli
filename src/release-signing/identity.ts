@@ -45,9 +45,9 @@ export const SIGNING_IDENTITY =
 
 /**
  * The SAME workflow, reached by its OTHER documented entry: `release-cli.yml` also
- * triggers on a `cli-v*` tag push, which its header calls the advanced/recovery
+ * triggers on a `v*` tag push, which its header calls the advanced/recovery
  * release. Fulcio names the ref it actually ran on, so that run signs as
- * `@refs/tags/cli-vX.Y.Z` and `SIGNING_IDENTITY` alone would refuse it — the
+ * `@refs/tags/vX.Y.Z` and `SIGNING_IDENTITY` alone would refuse it — the
  * publish gate would fail AFTER the frozen `cli/<tag>` objects were written and
  * before `cli/next` advanced, and any client that did receive such a record would
  * refuse every update.
@@ -55,14 +55,14 @@ export const SIGNING_IDENTITY =
  * A pattern rather than an exact string because the tag is the version: the
  * publisher knows it, but `wego update` reads a RING and cannot know which release
  * is behind it. What stays pinned is everything that carries the authority — the
- * repo, the workflow file, and `refs/tags/cli-v` followed by a bare `X.Y.Z`. The
+ * repo, the workflow file, and `refs/tags/v` followed by a bare `X.Y.Z`. The
  * `-rc.N` line is gone (rung 7), so a prerelease suffix is not a release identity.
  *
- * Anchored at both ends. Unanchored, `…release-cli.yml@refs/tags/cli-v1.0.0` would
+ * Anchored at both ends. Unanchored, `…release-cli.yml@refs/tags/v1.0.0` would
  * also match as a substring of an attacker-chosen SAN that merely contains it.
  */
 export const RELEASE_TAG_IDENTITY =
-  /^https:\/\/github\.com\/wego\/wego-ai\/\.github\/workflows\/release-cli\.yml@refs\/tags\/cli-v\d+\.\d+\.\d+$/;
+  /^https:\/\/github\.com\/wego\/wego-ai\/\.github\/workflows\/release-cli\.yml@refs\/tags\/v\d+\.\d+\.\d+$/;
 
 /**
  * The edge lane signs under its own workflow identity — same repo, same branch, a

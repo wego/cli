@@ -111,7 +111,7 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
 
-      # Version = <latest plain cli-vX.Y.Z base>-edge.<short sha of this merge>.
+      # Version = <latest plain vX.Y.Z base>-edge.<short sha of this merge>.
       # The base is cosmetic (the ring serves whatever the pointer names, and
       # `update` compares checksums, not versions); the `-edge.<sha>` shape is
       # what `ring-rules.ts` pins. `<sha>` is this merge commit, so it is always
@@ -123,11 +123,11 @@ jobs:
           # `grep` exits 1 when NO tag matches, and under `pipefail` that sinks the
           # whole assignment, so `set -e` would kill the step before the `0.0.0`
           # default below could run - making that default unreachable on the one
-          # path it exists for (a repository with no plain `cli-vX.Y.Z` tag yet,
+          # path it exists for (a repository with no plain `vX.Y.Z` tag yet,
           # which is exactly this repository today). Absorb status 1 only: a real
           # grep failure (status 2) must still fail the step.
-          base=$(git tag -l 'cli-v[0-9]*' \
-            | sed 's/^cli-v//' \
+          base=$(git tag -l 'v[0-9]*' \
+            | sed 's/^v//' \
             | { grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || [ $? -eq 1 ]; } \
             | sort -V | tail -1)
           base=${base:-0.0.0}
@@ -141,7 +141,7 @@ jobs:
       # present in this repository and the body ships embedded in the binary.
       - name: Build edge binaries
         env:
-          RELEASE_TAG: cli-v${{ steps.version.outputs.version }}
+          RELEASE_TAG: v${{ steps.version.outputs.version }}
           WEGO_AUTH_AUTHORIZE_URL: ${{ vars.WEGO_AUTH_AUTHORIZE_URL }}
           WEGO_AUTH_TOKEN_URL: ${{ vars.WEGO_AUTH_TOKEN_URL }}
           WEGO_API_URL: ${{ vars.WEGO_API_URL }}

@@ -5,7 +5,7 @@
  * the binaries with no auth. Run by the release workflow after the binaries are
  * built; run it locally with a token to seed the store by hand.
  *
- *   BLOB_READ_WRITE_TOKEN=… bun run scripts/upload-release-blob.ts cli-v0.1.0
+ *   BLOB_READ_WRITE_TOKEN=… bun run scripts/upload-release-blob.ts v0.1.0
  *
  * Three moving pointers = the three RINGS (foundations#74 rung 4/7):
  * **cli/edge** (unreleased main, dogfood), **cli/next** (the candidate real people
@@ -110,7 +110,7 @@ function parseMode(flag: string | undefined): Mode {
 }
 const argv = process.argv.slice(2);
 // Reject an unknown --flag up front with a clear message. (A bad *tag* is still
-// caught by the cli-vX.Y.Z shape guard below, before any Blob access — but an
+// caught by the vX.Y.Z shape guard below, before any Blob access — but an
 // unrecognized flag would otherwise be silently treated as a publish tag.)
 if (
   argv[0]?.startsWith("--") &&
@@ -177,9 +177,9 @@ if (!tag) {
 }
 
 // Guard the tag through the SAME validator the release workflow and the builder
-// use. The `cli-v*` push glob could otherwise pass a dashless junk tag like
-// `cli-vlatest`, which would read as a plain version and move cli/next — or a
-// semver-invalid one like `cli-v0.4.3-rc.01`, which the installed binary's
+// use. The `v*` push glob could otherwise pass a dashless junk tag like
+// `vlatest`, which would read as a plain version and move cli/next — or a
+// semver-invalid one like `v0.4.3-rc.01`, which the installed binary's
 // comparator rejects, permanently silencing its new-version notice. One authority,
 // so no entry point can be the hole in it.
 const tagError = releaseTagError(tag);
@@ -316,7 +316,7 @@ if (mode === "promote") {
       process.exit(1);
     }
     const served = (await res.text()).trim();
-    const want = tag.replace(/^cli-v/, "");
+    const want = tag.replace(/^v/, "");
     if (served !== want) {
       console.error(
         `cli/${ring} serves ${served}, not ${want}. Promote the build that ring has been running, ` +
@@ -372,7 +372,7 @@ if (mode === "promote") {
 
   // COVERAGE, CHECKED HERE RATHER THAN AT THE POINTER MOVE. The same rule
   // `manifestCoversAll` enforces before advancing a ring, run against dist/ before
-  // anything is uploaded. `cli-v0.7.1` published 13 objects and verified all of
+  // anything is uploaded. `v0.7.1` published 13 objects and verified all of
   // them, then refused its own pointer move nine steps later because one was not in
   // the signed manifest (run 33036257401). The information was available the moment
   // dist/ was signed; only the check was in the wrong place. Failing here costs a

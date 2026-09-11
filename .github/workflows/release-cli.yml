@@ -7,8 +7,8 @@ name: Release (cli)
 # axis (#74 rung 6, release-please-config.json):
 #   1. Merge the release PR (the ordinary release, and the first of the two human
 #      actions in it). release-please computes the version from the merged commits,
-#      writes the changelog, cuts `cli-vX.Y.Z`, then CALLS this workflow with that tag.
-#   2. Tag push (advanced/recovery): `git push origin cli-vX.Y.Z` (tag must be on
+#      writes the changelog, cuts `vX.Y.Z`, then CALLS this workflow with that tag.
+#   2. Tag push (advanced/recovery): `git push origin vX.Y.Z` (tag must be on
 #      main). The tag IS the version, so nothing is typed here either.
 #
 # Only main is releasable (the tag must be an ancestor of main, which is
@@ -41,8 +41,8 @@ name: Release (cli)
 on:
   push:
     tags:
-      - 'cli-v*'
-  # THE ONE WAY IN. A `cli-v*` tag push and nothing else: no `workflow_call`, no
+      - 'v*'
+  # THE ONE WAY IN. A `v*` tag push and nothing else: no `workflow_call`, no
   # `workflow_dispatch`, no manual run button and no typed version. release-please
   # pushes that tag as a GitHub App, which is what makes the push start this run at
   # all - a ref created with the workflow token starts nothing. In wego-ai this also
@@ -102,7 +102,7 @@ jobs:
       # The proof follows the REF TYPE, not the event — a tag needs an ancestry
       # check however it arrived, and a branch ref never does:
       #
-      #   tag ref (release-please's App pushing `cli-vX.Y.Z`, the only entry) — a
+      #   tag ref (release-please's App pushing `vX.Y.Z`, the only entry) — a
       #     tag can point at any commit, so the ancestry check is real and does the
       #     work.
       #   branch ref — unreachable today (there is no `workflow_call` and no
@@ -167,13 +167,13 @@ jobs:
           if [ "$EVENT" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
             TAG="$REF_NAME"
           else
-            echo "::error::No release tag. This workflow releases a cli-v* tag that already exists, pushed by release-please's App. There is no version to compute here and no other way to start it."
+            echo "::error::No release tag. This workflow releases a v* tag that already exists, pushed by release-please's App. There is no version to compute here and no other way to start it."
             exit 1
           fi
           # Validate through the CLI's OWN comparator, not a second regex here: the
           # tag becomes the baked version, and the installed binary compares that
           # string with `parseSemver`. A tag this step accepts but that parser
-          # rejects (`cli-v0.4.3-rc.01`) ships an install whose new-version notice
+          # rejects (`v0.4.3-rc.01`) ships an install whose new-version notice
           # can never fire. One authority, so the grammars cannot drift.
           bun run scripts/validate-release-tag.ts "$TAG"
           # REFUSE A PRERELEASE (#74 rung 7). `cli/next` and `cli/stable` are the one
@@ -184,12 +184,12 @@ jobs:
           # and must stop HERE, at the gate, rather than at the publisher after a
           # full build. `ring-rules.ts` is the authority and refuses it there too;
           # this is the early, cheap statement of the same rule.
-          case "${TAG#cli-v}" in
+          case "${TAG#v}" in
             *-*)
               echo "::error::$TAG is a prerelease. The -rc.N scheme is gone (#74 rung 7): this workflow publishes a plain X.Y.Z to cli/next, and the only prerelease line is cli/edge, published by edge-cli.yml on every merge to main. Release a plain version, or let the edge lane serve the unreleased build."
               exit 1 ;;
           esac
-          # The predecessor: the highest PLAIN cli-vX.Y.Z strictly below this tag.
+          # The predecessor: the highest PLAIN vX.Y.Z strictly below this tag.
           # Prereleases are filtered out - `-edge.*` is a different line and the
           # `-rc.N` scheme is gone (#74 rung 7). `awk` rather than `sed` so a tag's
           # dots are never read as regex metacharacters. Empty on the first release,
@@ -198,14 +198,14 @@ jobs:
           # awk exits at the first match, and without that guarantee a tag sorting
           # below every existing one would fall through to END and print the HIGHEST
           # tag instead of nothing. `-u` because the tag is normally already there.
-          PREV=$( { git tag -l 'cli-v*' \
-                      | grep -E '^cli-v[0-9]+\.[0-9]+\.[0-9]+$'; \
+          PREV=$( { git tag -l 'v*' \
+                      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'; \
                     echo "$TAG"; } \
                   | sort -V -u \
                   | awk -v t="$TAG" '$0==t{exit} {p=$0} END{print p}')
           {
             echo "tag=$TAG"
-            echo "version=${TAG#cli-v}"
+            echo "version=${TAG#v}"
             echo "prev_tag=$PREV"
           } >> "$GITHUB_OUTPUT"
           echo "Releasing $TAG to cli/next (predecessor: ${PREV:-none})"
@@ -232,7 +232,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
 
       # Cross-compiles all targets (Bun downloads each target runtime on demand).
-      # RELEASE_TAG → the baked `wego version` (build-release.ts strips `cli-v`).
+      # RELEASE_TAG → the baked `wego version` (build-release.ts strips `v`).
       - name: Build binaries
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
@@ -281,7 +281,7 @@ jobs:
     timeout-minutes: 30
     # The store token and the baked public config live here. This is the ONLY job
     # in the lane that enters it, and the environment's deployment policy admits
-    # only `main` and `cli-v*` - so nothing but a release or a promote can read
+    # only `main` and `v*` - so nothing but a release or a promote can read
     # the token that selects a store.
     environment:
       name: production
@@ -444,7 +444,7 @@ jobs:
       # ONE FIDELITY TRADE, STATED. `cli/next` served what consumers actually run; the
       # previous TAG may be a version no ring ever pointed at, because a release can
       # fail after publishing its immutable objects but before advancing the pointer -
-      # cli-v0.7.0 and cli-v0.7.1 are both exactly that. This is acceptable because
+      # v0.7.0 and v0.7.1 are both exactly that. This is acceptable because
       # SMOKE 3 tests the PREDECESSOR's update code path, not which bytes a ring
       # served: an unpublished-but-built binary exercises that path identically, and it
       # was built by this same pipeline. If the smoke ever needs "what consumers really
@@ -616,7 +616,7 @@ jobs:
       #     and for a stable that follows its rc it usually picks the rc — so the
       #     stable (the "Latest"/rollback record) diffs rc→stable and comes up
       #     near-empty while the throwaway rc holds the real changelog. We instead
-      #     pin previous_tag_name to the latest STABLE cli-v* tag before this
+      #     pin previous_tag_name to the latest STABLE v* tag before this
       #     version (prereleases excluded): every stable spans the full range since
       #     the previous stable, and every rc is cumulative since the last stable
       #     ("what's new on staging vs prod"). No prior stable (first release) →
@@ -643,7 +643,7 @@ jobs:
             // call per bullet. Every pull request in this repository is a CLI pull
             // request, so the filter is gone and so is the permission.
             const anchoredNotes = async () => {
-              // `prepare` computed this from the same rule (highest plain cli-vX.Y.Z
+              // `prepare` computed this from the same rule (highest plain vX.Y.Z
               // below this tag) and the update smoke reads the same value. It used to
               // be re-derived here in JS over a paginated listTags walk - two copies
               // of one rule, either of which could drift.

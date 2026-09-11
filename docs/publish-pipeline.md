@@ -20,7 +20,7 @@ The builder:
 - Bakes the public PKCE `client_id` and the release version.
 - Passes `--no-compile-autoload-dotenv`, so a stray `.env` in the tester's CWD
   can't silently override the baked config.
-- Takes the version from `RELEASE_TAG` (`cli-vX.Y.Z` → `X.Y.Z`, set by the release
+- Takes the version from `RELEASE_TAG` (`vX.Y.Z` → `X.Y.Z`, set by the release
   workflow). A local build with no tag stamps `0.0.0-dev`.
 - Bakes `WEGO_BUILD_FLAVOR` – one value now (`wego`), kept as a baked key rather
   than a literal so `update` and the publisher still read the asset-name prefix from
@@ -193,7 +193,7 @@ anyway" is the state an attacker would arrange. Three checks, all fail-closed:
 `verificationMaterial`, which the legacy shape has no key for. The publisher then
 refuses the ring it just uploaded to, with `malformed DER: bundle is not an
 object`. That killed edge run `32930712877` and then the first real release, run
-`32977203696` (`cli-v0.7.0`), because the flag had been added to `edge-cli.yml`
+`32977203696` (wego-ai's 0.7.0), because the flag had been added to `edge-cli.yml`
 only. Both lanes now carry it and `.github/workflows-gate.test.ts` pins the format
 across every workflow that signs.
 
@@ -212,7 +212,7 @@ resume racing Blob read-after-write re-reads and continues.
 load-bearing rather than tidy. Rung 9 requires every object under `cli/<tag>/` to be
 listed in the signed manifest, and this sidecar cannot be: the publisher writes it
 after the manifest was hashed and signed. Both rules are right, and they first met on
-`cli-v0.7.1`, which published and verified all 13 objects and then refused its own
+wego-ai's 0.7.1, which published and verified all 13 objects and then refused its own
 pointer move with `COMMIT is not listed in the signed SHA256SUMS.txt`
 (run 33036257401). On `cli-sig/` the sidecar sits outside what coverage scans, so
 neither rule bends – and nothing unsigned is served, which the old placement could

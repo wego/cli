@@ -17,8 +17,8 @@ describe("resolveEdgeTarget", () => {
     });
   });
 
-  it("strips a cli-v tag prefix before resolving", () => {
-    const r = resolveEdgeTarget("cli-v0.6.6-edge.abc1234");
+  it("strips a v tag prefix before resolving", () => {
+    const r = resolveEdgeTarget("v0.6.6-edge.abc1234");
     expect(r).toMatchObject({ version: "0.6.6-edge.abc1234" });
   });
 

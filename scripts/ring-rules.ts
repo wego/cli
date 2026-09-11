@@ -57,9 +57,9 @@ export function resolveRing(raw: string | undefined | null): Ring | null {
   return isRing(raw) ? raw : null;
 }
 
-/** Strip the release tag's `cli-v` prefix so a bare version and a tag both work. */
+/** Strip the release tag's `v` prefix so a bare version and a tag both work. */
 function bareVersion(version: string): string {
-  return version.replace(/^cli-v/, "");
+  return version.replace(/^v/, "");
 }
 
 /** A plain release version `X.Y.Z`, no prerelease identifier. Serves next/stable. */

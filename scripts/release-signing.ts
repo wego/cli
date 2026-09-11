@@ -90,7 +90,7 @@ export function sigPrefixForTag(tag: string): string {
  * object under the tag prefix to be listed in the signed manifest, and the sidecar
  * cannot be - it is written by the publisher AFTER the manifest was hashed and
  * signed. The two rules are individually right and were never run together until
- * `cli-v0.7.1`, which published and verified cleanly and then refused its own
+ * wego-ai's 0.7.1, which published and verified cleanly and then refused its own
  * pointer move with "COMMIT is not listed in the signed SHA256SUMS.txt"
  * (run 33036257401).
  *
@@ -158,7 +158,7 @@ export function manifestCoversAll(
  * The bare verdict reason names the RING, not the SIGNER, which is the wrong end of
  * the lane to start reading from: the record was written seconds earlier by the same
  * run, so "ring next refused this" sends an operator to the publisher when the fault
- * is upstream in how the bundle was produced. Run 32977203696 (`cli-v0.7.0`, the
+ * is upstream in how the bundle was produced. Run 32977203696 (wego-ai's 0.7.0, the
  * first real release) was diagnosed as a publish fault for exactly that reason, and
  * edge run 32930712877 before it.
  *

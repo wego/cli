@@ -46,7 +46,7 @@ describe("where a record is stored", () => {
     expect(sigPrefixForRing("next")).toBe("cli-sig/next");
     expect(sigPrefixForRing("stable")).toBe("cli-sig/stable");
     expect(sigPrefixForRing("edge")).toBe("cli-sig/edge");
-    expect(sigPrefixForTag("cli-v1.2.3")).toBe("cli-sig/cli-v1.2.3");
+    expect(sigPrefixForTag("v1.2.3")).toBe("cli-sig/v1.2.3");
   });
 });
 
@@ -138,7 +138,7 @@ describe("the pinned signing identity", () => {
     // has no second entry to allow for.
     expect(identitiesForRing("edge")).toEqual([EDGE_SIGNING_IDENTITY]);
     expect(identitiesForRing("edge")).not.toContain(SIGNING_IDENTITY);
-    // The release rings accept the release workflow on main AND on a `cli-v*` tag,
+    // The release rings accept the release workflow on main AND on a `v*` tag,
     // its two documented entries — never the edge lane's.
     expect(identitiesForRing("next")).toContain(SIGNING_IDENTITY);
     expect(identitiesForRing("next")).not.toContain(EDGE_SIGNING_IDENTITY);
@@ -150,13 +150,13 @@ describe("the pinned signing identity", () => {
 
 // The refusal an operator actually reads. A parse failure is a SIGNER fault, but the
 // bare verdict names the ring, which sends them to the publisher instead - how
-// `cli-v0.7.0` (run 32977203696) and edge run 32930712877 were both misdiagnosed.
+// `v0.7.0` (run 32977203696) and edge run 32930712877 were both misdiagnosed.
 //
 // Mutations this kills: dropping the hint entirely; attaching it to every reason so
 // it stops meaning anything; matching on cosign's exact wording, which a reworded
 // parser message would slip past.
 describe("signedRecordRefusal", () => {
-  const path = "cli/cli-v0.7.0/SHA256SUMS.txt";
+  const path = "cli/v0.7.0/SHA256SUMS.txt";
 
   it("always states the manifest, the ring and the reason", () => {
     const out = signedRecordRefusal(path, "next", "some reason");
@@ -190,7 +190,7 @@ describe("signedRecordRefusal", () => {
   });
 });
 
-// THE CONFLICT THAT BURNED cli-v0.7.1 (run 33036257401).
+// THE CONFLICT THAT BURNED v0.7.1 (run 33036257401).
 //
 // `manifestCoversAll` requires every object under the tag's DOWNLOAD prefix to be
 // listed in the signed manifest. The commit-binding sidecar cannot be: the
@@ -201,7 +201,7 @@ describe("signedRecordRefusal", () => {
 // The sidecar now lives on the RECORD prefix, so coverage never sees it. These
 // cases pin that, and would fail if it were moved back beside the downloads.
 describe("commitSidecarPath", () => {
-  const tag = "cli-v0.7.1";
+  const tag = "v0.7.1";
 
   it("puts the sidecar on the record prefix, not the download prefix", () => {
     const path = commitSidecarPath(tag);
@@ -222,7 +222,7 @@ describe("commitSidecarPath", () => {
     ].join("\n");
     const deliverables = ["wego-linux-x64", "VERSION", MANIFEST_ASSET];
     expect(manifestCoversAll(manifest, deliverables)).toBeNull();
-    // Exactly what cli-v0.7.1 hit: an unlisted COMMIT under the tag prefix.
+    // Exactly what v0.7.1 hit: an unlisted COMMIT under the tag prefix.
     const withSidecar = [...deliverables, "COMMIT"];
     expect(manifestCoversAll(manifest, withSidecar)).toContain("COMMIT");
   });

@@ -2,7 +2,7 @@ name: Promote (cli)
 
 # THE SECOND HUMAN ACTION IN A CLI RELEASE (#74 rung 7).
 #
-# `release-cli.yml` published `cli-vX.Y.Z` and advanced `cli/next`. People have been
+# `release-cli.yml` published `vX.Y.Z` and advanced `cli/next`. People have been
 # running that build against the real production API. This workflow is somebody
 # saying it is good: it moves `cli/stable` — what everyone receives — onto the SAME
 # bytes, and moves `skill/stable` behind it.
@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'The cli-vX.Y.Z tag to promote to cli/stable. Must already be published and, unless you are rolling back, should be what cli/next serves.'
+        description: 'The vX.Y.Z tag to promote to cli/stable. Must already be published and, unless you are rolling back, should be what cli/next serves.'
         required: true
         type: string
       allow_not_next:
@@ -152,7 +152,7 @@ jobs:
         run: |
           set -euo pipefail
           bun run scripts/validate-release-tag.ts "$TAG"
-          case "${TAG#cli-v}" in
+          case "${TAG#v}" in
             *-*)
               echo "::error::$TAG is a prerelease. cli/stable serves only a plain X.Y.Z - a prerelease belongs on cli/edge, which edge-cli.yml publishes."
               exit 1 ;;
@@ -266,7 +266,7 @@ jobs:
         env:
           BASE: ${{ steps.promote.outputs.store_origin }}/cli/stable
           VERSION: ${{ inputs.tag }}
-        run: sh scripts/verify-published.sh "$BASE" "${VERSION#cli-v}" all
+        run: sh scripts/verify-published.sh "$BASE" "${VERSION#v}" all
 
       # THE BYTE-IDENTITY PROOF the issue's End state asks for: `SHA256SUMS.txt` read
       # from BOTH rings and compared at promote time.

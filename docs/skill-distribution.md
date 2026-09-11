@@ -51,7 +51,7 @@ means adding it there too.
   reaches ~235s only if every read also burns `fetchRemoteSkill`'s 5s timeout,
   i.e. the channel is unreachable, where waiting is what you want. Bounded either
   way, so it fails rather than hangs. A single read reported that lag as "channel drift" and
-  failed `cli-v0.4.1` 81ms after a correct `skill/stable` publish. `skill/next`
+  failed wego-ai's 0.4.1 81ms after a correct `skill/stable` publish. `skill/next`
   hid it, because it is republished every release and so usually already holds the
   body under test. The gate is not weakened — after the budget it still throws,
   and it deliberately uses no cache-busting query param so it sees exactly what an

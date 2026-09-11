@@ -11,7 +11,7 @@ description: >-
 #
 #   - edge run 32930712877 died because the call omitted `--new-bundle-format`;
 #   - the fix landed on `edge-cli.yml` alone, so `release-cli.yml` kept the broken
-#     call and the FIRST REAL RELEASE died identically (run 32977203696, cli-v0.7.0).
+#     call and the FIRST REAL RELEASE died identically (run 32977203696, wego-ai's 0.7.0).
 #
 # A gate test now pins the format, but a test only pins what it is pointed at. The
 # structural problem is that only ONE lane is rehearsed: edge signs on every merge,

@@ -18,19 +18,19 @@
  * (`VERSION`). A runtime `WEGO_*` env var still overrides a baked value. Nothing
  * secret is embedded — the client_id is a public client and is the SAME literal
  * in staging and prod (only the host differs); see B1. The version comes from the
- * release tag (`RELEASE_TAG=cli-vX.Y.Z`), defaulting to `0.0.0-dev` for a local build.
+ * release tag (`RELEASE_TAG=vX.Y.Z`), defaulting to `0.0.0-dev` for a local build.
  */
 import { $ } from "bun";
 import { type ReleaseEnvSpec, readReleaseEnvSpec } from "./release-config";
 import { releaseTagError } from "./validate-release-tag";
 
 // Version baked into the binary so `wego version` matches the published release.
-// Derived from the tag the release workflow passes as RELEASE_TAG (cli-vX.Y.Z →
+// Derived from the tag the release workflow passes as RELEASE_TAG (vX.Y.Z →
 // X.Y.Z); a local build with no tag stamps `0.0.0-dev`.
 //
 // The tag is GATED, not just stripped: this stamp becomes the version the
 // installed binary compares against the channel's `VERSION` object, so a tag its
-// comparator rejects (`cli-v0.4.3-rc.01`) would ship an install whose new-version
+// comparator rejects (`v0.4.3-rc.01`) would ship an install whose new-version
 // notice can never fire. The workflow gates the same way; a manual build must not
 // be the hole in it (`validate-release-tag.ts`).
 const releaseTag = process.env.RELEASE_TAG ?? "";
@@ -41,7 +41,7 @@ if (releaseTag) {
     process.exit(1);
   }
 }
-const VERSION = releaseTag.replace(/^cli-v/, "") || "0.0.0-dev";
+const VERSION = releaseTag.replace(/^v/, "") || "0.0.0-dev";
 
 // Bun cross-compile targets → asset filename suffix.
 const TARGETS: { target: string; suffix: string }[] = [

@@ -50,7 +50,7 @@ describe("resolveRing", () => {
 describe("version shape", () => {
   it("reads a plain release version, tag or bare", () => {
     expect(isPlainVersion("0.6.5")).toBe(true);
-    expect(isPlainVersion("cli-v0.6.5")).toBe(true);
+    expect(isPlainVersion("v0.6.5")).toBe(true);
     expect(isPlainVersion("10.20.30")).toBe(true);
   });
 
@@ -61,7 +61,7 @@ describe("version shape", () => {
 
   it("reads an edge build by its -edge. marker", () => {
     expect(isEdgeVersion("0.6.6-edge.8bda9651e")).toBe(true);
-    expect(isEdgeVersion("cli-v0.6.6-edge.8bda9651e")).toBe(true);
+    expect(isEdgeVersion("v0.6.6-edge.8bda9651e")).toBe(true);
   });
 
   it("rejects a plain or rc version as an edge build", () => {

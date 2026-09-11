@@ -56,7 +56,7 @@
 # an older immutable tag's asset for your platform and the version the channel now
 # serves, e.g.
 #   BASE=https://<blob-host>/cli
-#   sh scripts/update-smoke.sh "$BASE/cli-v0.3.0/wego-darwin-arm64" 0.4.0
+#   sh scripts/update-smoke.sh "$BASE/v0.3.0/wego-darwin-arm64" 0.4.0
 set -eu
 
 # --require-replace: fail (don't pass) if no real byte-level swap was exercised —
