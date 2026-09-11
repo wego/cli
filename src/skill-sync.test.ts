@@ -55,7 +55,7 @@ const USAGE_CONSTANTS: Record<string, string> = {
 };
 
 const SKILL_MD = readFileSync(
-  join(import.meta.dir, "..", ".claude", "skills", "wego", "SKILL.md"),
+  join(import.meta.dir, "..", "skills", "wego", "SKILL.md"),
   "utf8",
 );
 const ROOT_HELP = helpText("wego");

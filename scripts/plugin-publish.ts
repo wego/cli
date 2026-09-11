@@ -71,7 +71,7 @@ export function pluginPublishPlan(
     { from: `${PLUGIN_SOURCE_DIR}/README.md`, to: "README.md" },
     { from: `${PLUGIN_SOURCE_DIR}/LICENSE`, to: "LICENSE" },
     ...skillIds.map((id) => ({
-      from: `.claude/skills/${id}/SKILL.md`,
+      from: `skills/${id}/SKILL.md`,
       to: `skills/${id}/SKILL.md`,
     })),
   ];

@@ -24,7 +24,7 @@
     ".": {
       "release-type": "node",
       "component": "cli",
-      "changelog-path": "CHANGELOG.md"
+      "skip-changelog": true
     }
   }
 }

@@ -129,7 +129,7 @@ try {
           ? "\nEVERY published file is absent. A push that reported success and\n" +
             "left nothing behind landed on a ref this clone does not check out -\n" +
             "compare the repo's default branch with the one the push resolved to.\n" +
-            "See apps/cli/docs/skill-distribution.md."
+            "See wego/foundations#127."
           : ""),
     );
     throw new Done(1);

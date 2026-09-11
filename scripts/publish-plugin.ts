@@ -108,7 +108,7 @@ try {
         `       git clone ${shellQuote(redactRemote(REPO))} skills && cd skills && git rm -- ${shellQuote(first)} && git commit -m 'chore: drop stray entry' && git push\n` +
         "  2. it does belong - add it to `pluginPublishPlan()` in\n" +
         "     apps/cli/scripts/skill-publish.ts, with a source file to publish it from.\n" +
-        "\nSee apps/cli/docs/skill-distribution.md for why this fails closed.",
+        "\nSee wego/foundations#127 for why this fails closed.",
     );
     throw new Done(1);
   }

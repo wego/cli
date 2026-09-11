@@ -6,11 +6,8 @@ import { applyFlavor } from "./skill";
 import { readEmbeddedSkill, SKILLS } from "./skill-embed";
 
 const cliRoot = join(import.meta.dir, "..");
-const skillMd = join(cliRoot, ".claude/skills/wego/SKILL.md");
-const stagingOverlayMd = join(
-  cliRoot,
-  ".claude/skills/wego/staging-overlay.md",
-);
+const skillMd = join(cliRoot, "skills/wego/SKILL.md");
+const stagingOverlayMd = join(cliRoot, "skills/wego/staging-overlay.md");
 
 /** The leading YAML frontmatter block, without its `---` fences. Scoped on
  *  purpose: the body is prose that can legally contain a line beginning
@@ -38,7 +35,7 @@ function frontmatterField(src: string, name: string): string {
 describe("readEmbeddedSkill", () => {
   it("returns the real SKILL.md body baked from the skill directory", async () => {
     const body = await readEmbeddedSkill();
-    // Anchors from .claude/skills/wego/SKILL.md — proves the embed resolved to
+    // Anchors from skills/wego/SKILL.md — proves the embed resolved to
     // the actual skill, not an empty/placeholder file.
     expect(body).toContain("# Wego CLI");
     expect(body).toContain("Operating contract");
