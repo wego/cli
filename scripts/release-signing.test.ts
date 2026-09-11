@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
+  CLI_EDGE_SIGNING_IDENTITY,
+  CLI_RELEASE_TAG_IDENTITY,
   commitSidecarPath,
   EDGE_SIGNING_IDENTITY,
   identitiesForRing,
@@ -134,17 +136,65 @@ describe("the pinned signing identity", () => {
   // the ring everyone installs from.
   it("cannot pass as the edge lane's, or the other way round", () => {
     expect(EDGE_SIGNING_IDENTITY).not.toBe(SIGNING_IDENTITY);
-    // The edge lane accepts exactly ONE identity: it triggers only on main, so it
-    // has no second entry to allow for.
-    expect(identitiesForRing("edge")).toEqual([EDGE_SIGNING_IDENTITY]);
+    // One edge identity PER REPOSITORY: each edge lane triggers only on main, so
+    // neither has a second entry to allow for. Both are trusted while the
+    // migration is in flight; 3c drops the wego-ai one.
+    expect(identitiesForRing("edge")).toEqual([
+      EDGE_SIGNING_IDENTITY,
+      CLI_EDGE_SIGNING_IDENTITY,
+    ]);
     expect(identitiesForRing("edge")).not.toContain(SIGNING_IDENTITY);
-    // The release rings accept the release workflow on main AND on a `v*` tag,
-    // its two documented entries — never the edge lane's.
+    expect(identitiesForRing("edge")).not.toContain(CLI_RELEASE_TAG_IDENTITY);
+    // The release rings accept wego-ai's release workflow on main AND on a `v*`
+    // tag, its two documented entries, plus wego/cli's tag rule — never an edge
+    // lane's.
     expect(identitiesForRing("next")).toContain(SIGNING_IDENTITY);
+    expect(identitiesForRing("next")).toContain(CLI_RELEASE_TAG_IDENTITY);
     expect(identitiesForRing("next")).not.toContain(EDGE_SIGNING_IDENTITY);
+    expect(identitiesForRing("next")).not.toContain(CLI_EDGE_SIGNING_IDENTITY);
     // stable carries the release lane's identities: a promote copies the record it
     // was given, it never re-signs.
     expect(identitiesForRing("stable")).toEqual(identitiesForRing("next"));
+  });
+
+  // The two rules harvested by `scripts/extract-identities.ts` from the records
+  // the rehearsal lanes published. Pinned here so a hand-edit of `identity.ts`
+  // that widens either one reds, rather than silently enlarging the trust set.
+  it("pins the wego/cli identities the extraction script harvested", () => {
+    expect(CLI_EDGE_SIGNING_IDENTITY).toBe(
+      "https://github.com/wego/cli/.github/workflows/edge-cli.yml@refs/heads/main",
+    );
+
+    const tagSan = (v: string) =>
+      `https://github.com/wego/cli/.github/workflows/release-cli.yml@refs/tags/${v}`;
+    expect(CLI_RELEASE_TAG_IDENTITY.test(tagSan("v1.0.2"))).toBe(true);
+    expect(CLI_RELEASE_TAG_IDENTITY.test(tagSan("v10.20.30"))).toBe(true);
+
+    // Anchored: a SAN that merely CONTAINS a good one must not match.
+    expect(
+      CLI_RELEASE_TAG_IDENTITY.test(`${tagSan("v1.0.2")}.evil.example`),
+    ).toBe(false);
+    expect(
+      CLI_RELEASE_TAG_IDENTITY.test(`https://evil.example/${tagSan("v1.0.2")}`),
+    ).toBe(false);
+    // Only a PLAIN version: the -rc.N line is gone (#74 rung 7).
+    expect(CLI_RELEASE_TAG_IDENTITY.test(tagSan("v1.0.2-rc.1"))).toBe(false);
+    // Never the other repository, the other workflow, or a branch ref.
+    expect(
+      CLI_RELEASE_TAG_IDENTITY.test(
+        tagSan("v1.0.2").replace("wego/cli", "wego/wego-ai"),
+      ),
+    ).toBe(false);
+    expect(
+      CLI_RELEASE_TAG_IDENTITY.test(
+        tagSan("v1.0.2").replace("release-cli.yml", "edge-cli.yml"),
+      ),
+    ).toBe(false);
+    expect(
+      CLI_RELEASE_TAG_IDENTITY.test(
+        "https://github.com/wego/cli/.github/workflows/release-cli.yml@refs/heads/main",
+      ),
+    ).toBe(false);
   });
 });
 

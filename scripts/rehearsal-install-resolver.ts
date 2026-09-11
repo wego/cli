@@ -44,7 +44,45 @@
  * rehearsal can therefore never read a store its own run did not write, which
  * is the property the preview design was reaching for and the reason this is
  * not simply a hardcoded rehearsal URL.
+ *
+ * THE TWO ROUTES ADDED FOR THE MANUAL INSTALL (wego/foundations#129, amended
+ * 2026-09-11).
+ *
+ * The above was scoped for SMOKE 3, which writes `install.json` itself via
+ * `--install-url` and so only ever asks for `?dl=`. A HUMAN install — `curl
+ * .../install | bash` — needs two more things, and there is no preview API to
+ * serve them (staging has no `/install` route at all):
+ *
+ *   GET /install                  -> the REAL production installer script,
+ *                                    re-pointed at this resolver and at the
+ *                                    ring under test
+ *   GET /install?sums=1&ring=<r>  -> 302  <store>/cli/<r>/SHA256SUMS.txt
+ *
+ * Serving the genuine script rather than a stand-in is the point: the rehearsal
+ * then exercises the real checksum fetch, the real `.gz` fallback, the real ring
+ * recording and the real skill install against rehearsal bytes. It is fetched
+ * once from production and rewritten in memory — never vendored, so it cannot
+ * drift from what a real user runs.
+ *
+ * ONE DELIBERATE DIVERGENCE FROM PRODUCTION, and it is not a small one.
+ *
+ * In production `?sums=` is NOT a redirect. `apps/api` hands back the manifest
+ * only after it has checked the ring's SIGNED BUILD RECORD over it (the
+ * installer's own comment at the `?sums=` fetch says so, and rung 9 is the
+ * reason): a `sh` installer cannot verify a Sigstore bundle, so the host does it
+ * for the installer. This resolver cannot — it holds no store credentials and
+ * implements no verification — so it 302s the manifest straight out of the
+ * store, exactly as the amendment specifies.
+ *
+ * What that costs, precisely: the INSTALL's checksums are unvouched-for here, so
+ * a fresh install proves the ring recording and the download path, not rung 9.
+ * What it does NOT cost: `wego update` verifies the record itself, in the
+ * binary, against `identitiesForRing` — so the self-update half of the rehearsal,
+ * which is the half #129 is actually proving, keeps its full signature check.
+ * Do not copy this branch into anything that faces a user.
  */
+
+import { MANIFEST_ASSET } from "../src/release-signing/identity";
 
 /** Asset and ring names as the store spells them. Deliberately strict: this
  *  builds a URL path, and `ring-follow.ts` refuses dot segments on the client
@@ -72,32 +110,131 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   process.exit(2);
 }
 
+/** The ring a bare `/install` installs from. Only the SCRIPT route needs it —
+ *  `?dl=`/`?sums=` take the ring from the query, as production does. `stable` is
+ *  the production default and stays the default here so the rewrite below is a
+ *  no-op when nothing is set. */
+const ring = (process.env.RING ?? "stable").trim();
+if (!SAFE_SEGMENT.test(ring)) {
+  console.error(`RING must be a plain path segment, got "${ring}".`);
+  process.exit(2);
+}
+
+/** Where the genuine installer is served from. Fetched, never vendored: a copy
+ *  in this repo would drift from what a real user runs, and the whole point of
+ *  this route is that the rehearsal exercises the real script. */
+const UPSTREAM_INSTALLER = "https://api.wego.com/install";
+
+/** The literals the rewrite replaces, each with the number of hits it must find.
+ *  Asserted rather than best-effort: if the upstream installer is reworked and a
+ *  literal moves, this resolver must FAIL rather than quietly serve a script
+ *  that still points at production — which, on a `?dl=`, means the production
+ *  STORE. Counts measured against the live script on 2026-09-11. */
+const REWRITES: { find: RegExp; replace: string; hits: number }[] = [
+  // Line 3. Every request the script makes is built from $BASE, so this one
+  // substitution is what moves the whole install onto the loopback resolver.
+  {
+    find: /^BASE='https:\/\/api\.wego\.com\/install'$/m,
+    replace: `BASE='http://127.0.0.1:${port}/install'`,
+    hits: 1,
+  },
+  // The hardcoded ring in the three asset/manifest fetches.
+  { find: /ring=stable/g, replace: `ring=${ring}`, hits: 3 },
+  // ...and in the value written into install.json, which is what `wego update`
+  // reads. Getting this one wrong would leave the binary following `stable`.
+  { find: /^RING='stable'$/m, replace: `RING='${ring}'`, hits: 1 },
+];
+
+let installerScript: string | undefined;
+
+/** The production installer, re-pointed at this resolver and at the ring under
+ *  test. Fetched once and memoised for the life of the process. */
+async function rewrittenInstaller(): Promise<string> {
+  if (installerScript !== undefined) return installerScript;
+
+  const res = await fetch(UPSTREAM_INSTALLER);
+  if (!res.ok) {
+    throw new Error(
+      `GET ${UPSTREAM_INSTALLER} -> ${res.status} ${res.statusText}`,
+    );
+  }
+  let script = await res.text();
+
+  for (const { find, replace, hits } of REWRITES) {
+    const found = script.match(find)?.length ?? 0;
+    if (found !== hits) {
+      throw new Error(
+        `installer rewrite ${find} matched ${found} times, expected ${hits}. ` +
+          `The upstream installer changed shape; re-measure before trusting ` +
+          `this route — an un-rewritten literal points a rehearsal install at ` +
+          `the PRODUCTION store.`,
+      );
+    }
+    script = script.replace(find, replace);
+  }
+
+  // Belt and braces: nothing may still name production. A rewrite that silently
+  // stopped matching is the one failure mode that would be invisible otherwise.
+  if (script.includes("api.wego.com")) {
+    throw new Error(
+      "rewritten installer still references api.wego.com — refusing to serve it",
+    );
+  }
+
+  installerScript = script;
+  return script;
+}
+
 Bun.serve({
   port,
   hostname: "127.0.0.1",
-  fetch(req) {
+  async fetch(req) {
     const url = new URL(req.url);
 
-    // Only the asset path. A bare `/install` is the shell installer, which no
-    // smoke requests and which this stand-in has no business serving.
     if (url.pathname !== "/install") {
-      return new Response("only /install?dl=<asset>&ring=<ring> is served\n", {
-        status: 404,
-      });
+      return new Response(
+        "only /install, /install?dl=<asset>&ring=<ring> and " +
+          "/install?sums=1&ring=<ring> are served\n",
+        { status: 404 },
+      );
     }
 
-    const asset = url.searchParams.get("dl");
-    const ring = url.searchParams.get("ring");
-    if (!asset || !ring) {
-      return new Response("both dl and ring are required\n", { status: 400 });
+    const dl = url.searchParams.get("dl");
+    const sums = url.searchParams.get("sums");
+
+    // A bare `/install` is the shell installer a human pipes into `bash`.
+    if (!dl && !sums) {
+      try {
+        const script = await rewrittenInstaller();
+        console.log(`200 ${url.pathname} -> installer (ring=${ring})`);
+        return new Response(script, {
+          headers: { "content-type": "text/x-shellscript; charset=utf-8" },
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`500 ${url.pathname} -> ${message}`);
+        return new Response(`${message}\n`, { status: 500 });
+      }
     }
-    if (!SAFE_SEGMENT.test(asset) || !SAFE_SEGMENT.test(ring)) {
+
+    // `?sums=1` names no asset: the manifest is always SHA256SUMS.txt. See the
+    // divergence note in the header — production verifies the ring's signed
+    // build record before serving this; a redirector cannot.
+    const asset = sums ? MANIFEST_ASSET : dl;
+    const queryRing = url.searchParams.get("ring");
+    if (!asset || !queryRing) {
+      return new Response(
+        "ring is required, with either dl=<asset> or sums=1\n",
+        { status: 400 },
+      );
+    }
+    if (!SAFE_SEGMENT.test(asset) || !SAFE_SEGMENT.test(queryRing)) {
       return new Response("dl and ring must be plain path segments\n", {
         status: 400,
       });
     }
 
-    const target = `${storeOrigin}/cli/${ring}/${asset}`;
+    const target = `${storeOrigin}/cli/${queryRing}/${asset}`;
     // Logged so the run's own output shows what the smoke resolved, which is
     // the first thing anyone reads when a rehearsal self-update goes wrong.
     console.log(`302 ${url.pathname}${url.search} -> ${target}`);
@@ -106,5 +243,8 @@ Bun.serve({
 });
 
 console.log(
-  `rehearsal install resolver on http://127.0.0.1:${port}/install -> ${storeOrigin}/cli/<ring>/<asset>`,
+  `rehearsal install resolver on http://127.0.0.1:${port}/install\n` +
+    `  GET /install                  the production installer, re-pointed here, ring=${ring}\n` +
+    `  GET /install?sums=1&ring=<r>  302 -> ${storeOrigin}/cli/<r>/${MANIFEST_ASSET}\n` +
+    `  GET /install?dl=<a>&ring=<r>  302 -> ${storeOrigin}/cli/<r>/<a>`,
 );

@@ -18,6 +18,8 @@
  */
 export { DerError } from "./der";
 export {
+  CLI_EDGE_SIGNING_IDENTITY,
+  CLI_RELEASE_TAG_IDENTITY,
   EDGE_SIGNING_IDENTITY,
   type IdentityRule,
   identitiesForRing,
