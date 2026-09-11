@@ -110,26 +110,40 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
 
-      # Version = <latest plain vX.Y.Z base>-edge.<short sha of this merge>.
+      # Version = <base>-edge.<short sha of this merge>, base read from the TREE.
       # The base is cosmetic (the ring serves whatever the pointer names, and
       # `update` compares checksums, not versions); the `-edge.<sha>` shape is
       # what `ring-rules.ts` pins. `<sha>` is this merge commit, so it is always
       # an ancestor of `main`.
+      #
+      # THE BASE COMES FROM `package.json`, NOT FROM `git tag -l`, because the tag
+      # list is racy here and the manifest is not. This lane and `release-please`
+      # both trigger on a push to `main`. On a release-PR merge they run
+      # CONCURRENTLY, and release-please creates the new tag as part of its run -
+      # so this lane, checking out and listing tags first, sees the tag set from
+      # BEFORE the release. Observed in wego/foundations#129: merge `1b37bd8`
+      # carries `"version": "1.0.5"` and published `1.0.4-edge.1b37bd8`, because
+      # `v1.0.5` did not exist yet when this step ran. Every release-PR merge
+      # advertised the previous release's base.
+      #
+      # `package.json` has no such race: release-please writes the new version
+      # INTO the release PR, so by the time that PR is merged the value is already
+      # in the tree this step checks out. Verified across every release merge in
+      # this repository - the manifest at each one equals the version that was
+      # ultimately tagged.
+      #
+      # This also retires the `0.0.0` fallback and the `grep`/`pipefail` dance the
+      # old tag pipeline needed: a package manifest always carries a version, and
+      # a malformed one should stop the lane rather than silently bake garbage.
       - name: Resolve edge version
         id: version
         run: |
           set -euo pipefail
-          # `grep` exits 1 when NO tag matches, and under `pipefail` that sinks the
-          # whole assignment, so `set -e` would kill the step before the `0.0.0`
-          # default below could run - making that default unreachable on the one
-          # path it exists for (a repository with no plain `vX.Y.Z` tag yet,
-          # which is exactly this repository today). Absorb status 1 only: a real
-          # grep failure (status 2) must still fail the step.
-          base=$(git tag -l 'v[0-9]*' \
-            | sed 's/^v//' \
-            | { grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || [ $? -eq 1 ]; } \
-            | sort -V | tail -1)
-          base=${base:-0.0.0}
+          base=$(jq -r '.version // empty' package.json)
+          printf '%s' "$base" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "::error::package.json version '$base' is not a plain X.Y.Z. The edge lane bakes <base>-edge.<sha> and ring-rules.ts pins that shape, so a prerelease or missing version here would publish an object no ring can serve."
+            exit 1
+          }
           sha=$(git rev-parse --short HEAD)
           version="${base}-edge.${sha}"
           echo "version=$version" | tee -a "$GITHUB_OUTPUT"
