@@ -56,7 +56,7 @@ const missing = plan
 if (missing.length > 0) {
   console.error(
     `plugin publish: ${missing.length} source file(s) named by the plan do not exist:\n` +
-      missing.map((m) => `  apps/cli/${m}`).join("\n"),
+      missing.map((m) => `  ${m}`).join("\n"),
   );
   process.exit(1);
 }
@@ -65,7 +65,7 @@ if (process.argv.includes("--print-plan")) {
   // Both sides, on purpose. The three destination names are fixed strings, so a
   // destination-only dump could never show that a source was drawn from the
   // eval corpus or the staging overlay - which is the mistake worth catching.
-  for (const { from, to } of plan) console.log(`apps/cli/${from} -> ${to}`);
+  for (const { from, to } of plan) console.log(`${from} -> ${to}`);
   process.exit(0);
 }
 
@@ -107,7 +107,7 @@ try {
         "  1. it does not belong - remove it from the repo:\n" +
         `       git clone ${shellQuote(redactRemote(REPO))} skills && cd skills && git rm -- ${shellQuote(first)} && git commit -m 'chore: drop stray entry' && git push\n` +
         "  2. it does belong - add it to `pluginPublishPlan()` in\n" +
-        "     apps/cli/scripts/skill-publish.ts, with a source file to publish it from.\n" +
+        "     scripts/plugin-publish.ts, with a source file to publish it from.\n" +
         "\nSee wego/foundations#127 for why this fails closed.",
     );
     throw new Done(1);
@@ -130,12 +130,12 @@ try {
   git(
     repo,
     "-c",
-    "user.name=wego-ai",
+    "user.name=wego-cli",
     "-c",
     "user.email=noreply@wego.com",
     "commit",
     "-m",
-    "chore: sync the wego plugin from wego-ai",
+    "chore: sync the wego plugin from wego/cli",
   );
   git(repo, "push", "origin", "HEAD");
   console.log(
