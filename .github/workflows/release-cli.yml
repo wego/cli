@@ -575,6 +575,55 @@ jobs:
       # channel (the script SKIPs, exit 0). Predecessor is linux-x64
       # (this runner); the macOS-only quarantine-clear is the sole path not exercised
       # here.
+      # PHASE 1 REHEARSAL SCAFFOLDING (wego/foundations#128). This step, the
+      # script it runs and the `SMOKE_INSTALL_URL` variable are deleted together
+      # at cutover; the smoke then falls back to the predecessor's own reinstall
+      # hint, which is what wego-ai has always done.
+      #
+      # `scripts/rehearsal-install-resolver.ts` carries the full reasoning. In
+      # short: the rehearsal must resolve `/install` into the REHEARSAL store,
+      # a non-production `apps/api` deployment is the natural way to do that,
+      # and the binary cannot reach one — every preview sits behind Vercel
+      # Authentication, `update.ts` sends `fetch` no headers, and
+      # `ring-follow.ts` strips the query string the documented bypass would
+      # otherwise ride on. The API's contract for this path is a pure
+      # `302 -> <store>/cli/<ring>/<asset>`, and loopback http is permitted by
+      # `assertSecureUrl`, so the lane serves that one hop itself.
+      #
+      # It is pointed at the store THIS RUN published to, never at a configured
+      # address, so a rehearsal cannot read a store its own run did not write.
+      - name: Start the rehearsal install resolver
+        if: steps.publish.outputs.store_origin != '' && startsWith(vars.SMOKE_INSTALL_URL, 'http://127.0.0.1:')
+        env:
+          STORE_ORIGIN: ${{ steps.publish.outputs.store_origin }}
+          INSTALL_URL: ${{ vars.SMOKE_INSTALL_URL }}
+        run: |
+          set -euo pipefail
+          PORT=$(printf '%s' "$INSTALL_URL" | sed -n 's#^http://127\.0\.0\.1:\([0-9]\{1,5\}\)/install$#\1#p')
+          if [ -z "$PORT" ]; then
+            echo "::error::SMOKE_INSTALL_URL must be exactly http://127.0.0.1:<port>/install to start the resolver; got '$INSTALL_URL'."
+            exit 1
+          fi
+          PORT="$PORT" STORE_ORIGIN="$STORE_ORIGIN" bun run scripts/rehearsal-install-resolver.ts &
+          # Wait for the port rather than sleeping: a smoke that starts before the
+          # resolver is listening fails as a download error, which reads as a
+          # publish fault and sends the operator to the wrong place.
+          #
+          # ANY HTTP status means it is listening. A bare `/install` is a 400 here
+          # (it carries no `dl`/`ring`), so this waits for curl to stop failing to
+          # connect - code 000 - rather than for a particular status.
+          ready=
+          for _ in $(seq 1 50); do
+            code=$(curl -sS -m 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/install" 2>/dev/null || true)
+            if [ -n "$code" ] && [ "$code" != "000" ]; then ready=$code; break; fi
+            sleep 0.2
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::the rehearsal install resolver never began listening on 127.0.0.1:$PORT."
+            exit 1
+          fi
+          echo "resolver listening on 127.0.0.1:$PORT (bare /install answered HTTP $ready)"
+
       - name: Smoke test real self-update (cli/next)
         if: steps.publish.outputs.store_origin != '' && needs.prepare.outputs.prev_tag != '' && steps.prev_channel.outputs.usable == '1'
         env:
@@ -583,15 +632,14 @@ jobs:
           # The ring this channel IS. A predecessor from foundations#74 rung 3 or
           # later follows the ring its INSTALLER recorded and refuses to guess one,
           # so the smoke — which places a binary rather than installing it — has to
-          # name the ring it is smoking. The install URL is not passed: the script
-          # reads it from the predecessor's own refusal, so no host is hardcoded.
+          # name the ring it is smoking.
           RING: next
           # WHERE the predecessor is told it was installed from. Without this the
           # script reads the URL out of the predecessor's own reinstall hint, and a
           # predecessor built against production names production - so the
           # self-update would follow the real store instead of the one this run
-          # published to. Naming it here is what points the smoke at the rehearsal
-          # store through its preview API.
+          # published to. During Phase 1 this names the loopback resolver started
+          # above; empty (the post-cutover state) restores the hint-reading path.
           SMOKE_INSTALL_URL: ${{ vars.SMOKE_INSTALL_URL }}
         # The exec bit is already restored by the verify step above (and update-smoke.sh
         # chmods its own working copy regardless), so no chmod is needed here.
