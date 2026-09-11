@@ -331,8 +331,20 @@ jobs:
           repositories: skills
           permission-contents: write
 
+      # The `SKILLS_PUBLISH_ENABLED` guard belongs on THIS step too, not only on
+      # the two above it. Without it the flag is half-honoured: with the flag off,
+      # `Refuse a tag whose tree cannot publish the plugin` and `Mint the plugin
+      # publish token` skip, so `steps.plugin-token.outputs.token` is empty — and
+      # then this step runs anyway with `REQUIRE_PUBLISH: true`, the script reports
+      # `SKILLS_PUBLISH_TOKEN is unset - skipping the skill publish`, and exits 1.
+      # The promote goes red AFTER `cli/stable` has already advanced and been
+      # verified, which is the worst possible place to fail: the ring moved, the
+      # run says failure. Observed in wego/foundations#129, run 34610149769.
+      #
+      # `REQUIRE_PUBLISH: 'true'` stays. It is right when the flag is ON — a skip
+      # there would be a promote that silently published nothing.
       - name: Publish the plugin repo
-        if: steps.promote.outputs.store_origin != ''
+        if: steps.promote.outputs.store_origin != '' && vars.SKILLS_PUBLISH_ENABLED == 'true'
         env:
           SKILLS_PUBLISH_TOKEN: ${{ steps.plugin-token.outputs.token }}
           REQUIRE_PUBLISH: 'true'
@@ -398,8 +410,10 @@ jobs:
       # It builds its own credential rather than inheriting one: the publish
       # step's lives only in that step's process environment, so there is
       # nothing to reuse and nothing left behind if this step is removed.
+      # Same guard, same reason: with the flag off there is no token and nothing
+      # was published, so there is nothing to verify.
       - name: Verify the plugin repo
-        if: steps.promote.outputs.store_origin != ''
+        if: steps.promote.outputs.store_origin != '' && vars.SKILLS_PUBLISH_ENABLED == 'true'
         env:
           SKILLS_PUBLISH_TOKEN: ${{ steps.plugin-token.outputs.token }}
         run: |
