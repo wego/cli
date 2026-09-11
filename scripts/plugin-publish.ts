@@ -24,7 +24,7 @@ export function publishGate(
   return { publish: false, hardFail: requirePublish, message };
 }
 
-/** The ONE directory under `apps/cli/` whose contents are published to the
+/** The ONE directory in this repository whose contents are published to the
  *  plugin repo verbatim, relative to the app root.
  *
  *  A single constant because relocating the source root must be one edit, not a
@@ -33,10 +33,10 @@ export function publishGate(
  *  here - because deriving is what makes it a build rather than a copy. */
 export const PLUGIN_SOURCE_DIR = "plugin";
 
-/** One published file: where it comes from under `apps/cli/`, and the path it
+/** One published file: where it comes from in this repository, and the path it
  *  takes in the plugin repo. */
 export interface PluginPublishPair {
-  /** Source path, relative to the `apps/cli` app root. */
+  /** Source path, relative to the repository root. */
   readonly from: string;
   /** Destination path, relative to the plugin repo root. */
   readonly to: string;
