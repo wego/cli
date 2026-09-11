@@ -1,0 +1,186 @@
+name: edge-cli
+
+# The edge lane. Every merge to `main` builds the `wego` CLI, publishes it as an
+# `X.Y.Z-edge.<sha>` build, and advances the `cli/edge` moving pointer - so
+# unreleased main is PUBLISHED and fetchable without touching the release path.
+#
+# Deliberately SEPARATE from `release-cli.yml`:
+#   - it never cuts a tag and never advances `cli/next` or `cli/stable`; it only
+#     moves `cli/edge`;
+#   - "a broken edge build blocks nothing": it runs post-merge, so it can never
+#     gate a pull request, and it is not a required status check.
+#
+# EXPECTED TO BE RED ON THE FIRST MERGE INTO THIS REPOSITORY, at the identity
+# gate, and that red run is the input to wego/foundations#128's follow-up (1b).
+# `publish-edge-blob.ts` verifies the record it just signed against
+# `identitiesForRing("edge")`, and `src/release-signing/identity.ts` still names
+# wego-ai's workflow:
+#   https://github.com/wego/wego-ai/.github/workflows/edge-cli.yml@refs/heads/main
+# cosign here asserts `wego/cli`'s, so the verify fails - correctly, and
+# fail-closed. The wego/cli identities are added in 1b from the real certificate
+# records that run produces, never typed by hand.
+on:
+  push:
+    branches:
+      - main
+    # Without this list every merge to `main` would rebuild, sign and republish a
+    # CLI whose sources had not changed, writing about ten immutable objects into
+    # the store each time. In wego-ai this list named `apps/cli/**` and the shared
+    # root config; here it names the same things at the repository root.
+    #
+    # A TRIGGER filter is safe HERE and is not safe on `ci-cli.yml`: a
+    # path-skipped workflow never reports its checks, and a required check that
+    # never reports leaves the pull request unmergeable forever. This lane is
+    # deliberately not a required check, so it has nothing to report.
+    #
+    # Consequence worth knowing: `cli/edge` stops advancing on a merge that
+    # touches nothing it builds, so its recorded sha is the last sha that CHANGED
+    # the CLI, not the last sha on main. That is the correct answer - the bytes
+    # would have been identical.
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'plugin/**'
+      - '.claude/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - 'biome.json'
+      - 'biome-rules/**'
+      - '.github/actions/setup-bun/**'
+      - '.github/actions/sign-manifest/**'
+      - '.github/workflows/edge-cli.yml'
+  workflow_dispatch:
+
+# NO workflow-level `concurrency:`, and no `cancel-in-progress` anywhere.
+# Serialization belongs on the ONE job that advances a channel, and a cancel must
+# never reach it: `cli/edge` is advanced as a NON-ATOMIC multi-object copy
+# (binaries, then the manifest, then VERSION, with a consistency barrier between).
+# Cancelling that part-way leaves the pointer holding a manifest and bytes that
+# disagree, and every consumer cross-checks the two - so a cancelled advance is
+# not a skipped build, it is an edge channel that fail-closed refuses every
+# install and self-update until the next merge republishes it.
+#
+# Serialized-and-not-cancellable is also what keeps the pointer on the tip:
+# GitHub holds at most ONE pending run per group and a newer merge replaces that
+# pending run, so the newest merge still wins - it just waits for the in-flight
+# publish rather than killing it.
+
+permissions:
+  contents: read
+  # Keyless signing: cosign trades this token for a short-lived Fulcio
+  # certificate naming THIS workflow, which is the identity `wego update` pins
+  # for the edge ring. Distinct from `release-cli.yml`'s, so a dogfood record can
+  # never pass as a release record.
+  id-token: write
+
+jobs:
+  edge:
+    name: Build and publish edge
+    # `workflow_dispatch` above is for RE-RUNNING a failed edge publish on main,
+    # never for publishing another ref: a dispatch can name any branch, and this
+    # job would check it out, build it with the production values and move
+    # `cli/edge` to it. That would put unmerged code in front of every edge
+    # dogfooder, and the sha it advertises would not be an ancestor of main. So
+    # the ref is gated here rather than the trigger removed.
+    if: github.ref == 'refs/heads/main'
+    # The channel-advancing job, so the group lives here (see the file header).
+    # One group per ring, shared with the lane that advances the same pointer.
+    concurrency:
+      group: ring-edge
+      cancel-in-progress: false
+    runs-on: github-runner-small
+    timeout-minutes: 60
+    # The baked config (auth/api hosts, public client_id) and the store token live
+    # here. `WEGO_CLI_POSTHOG_PROJECT_KEY` is deliberately ABSENT from this
+    # environment for now, so the build bakes an empty key and the binary emits no
+    # telemetry - rehearsal installs must not count as users.
+    environment:
+      name: production
+    env:
+      # Never let any incidental binary run post CI activity as product telemetry.
+      WEGO_CLI_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Tags are needed to derive the edge build's X.Y.Z base from the latest
+          # stable release tag.
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-bun
+
+      # Version = <latest plain vX.Y.Z base>-edge.<short sha of this merge>.
+      # The base is cosmetic (the ring serves whatever the pointer names, and
+      # `update` compares checksums, not versions); the `-edge.<sha>` shape is
+      # what `ring-rules.ts` pins. `<sha>` is this merge commit, so it is always
+      # an ancestor of `main`.
+      - name: Resolve edge version
+        id: version
+        run: |
+          set -euo pipefail
+          # `grep` exits 1 when NO tag matches, and under `pipefail` that sinks the
+          # whole assignment, so `set -e` would kill the step before the `0.0.0`
+          # default below could run - making that default unreachable on the one
+          # path it exists for (a repository with no plain `vX.Y.Z` tag yet,
+          # which is exactly this repository today). Absorb status 1 only: a real
+          # grep failure (status 2) must still fail the step.
+          base=$(git tag -l 'v[0-9]*' \
+            | sed 's/^v//' \
+            | { grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || [ $? -eq 1 ]; } \
+            | sort -V | tail -1)
+          base=${base:-0.0.0}
+          sha=$(git rev-parse --short HEAD)
+          version="${base}-edge.${sha}"
+          echo "version=$version" | tee -a "$GITHUB_OUTPUT"
+
+      # One `wego-*` build for every platform (the edge ring serves that one
+      # asset; the backend is chosen at run time by `--target`). RELEASE_TAG bakes
+      # the version. No skill store origin is baked: the skill channel is not
+      # present in this repository and the body ships embedded in the binary.
+      - name: Build edge binaries
+        env:
+          RELEASE_TAG: v${{ steps.version.outputs.version }}
+          WEGO_AUTH_AUTHORIZE_URL: ${{ vars.WEGO_AUTH_AUTHORIZE_URL }}
+          WEGO_AUTH_TOKEN_URL: ${{ vars.WEGO_AUTH_TOKEN_URL }}
+          WEGO_API_URL: ${{ vars.WEGO_API_URL }}
+          WEGO_CLI_CLIENT_ID: ${{ vars.WEGO_CLI_CLIENT_ID }}
+          WEGO_CLI_POSTHOG_PROJECT_KEY: ${{ vars.WEGO_CLI_POSTHOG_PROJECT_KEY }}
+        run: bun run scripts/build-release.ts
+
+      # VERSION before the manifest, so it enters SHA256SUMS.txt with everything
+      # else - the same shape `release-cli.yml` and `verify-published.sh` expect.
+      - name: Checksums
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd dist
+          printf '%s\n' "$VERSION" > VERSION
+          sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      # Sign the manifest, exactly as the release lane does. The edge ring is
+      # dogfood, but an unsigned one would be WORSE than pointless: a binary built
+      # from this same main refuses a ring with no record, so skipping this would
+      # break `wego update` for everyone on edge. ONE signing definition, shared
+      # with the other publishing lane.
+      - uses: ./.github/actions/sign-manifest
+
+      # Publish cli/<version>/ (immutable) and advance cli/edge. This step holds
+      # the identity gate the file header describes: the script verifies the
+      # record it just wrote against `identitiesForRing("edge")` and refuses
+      # fail-closed on a mismatch.
+      #
+      # RELEASE_COMMIT binds a resumed re-run to the commit that first published
+      # this version: `bun build --compile` is not reproducible, so re-running a
+      # partially-published prefix after main moved would mix bytes from two
+      # builds. REQUIRE_PUBLISH so a merge that silently published nothing
+      # (missing token) fails loudly rather than reporting a green edge run that
+      # moved no pointer.
+      - name: Publish edge and advance cli/edge
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          REQUIRE_PUBLISH: "true"
+          RELEASE_COMMIT: ${{ github.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bun run scripts/publish-edge-blob.ts "$VERSION"

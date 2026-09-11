@@ -1,0 +1,27 @@
+engine biome(1.0)
+language js(typescript)
+
+// Every wego data command prints ONLY JSON on stdout, so an agent can pipe it through
+// jq unconditionally; hints, warnings and errors go to stderr. That contract holds
+// because no module writes to a stream directly -- commands take injected log/error
+// deps, and src/index.ts is the one composition root that binds them to console.
+//
+// A stray console.log in a command or helper lands raw text on stdout ahead of (or
+// inside) the JSON body and breaks every downstream parse. console.error is banned in
+// the same breath: it is untestable by dep injection, so a message written that way
+// escapes the suites that assert what a command emitted.
+//
+// Anchoring on the callee rather than the call means arity does not matter.
+//
+// Scope: an overrides entry in apps/cli/biome.json pinned to src/** minus src/index.ts
+// (the composition root) and tests. scripts/ and live/ are operator-facing programs
+// with no JSON contract and are out of scope by construction.
+// See apps/cli/AGENTS.md -> CLI commands.
+`console.$m` where {
+  $m <: r"log|error|warn|info|debug|trace",
+  register_diagnostic(
+    span = $m,
+    message = "Write through the injected log/error deps, not console. src/index.ts is the one place they are bound; a stray console.log lands on stdout and breaks the JSON-only contract every data command promises. See apps/cli/AGENTS.md.",
+    severity = "error"
+  )
+}

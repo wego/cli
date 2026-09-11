@@ -1,0 +1,41 @@
+# wego-ai carried an empty apps/cli/.gitignore because the monorepo root ignored
+# everything below it. A standalone repo needs its own: these are the root's
+# entries that apply to the CLI, with the monorepo-only paths dropped.
+
+# Dependencies
+node_modules/
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.*.example
+
+# Auth & runtime data
+**/.env
+**/.session.json
+**/.browser-profile/
+**/.fetch-progress.json
+**/.tokens.*.json
+
+# direnv (dev golden path — see .envrc; the cache dir is user-local)
+.direnv/
+
+# Claude Code — user-local settings
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+!.claude/settings.json
+
+# OS / IDE
+.DS_Store
+.idea/
+
+# Build output
+dist/
+*.zip
+# Bun `--compile` intermediates (left in the CWD of a `bun build --compile`)
+*.bun-build
+*.tsbuildinfo
+coverage/
+
+# Temp & logs
+tmp-*.json

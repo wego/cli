@@ -1,0 +1,51 @@
+name: ci-cli
+
+# Lint/format + typecheck + unit tests. Everything in this repository is the CLI,
+# so there is no path filter and no aggregator job: in wego-ai this workflow
+# carried both because a change to another app had to skip the work while still
+# reporting a required check. One package, one job - and that job IS the required
+# status check on `main`, which is why it is named `ci-cli` and why the name must
+# not change without a ruleset edit.
+#
+# No signing here. Signing belongs to the release lanes, which hold the identity
+# and the store token; CI runs on every pull request and holds neither.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-cli-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci-cli:
+    name: ci-cli
+    runs-on: github-runner-small
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Read-only job (no git push / auth) - don't persist the token in
+          # .git/config (artipacked hardening; flagged by zizmor).
+          persist-credentials: false
+
+      # Composite action: setup-bun + restore cache + frozen install (+ save on main).
+      - uses: ./.github/actions/setup-bun
+
+      - name: Lint & format check (biome check)
+        run: bun run lint
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      # Hermetic and network-free: every test runs against injected deps or a
+      # temp dir. The three suites that needed the real `apps/api` in the same
+      # tree stayed in wego-ai.
+      - name: Unit tests
+        run: bun run test

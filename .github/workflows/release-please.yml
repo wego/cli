@@ -1,0 +1,82 @@
+name: release-please
+
+# THE VERSION AXIS. release-please owns it; no human types a version anywhere in
+# this repository.
+#
+# On every push to main this keeps ONE open release PR: it reads the
+# conventional-commit subjects since `v<manifest version>`, computes the next
+# version, and writes `CHANGELOG.md`, `package.json`'s `version` and
+# `.release-please-manifest.json` into that PR. The PR body is the changelog a
+# user would read, assembled from the notes their authors wrote.
+#
+# MERGING THAT PR IS THE RELEASE. release-please then creates the `vX.Y.Z`
+# tag, and that tag - not this workflow - starts `release-cli.yml`, which builds
+# and publishes the binaries. `release-cli.yml` is reachable ONLY by a `v*`
+# tag push: it has no `workflow_call` and no `workflow_dispatch`, so there is one
+# way in and nothing to deduplicate.
+#
+# That is what the App is for. A tag created with the workflow token starts no
+# run (GitHub's recursion guard), so release-please must push the tag as an App.
+# In wego-ai this workflow carried a token-presence probe and a fallback
+# `publish` job that called `release-cli.yml` directly for the no-App case; with
+# the App required, both are gone and the single path replaces the mutual
+# exclusion they enforced.
+#
+# `release-type: node` (see release-please-config.json) writes `package.json`,
+# where wego-ai used `simple` + a `version.txt`. That was to keep the release PR
+# from carrying a `bun.lock` edit: bun records a WORKSPACE MEMBER's version in the
+# lockfile, so bumping `apps/cli/package.json` went red on the next
+# `--frozen-lockfile`. The CLI is the root package here, and bun does not record
+# the root's own version, so a bump leaves `bun.lock` untouched and the frozen
+# install stays green - which is what makes `node` (and dropping `version.txt`)
+# safe in this repository and not in the monorepo.
+on:
+  push:
+    branches:
+      - main
+
+# contents:write - creates the release branch and the `v*` tag.
+# pull-requests:write - opens and updates the release PR.
+#
+# Both are the WORKFLOW token's scopes, which the release-please action does not
+# use for the tag: it acts as the App, whose own installation permissions
+# (contents:write, pull_requests:write) are what actually create the tag and PR.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Maintain the release PR
+    runs-on: github-runner-small
+    timeout-minutes: 15
+    # The App credentials live in an environment bound to `main`, never at
+    # repository scope: a repository-scope secret is readable by the workflow file
+    # of ANY branch, an agent's pull request included. Bound here, only a workflow
+    # running on `main` can read the key that mints a tag-pushing token.
+    environment: release-please
+    # Only ONE release PR may be in flight, and two overlapping runs would both
+    # try to write it. `cancel-in-progress: false` so a superseded run finishes
+    # its write rather than leaving the PR half-updated.
+    concurrency:
+      group: release-please
+      cancel-in-progress: false
+    steps:
+      # Mint a short-lived installation token per run. Not a PAT: no human's
+      # credential is in the release path, the token dies with the job, and its
+      # scope is the App's installation on this repository and nothing else.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        id: app-token
+        with:
+          app-id: ${{ vars.RELEASE_PLEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+
+      # The tag this creates is pushed as the App, so it DOES start
+      # `release-cli.yml` (see the header). Handing it `github.token` instead
+      # would silently publish nothing.
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
+        id: release
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
