@@ -604,25 +604,54 @@ jobs:
             echo "::error::SMOKE_INSTALL_URL must be exactly http://127.0.0.1:<port>/install to start the resolver; got '$INSTALL_URL'."
             exit 1
           fi
-          PORT="$PORT" STORE_ORIGIN="$STORE_ORIGIN" bun run scripts/rehearsal-install-resolver.ts &
-          # Wait for the port rather than sleeping: a smoke that starts before the
-          # resolver is listening fails as a download error, which reads as a
-          # publish fault and sends the operator to the wrong place.
-          #
-          # ANY HTTP status means it is listening. A bare `/install` is a 400 here
-          # (it carries no `dl`/`ring`), so this waits for curl to stop failing to
-          # connect - code 000 - rather than for a particular status.
+          # REFUSE a port that is already in use rather than adopting whatever is
+          # there. On a persistent runner a resolver leaked by an earlier run would
+          # still be listening and would still answer - pointing at THAT run's
+          # store. The smoke would then verify a self-update against bytes this run
+          # never published, and pass. Fail loudly instead.
+          if curl -sS -m 2 -o /dev/null "http://127.0.0.1:$PORT/install" 2>/dev/null; then
+            echo "::error::something is already listening on 127.0.0.1:$PORT. A resolver leaked from an earlier run would answer for ITS store, so this refuses rather than trusting it."
+            exit 1
+          fi
+
+          # Output goes to a file, never to the step's stdout. A backgrounded
+          # process that holds the step's pipe open can keep the runner waiting for
+          # the step to finish.
+          LOG="${RUNNER_TEMP}/rehearsal-resolver.log"
+          PORT="$PORT" STORE_ORIGIN="$STORE_ORIGIN" \
+            bun run scripts/rehearsal-install-resolver.ts > "$LOG" 2>&1 &
+          echo "RESOLVER_PID=$!" >> "$GITHUB_ENV"
+          echo "RESOLVER_LOG=$LOG" >> "$GITHUB_ENV"
+
+          # Wait for it, and prove it is OURS in the same probe. A resolver is
+          # identified by where it redirects: asking for a known asset and checking
+          # the Location against this run's store origin is the only check that
+          # distinguishes our process from any other thing on the port. Polling
+          # rather than sleeping because a smoke that starts too early fails as a
+          # download error, which reads as a publish fault.
           ready=
           for _ in $(seq 1 50); do
-            code=$(curl -sS -m 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/install" 2>/dev/null || true)
-            if [ -n "$code" ] && [ "$code" != "000" ]; then ready=$code; break; fi
+            loc=$(curl -sS -m 2 -o /dev/null -D - "http://127.0.0.1:$PORT/install?dl=VERSION&ring=next" 2>/dev/null \
+                    | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+            if [ -n "$loc" ]; then ready=$loc; break; fi
             sleep 0.2
           done
           if [ -z "$ready" ]; then
             echo "::error::the rehearsal install resolver never began listening on 127.0.0.1:$PORT."
+            cat "$LOG" || true
             exit 1
           fi
-          echo "resolver listening on 127.0.0.1:$PORT (bare /install answered HTTP $ready)"
+          # Compared case-insensitively: the resolver builds its Location through
+          # `Response.redirect`, which runs the URL through `new URL()` and
+          # lowercases the host. `store_origin` carries whatever case the publisher
+          # emitted, so a literal match could fail on a correct redirect.
+          lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          if [ "$(lc "$ready")" != "$(lc "$STORE_ORIGIN/cli/next/VERSION")" ]; then
+            echo "::error::the resolver on 127.0.0.1:$PORT redirects to '$ready', not to this run's store ($STORE_ORIGIN/cli/next/VERSION)."
+            cat "$LOG" || true
+            exit 1
+          fi
+          echo "resolver listening on 127.0.0.1:$PORT and redirecting into $STORE_ORIGIN"
 
       - name: Smoke test real self-update (cli/next)
         if: steps.publish.outputs.store_origin != '' && needs.prepare.outputs.prev_tag != '' && steps.prev_channel.outputs.usable == '1'
@@ -644,6 +673,31 @@ jobs:
         # The exec bit is already restored by the verify step above (and update-smoke.sh
         # chmods its own working copy regardless), so no chmod is needed here.
         run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING" --install-url "$SMOKE_INSTALL_URL"
+
+      # PHASE 1 REHEARSAL SCAFFOLDING (wego/foundations#128). Deleted with the
+      # resolver step above.
+      #
+      # `always()` because the whole point is that the process does not outlive the
+      # job. Runners in a group are not guaranteed to be ephemeral, and a resolver
+      # left listening would answer the NEXT run's smoke for THIS run's store - a
+      # self-update verified against bytes that run never published. The start step
+      # refuses an occupied port for the same reason; this is the half that keeps it
+      # from ever being occupied.
+      - name: Stop the rehearsal install resolver
+        if: always() && env.RESOLVER_PID != ''
+        run: |
+          set -uo pipefail
+          if [ -n "${RESOLVER_LOG:-}" ] && [ -f "$RESOLVER_LOG" ]; then
+            echo "--- resolver log ---"
+            cat "$RESOLVER_LOG"
+          fi
+          kill "$RESOLVER_PID" 2>/dev/null || true
+          for _ in $(seq 1 25); do
+            kill -0 "$RESOLVER_PID" 2>/dev/null || break
+            sleep 0.2
+          done
+          kill -9 "$RESOLVER_PID" 2>/dev/null || true
+          echo "resolver $RESOLVER_PID stopped."
 
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new
