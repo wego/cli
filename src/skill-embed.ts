@@ -10,8 +10,8 @@
 // source dir + one row here. The `id` is the single identifier that ties the
 // whole tree together — it equals the frontmatter `name` AND the install dir
 // leaf (per-flavor at install time) AND the Blob/mirror sub-path.
-import wegoSkill from "../.claude/skills/wego/SKILL.md" with { type: "file" };
-import wegoStagingOverlay from "../.claude/skills/wego/staging-overlay.md" with {
+import wegoSkill from "../skills/wego/SKILL.md" with { type: "file" };
+import wegoStagingOverlay from "../skills/wego/staging-overlay.md" with {
   type: "file",
 };
 

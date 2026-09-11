@@ -1,0 +1,42 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.3/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": ["**", "!node_modules", "!dist", "!src/api-types.d.ts"]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "overrides": [
+    {
+      // stdout is a machine contract: `wego` prints JSON and nothing else, so
+      // no module below the entrypoint may write to a stream directly. Every
+      // human-facing line goes through the entrypoint (src/index.ts) or the
+      // test suite. This built-in rule replaces the retired
+      // biome-rules/cli-no-console.grit plugin and is broader: it disallows
+      // every console method, not just log/error/warn/info/debug/trace.
+      "includes": ["src/**", "!src/index.ts", "!**/*.test.ts"],
+      "linter": { "rules": { "suspicious": { "noConsole": "error" } } }
+    }
+  ]
+}

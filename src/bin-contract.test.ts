@@ -51,15 +51,4 @@ describe("local wego bin contract", () => {
       "PATH_add .bin",
     );
   });
-
-  it("exposes one canonical Wego skill to Claude and Codex", () => {
-    const claudeSkill = join(cliRoot, ".claude/skills/wego");
-    // Codex discovers the skill from the repo root. In wego-ai that was two
-    // places - app-local (codex in `apps/cli`) and monorepo-root - and both
-    // symlinks resolved to the one canonical Claude dir; here those two
-    // directories are the same one, so there is a single link to check.
-    const codexSkill = join(cliRoot, ".agents/skills/wego");
-    expect(lstatSync(codexSkill).isSymbolicLink()).toBe(true);
-    expect(realpathSync(codexSkill)).toBe(realpathSync(claudeSkill));
-  });
 });

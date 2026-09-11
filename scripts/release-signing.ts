@@ -179,7 +179,7 @@ export function signedRecordRefusal(
         `The record could not be PARSED, which is a signer fault rather than a ring fault: ` +
         `a wrong identity or a tampered payload would parse and then fail verification. ` +
         `The known cause is \`cosign sign-blob\` writing the legacy cosign bundle - check the ` +
-        `signing step passes \`--new-bundle-format\` (see apps/cli/docs/publish-pipeline.md).`
+        `signing step passes \`--new-bundle-format\`.`
     : base;
 }
 

@@ -135,7 +135,7 @@ describe("publish-plugin against a file:// bare repo", () => {
       readFileSync(join(cliRoot, "plugin/plugin.json"), "utf8"),
     );
     expect(remote.read("skills/wego/SKILL.md")).toBe(
-      readFileSync(join(cliRoot, ".claude/skills/wego/SKILL.md"), "utf8"),
+      readFileSync(join(cliRoot, "skills/wego/SKILL.md"), "utf8"),
     );
   });
 
@@ -170,7 +170,7 @@ describe("publish-plugin against a file:// bare repo", () => {
     expect(r.code).toBe(0);
     // A tracked file we DO write is not an offender - correcting it is the job.
     expect(remote.read("skills/wego/SKILL.md")).toBe(
-      readFileSync(join(cliRoot, ".claude/skills/wego/SKILL.md"), "utf8"),
+      readFileSync(join(cliRoot, "skills/wego/SKILL.md"), "utf8"),
     );
     expect(remote.tracked()).toEqual(EXPECTED);
   });
@@ -376,7 +376,7 @@ describe("pluginPublishPlan", () => {
       { from: "plugin/plugin.json", to: "plugin.json" },
       { from: "plugin/README.md", to: "README.md" },
       { from: "plugin/LICENSE", to: "LICENSE" },
-      { from: ".claude/skills/wego/SKILL.md", to: "skills/wego/SKILL.md" },
+      { from: "skills/wego/SKILL.md", to: "skills/wego/SKILL.md" },
     ]);
   });
 
@@ -384,7 +384,7 @@ describe("pluginPublishPlan", () => {
     // #98 names this failure by name: the publish must not sweep up the eval
     // fixtures, the persona app, or the staging overlay.
     for (const { from } of PLAN) {
-      expect(from).toMatch(/^(plugin\/|\.claude\/skills\/)/);
+      expect(from).toMatch(/^(plugin\/|skills\/)/);
     }
   });
 });
