@@ -73,6 +73,40 @@ export const EDGE_SIGNING_IDENTITY =
   "https://github.com/wego/wego-ai/.github/workflows/edge-cli.yml@refs/heads/main";
 
 /**
+ * The same two lanes, in `wego/cli` — the repository the CLI now lives in
+ * (wego/foundations#127, Phase 1).
+ *
+ * BOTH STRINGS WERE HARVESTED, NEVER TYPED. `scripts/extract-identities.ts`
+ * downloaded the published records, read the SAN out of each leaf certificate
+ * with `parseCertificate` — the same parser `verifySignedManifest` uses — and
+ * emitted these two rules. Re-derive them at any time:
+ *
+ *     STORE_ORIGIN=<store> bun run scripts/extract-identities.ts \
+ *       --tag v1.0.2 --edge 0.0.0-edge.4b980c0
+ *
+ * A hand-written identity is the failure this guards against: these differ from
+ * the wego-ai strings above by a single path segment, so a transcription slip
+ * either locks every client out of every update or quietly widens what one will
+ * accept. Nothing here should ever be edited by hand — rerun the script.
+ *
+ * The wego-ai identities above STAY for now: production still serves builds
+ * signed by wego-ai, and a client that stopped trusting them could not update
+ * off the current release. 3c removes them, after the cutover.
+ *
+ * There is deliberately NO `wego/cli` counterpart to `SIGNING_IDENTITY`: unlike
+ * wego-ai's, this repository's `release-cli.yml` has exactly one entrypoint, a
+ * `v*` tag push (no `workflow_call`, no `workflow_dispatch`), so it can only
+ * ever sign as `@refs/tags/vX.Y.Z`. A `@refs/heads/main` rule would widen the
+ * trust set to cover a run that cannot happen.
+ */
+export const CLI_RELEASE_TAG_IDENTITY =
+  /^https:\/\/github\.com\/wego\/cli\/\.github\/workflows\/release-cli\.yml@refs\/tags\/v\d+\.\d+\.\d+$/;
+
+/** The `wego/cli` edge lane. Harvested with the rule above; see its comment. */
+export const CLI_EDGE_SIGNING_IDENTITY =
+  "https://github.com/wego/cli/.github/workflows/edge-cli.yml@refs/heads/main";
+
+/**
  * GitHub Actions' OIDC issuer — the only issuer whose assertion of the identities
  * above means anything. Without pinning it, any issuer Fulcio trusts could assert
  * the same SAN string.
@@ -86,11 +120,17 @@ export const SIGNING_OIDC_ISSUER =
  * promoting a `next` build, so it carries the release lane's identities too — the
  * promote copies the record, it does not re-sign.
  *
- * The release lane returns TWO rules because it has two documented entries (see
- * `RELEASE_TAG_IDENTITY`). The edge lane returns one: it triggers only on main.
+ * The release lane returns wego-ai's TWO rules because it has two documented
+ * entries there (see `RELEASE_TAG_IDENTITY`), plus wego/cli's single tag rule —
+ * that repository's release workflow has only the tag entrypoint. The edge lane
+ * returns one rule per repository: each triggers only on main.
+ *
+ * BOTH REPOSITORIES ARE TRUSTED DURING THE MIGRATION, and that is the point: a
+ * client updating today may be offered a build signed by either. 3c drops the
+ * wego-ai rules once production no longer serves anything they vouch for.
  */
 export function identitiesForRing(ring: string): readonly IdentityRule[] {
   return ring === "edge"
-    ? [EDGE_SIGNING_IDENTITY]
-    : [SIGNING_IDENTITY, RELEASE_TAG_IDENTITY];
+    ? [EDGE_SIGNING_IDENTITY, CLI_EDGE_SIGNING_IDENTITY]
+    : [SIGNING_IDENTITY, RELEASE_TAG_IDENTITY, CLI_RELEASE_TAG_IDENTITY];
 }
