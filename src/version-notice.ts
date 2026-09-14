@@ -195,37 +195,42 @@ export function looksLikeVersion(raw: string): boolean {
   return SEMVER.test(raw.trim());
 }
 
-/** The prerelease identifiers of a version-shaped string, or `undefined`. */
-function prereleaseOf(raw: string): string | undefined {
-  return SEMVER.exec(raw.trim())?.[4];
-}
-
 /**
  * Whether the channel is serving something this install should be told about.
  *
- * Two oracles, because the ordering question is only meaningful on one of the
- * two version shapes a ring can carry:
+ * ONE ORACLE: *different*, not *greater*. It is the same question `update`
+ * itself asks when it compares checksums rather than versions, which is what
+ * makes the notice and the command agree about whether there is anything to do.
  *
- *  - **Plain `X.Y.Z`** (`next`, `stable`) — strictly greater, exactly as before.
- *    A rollback stays silent rather than advertising a downgrade.
- *  - **A prerelease** (`edge`'s `X.Y.Z-edge.<sha>`) — *different*, not greater.
- *    Semver compares prerelease identifiers lexically, and a git sha carries no
- *    chronological order at all: `0.7.2-edge.4aeec3a2f` is the SUCCESSOR of
- *    `0.7.2-edge.e30454f2a` and sorts below it. Asking "is it greater" there
- *    answers a coin flip, announcing roughly half of new edge builds and
- *    occasionally calling a rollback an upgrade. "Is it what I am running"
- *    is the question with an answer, and it is the same one `update` asks when
- *    it compares checksums instead of versions.
+ * This used to split by shape. A prerelease (`edge`'s `X.Y.Z-edge.<sha>`) was
+ * compared for difference, because semver orders prerelease identifiers
+ * lexically and a git sha carries no chronological order at all:
+ * `0.7.2-edge.4aeec3a2f` is the SUCCESSOR of `0.7.2-edge.e30454f2a` and sorts
+ * below it, so "is it greater" answers a coin flip. A plain `X.Y.Z` was compared
+ * for strict ordering, so that "a rollback stays silent rather than advertising
+ * a downgrade".
+ *
+ * THE ROLLBACK HALF OF THAT WAS WRONG, and this release is what proved it. A
+ * rollback is a deliberate act to get people OFF a build, and silence defeats
+ * the act: `cli/stable` was rolled back from 1.2.0 to 1.1.0 on 2026-09-14 and
+ * nobody who was not already pinned to the bridge was told anything. `update`
+ * follows bytes in BOTH directions - `currentHash === expected`, no ordering
+ * anywhere - so a user whose channel moved under them has something to do
+ * regardless of which way it moved, and the only effect of the old rule was that
+ * nobody told them.
+ *
+ * "Advertising a downgrade" was a real concern and it is a WORDING concern, which
+ * is why `formatChannelChangedNotice` already exists: it states what is known
+ * (the channel serves other bytes) and claims no ordering. The caller picks it
+ * whenever `isNewerVersion` is false, so a rollback now says "your channel now
+ * serves 1.2.2 (you have 1.2.3)" rather than calling it new.
  *
  * Unparseable on either side is still no notice, never a guess.
  */
 export function shouldNotify(latest: string, current: string): boolean {
   const [l, c] = [latest.trim(), current.trim()];
   if (!looksLikeVersion(l) || !looksLikeVersion(c)) return false;
-  if (prereleaseOf(l) !== undefined || prereleaseOf(c) !== undefined) {
-    return l !== c;
-  }
-  return isNewerVersion(l, c);
+  return l !== c;
 }
 
 /** The one stderr line. Pinned by a test so humans see a stable shape — an agent

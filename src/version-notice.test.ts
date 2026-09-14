@@ -600,11 +600,28 @@ describe("channel resolution", () => {
 });
 
 describe("shouldNotify", () => {
-  it("keeps strictly-greater for plain versions", () => {
+  it("notifies on any DIFFERENCE for plain versions, in both directions", () => {
     expect(shouldNotify("0.4.2", "0.4.1")).toBe(true);
+    // Identical is the only silent case. This is the whole predicate.
     expect(shouldNotify("0.4.1", "0.4.1")).toBe(false);
-    // A channel rollback stays silent rather than advertising a downgrade.
-    expect(shouldNotify("0.4.0", "0.4.1")).toBe(false);
+  });
+
+  // THE ROLLBACK CASE, and a reversal of a deliberate earlier decision. This
+  // asserted `false` with the comment "a channel rollback stays silent rather
+  // than advertising a downgrade".
+  //
+  // Silence defeats the act. A rollback exists to get people OFF a build, and on
+  // 2026-09-14 `cli/stable` was rolled back from 1.2.0 to 1.1.0 and told nobody
+  // who was not already pinned to the bridge. `update` follows bytes in both
+  // directions (`currentHash === expected`, no ordering anywhere), so the user
+  // has something to do either way; the old rule only decided not to mention it.
+  //
+  // "Advertising a downgrade" is a wording problem, and the caller already solves
+  // it by choosing `formatChannelChangedNotice` whenever `isNewerVersion` is
+  // false - see the message test below.
+  it("notifies on a rollback, which it used to stay silent about", () => {
+    expect(shouldNotify("0.4.0", "0.4.1")).toBe(true);
+    expect(shouldNotify("1.2.2", "1.2.3")).toBe(true);
   });
 
   it("notifies on a DIFFERENT prerelease in either lexical direction", () => {
@@ -666,6 +683,44 @@ describe("the message names only what is known", () => {
     });
     expect((await maybeNotifyNewVersion(d)).message).toBe(
       "Your wego channel now serves 0.7.2-edge.4aeec3a2f (you have 0.7.2-edge.e30454f2a). Run `wego update -y`.",
+    );
+  });
+
+  // A ROLLBACK, END TO END, AND IN THE HONEST WORDING.
+  //
+  // This is the case the notice used to drop entirely. It matters most at exactly
+  // the moment things are going wrong: the operator has moved `cli/stable` back
+  // to get people off a bad build, and the notice is the only thing that tells
+  // anyone to run the command that would take it.
+  //
+  // The wording is the other half. `formatVersionNotice` here would read "A new
+  // wego is available: 1.2.3 -> 1.2.2", which is false and would look like a bug
+  // to anyone reading it. The caller routes on `isNewerVersion`, so a downgrade
+  // gets the claim-nothing wording instead - asserted on the exact string,
+  // because that routing is the part a later refactor could silently invert.
+  it("announces a rollback, without calling the older release new", async () => {
+    const d = deps({
+      version: "1.2.3",
+      readInstallRecord: async () => RECORD,
+      fetch: (async () => new Response("1.2.2\n")) as unknown as typeof fetch,
+    });
+    const r = await maybeNotifyNewVersion(d);
+    expect(r.message).toBe(
+      "Your wego channel now serves 1.2.2 (you have 1.2.3). Run `wego update -y`.",
+    );
+    expect(r.message).not.toContain("A new wego is available");
+  });
+
+  // The forward case is unchanged and keeps the ordering claim, which is true
+  // there. Both wordings are pinned so neither can drift onto the other's case.
+  it("still says 'a new wego is available' when the channel moved forward", async () => {
+    const d = deps({
+      version: "1.2.2",
+      readInstallRecord: async () => RECORD,
+      fetch: (async () => new Response("1.2.3\n")) as unknown as typeof fetch,
+    });
+    expect((await maybeNotifyNewVersion(d)).message).toBe(
+      "A new wego is available: 1.2.2 -> 1.2.3. Run `wego update -y`.",
     );
   });
 });
