@@ -383,6 +383,97 @@ jobs:
           [ "$got" = "$VERSION" ] || { echo "version mismatch: expected $VERSION, got $got" >&2; exit 1; }
           WEGO_CREDENTIALS_PATH="${RUNNER_TEMP}/wego-missing-credentials.json" "$binary" logout
 
+      # THE EARLIEST POSSIBLE GATE ON THE v1.2.0 CLASS OF BUG, and deliberately
+      # placed before the FIRST store write of the run.
+      #
+      # `apps/api`'s legacy bridge pin (wego/foundations#132) keys on one thing: a
+      # `?dl=` request for ring `stable` whose user agent starts with `Bun/` is a
+      # pre-relay 1.0.x install and is answered from the frozen `cli/cli-v1.1.0/`
+      # bridge. The rule is ALLOW-BY-DEFAULT, so a build that fails to identify
+      # itself is treated as legacy - and v1.2.0 shipped exactly that way, having
+      # passed every check this lane had (wego/cli#25).
+      #
+      # The same measurement runs in `promote-cli.yml` before `cli/stable` moves.
+      # It is repeated HERE because that was far too late: by then the bad bytes
+      # are the immutable `cli/<tag>/` artifact, `cli/next` is serving them, a
+      # GitHub Release names them, and the only remedy is another release. Asked
+      # at this point, a failure costs a red run and nothing else - no prefix is
+      # written, no pointer moves, no version is burned.
+      #
+      # NEEDS NO RING, which is what makes the early placement possible: the pin's
+      # only input is the agent, and the agent is a property of the binary sitting
+      # in ./dist. The update-outcome smokes further down genuinely cannot move
+      # up - they ask whether a binary can complete an update against `cli/next`,
+      # which cannot be answered until `cli/next` serves this build.
+      #
+      # WEGO_BUILD_VERSION IS DELIBERATELY NOT SET. `update` returns EXIT.OK
+      # without acting for a dev-versioned binary (update.ts:364), so setting it
+      # here would paper over a build that failed to bake its version and leave
+      # the guard below asserting nothing. The step above has already proved
+      # `wego version` reports $VERSION on its own.
+      - name: Require this build to be distinguishable from a pre-relay install
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          url='https://api.wego.com/install'
+          work="$RUNNER_TEMP/agent-probe"; rm -rf "$work"
+          mkdir -p "$work/bin" "$work/home/.config/wego"
+
+          # THE BINARY MUST BE NAMED `wego`: the config directory is derived from
+          # the name it is invoked as, so `wego-linux-x64` would look for
+          # `.config/wego-linux-x64/`, find no install record, and exit without
+          # touching the network - a green check that measured nothing.
+          cp ./dist/wego-linux-x64 "$work/bin/wego"
+          chmod +x "$work/bin/wego"
+
+          # A listener that records the agent and 404s. The 404 is fine: the agent
+          # goes out on the FIRST request, which is all this needs.
+          #
+          # `bun -e`, not a heredoc: a heredoc body inside a YAML block scalar
+          # carries the block's indentation into the file and has to be stripped
+          # back out, which is a silent breakage waiting to happen in a lane
+          # nothing lints.
+          : > "$work/agent.txt"
+          AGENT_FILE="$work/agent.txt" bun -e 'const out=Bun.file(process.env.AGENT_FILE).writer();Bun.serve({hostname:"127.0.0.1",port:8977,fetch(r){out.write((r.headers.get("user-agent")??"")+"\n");out.flush();return new Response("probe",{status:404});}});' &
+          LPID=$!
+          sleep 2
+
+          printf '{"ring":"stable","installUrl":"http://127.0.0.1:8977/install"}\n' \
+            > "$work/home/.config/wego/install.json"
+          set +e
+          out=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
+                WEGO_CLI_TELEMETRY=0 "$work/bin/wego" update -y 2>&1)
+          set -e
+          kill "$LPID" 2>/dev/null || true
+          echo "$out"
+
+          if printf '%s' "$out" | grep -q 'Self-update applies to installed release binaries'; then
+            echo "::error::this build does not consider itself a release binary, so it never made a request and this check measured NOTHING. It was built without WEGO_BUILD_VERSION."
+            exit 1
+          fi
+          agent=$(head -1 "$work/agent.txt" || true)
+          if [ -z "$agent" ]; then
+            echo "::error::this build made no request to the probe, so its user agent could not be measured and this check proved NOTHING. Output above."
+            exit 1
+          fi
+          echo "$VERSION's binary sends: $agent"
+
+          # The pin's own predicate, applied to the measured value.
+          if printf '%s' "$agent" | grep -qiE '^bun/'; then
+            echo "::error::this build sends '$agent', which apps/api's legacy bridge pin treats as a pre-relay 1.0.x install. Every install of it would be pinned to the frozen bridge, whose record it cannot verify - it could never update again. That is what v1.2.0 shipped (wego/cli#25). Refusing before anything is published."
+            exit 1
+          fi
+
+          # And the real route's actual decision, which is the claim that matters.
+          loc=$(curl -sI -A "$agent" "$url?dl=SHA256SUMS.txt&ring=stable" \
+                  | grep -i '^location:' || true)
+          if printf '%s' "$loc" | grep -q '/cli/cli-v1.1.0/'; then
+            echo "::error::api.wego.com serves this build ('$agent') from the legacy bridge on ring stable: '$loc'. Publishing it would strand every install of it."
+            exit 1
+          fi
+          echo "ok: this build is not claimed by the pin. $loc"
+
       # Publish to the IMMUTABLE cli/<tag>/ ONLY (--freeze). cli/next is NOT
       # moved here — it advances only after SMOKE-2 verifies these exact bytes,
       # so a transport-corrupted upload can never become the served candidate.
