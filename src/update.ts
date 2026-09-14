@@ -520,14 +520,29 @@ async function runUpdate(
     // checked first, and a manifest without a good one is not read at all.
     const refusal = await verifyRingManifest(deps, base, ring, sumsBytes);
     if (refusal) {
-      deps.error(refusal.reason);
       // A record that fails VERIFICATION - or is absent, or unreadable - is
       // permanent. Only a host we never reached is temporary, and it keeps the
       // taxonomy's own code so a wrapper can retry it. Refusing is not in question
       // either way; only the exit code differs.
-      return refusal.unreachable === undefined
-        ? EXIT.PERMANENT
-        : exitCodeForError(refusal.unreachable);
+      const permanent = refusal.unreachable === undefined;
+      // THE PERMANENT BRANCH IS A DEAD END, SO IT MUST NAME THE WAY OUT. The ring
+      // is serving bytes this binary can never accept; running `update` again
+      // produces the same refusal forever, and reinstalling is the only exit.
+      // Every other permanent refusal in this file already says so - the
+      // unwritable path, the cross-device path, the read-only path, the
+      // from-source path and the unreadable-record path all append
+      // `reinstallHint`. This one did not, which is how wego/cli#29 stranded
+      // people with a message that named the problem and no remedy.
+      //
+      // NOT on the unreachable branch: that one is temporary by construction, and
+      // telling someone to reinstall because their network blinked is wrong
+      // advice that costs them their install.
+      deps.error(
+        permanent
+          ? `${refusal.reason}\nThis binary cannot install what ring ${ring} is serving, and retrying will not change that. Reinstall the latest with:\n  ${reinstallHint(deps)}`
+          : refusal.reason,
+      );
+      return permanent ? EXIT.PERMANENT : exitCodeForError(refusal.unreachable);
     }
     const sums = new TextDecoder().decode(sumsBytes);
     expected = expectedSum(sums, asset);

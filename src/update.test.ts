@@ -737,6 +737,11 @@ describe("update", () => {
     expect(await update(["-y"], deps)).toBe(EXIT.TIMEOUT);
     // Still a refusal: no binary is installed on the strength of an unread record.
     expect(err.join("\n")).toContain("signed build record");
+    // AND NO REINSTALL ADVICE. This branch is temporary by construction, so
+    // telling someone to reinstall because their network blinked would trade a
+    // working install for a transient failure. The remedy belongs only on the
+    // branch that is genuinely a dead end.
+    expect(err.join("\n")).not.toContain("Reinstall the latest with:");
   });
 
   it("refuses a record that does not vouch for the manifest served with it", async () => {
@@ -759,6 +764,44 @@ describe("update", () => {
     );
     expect(await update(["-y"], deps)).toBe(EXIT.PERMANENT);
     expect(err.join("\n")).toContain("not vouched for");
+  });
+
+  // THE DEAD END MUST NAME ITS EXIT. A record that does not verify is permanent:
+  // the ring is serving bytes this binary can never accept, so running `update`
+  // again produces the identical refusal forever. Reinstalling is the only way
+  // out, and it is the message - not the exit code - that a person reads.
+  //
+  // Not hypothetical: this is what every 1.2.0 and 1.2.1 install saw when
+  // `cli/stable` served a record signed under wego-ai's `cli-v1.1.0` tag
+  // (wego/cli#29). The message named the problem precisely and offered no remedy,
+  // while five other permanent refusals in `update.ts` already appended
+  // `reinstallHint`.
+  it("tells the user to reinstall when the record can never verify", async () => {
+    const latest = enc("NEW");
+    const sums = await sumsFor({ "wego-linux-x64": latest });
+    const record = JSON.stringify(await signManifest(enc("other manifest\n")));
+    const { deps, err } = makeDeps(
+      {
+        fetch: fakeFetch({
+          [`${BASE}?dl=SHA256SUMS.txt&ring=${RING}`]: { body: sums },
+          [`${BASE}?dl=SHA256SUMS.txt.sigstore.json&ring=${RING}&sig=1`]: {
+            body: record,
+          },
+          [`${BASE}?dl=wego-linux-x64&ring=${RING}`]: { body: latest },
+        }),
+      },
+      enc("OLD"),
+    );
+    expect(await update(["-y"], deps)).toBe(EXIT.PERMANENT);
+    const out = err.join("\n");
+    // The reason still leads - the remedy is added, never substituted.
+    expect(out).toContain("not vouched for");
+    expect(out).toContain("Reinstall the latest with:");
+    expect(out).toContain("curl -fsSL");
+    expect(out).toContain("/install | bash");
+    // Says WHY retrying is pointless, so the reinstall reads as the only route
+    // rather than as one of two things worth trying.
+    expect(out).toContain("retrying will not change that");
   });
 
   it("refuses a record that is not JSON at all", async () => {
