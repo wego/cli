@@ -617,6 +617,9 @@ export function buildRealDeps(): RunDeps {
         version: VERSION,
         fromSource: runningFromSource(),
         installRecordPath,
+        // Dropped after a successful swap: the notice caches the version the
+        // channel last advertised, and the binary underneath it just changed.
+        updateCheckPath: defaultUpdateCheckPath(process.env, SCOPE),
         // The installer's record, read fresh per run. Absent / unreadable /
         // malformed all arrive as `null`, which `update` refuses on — nothing
         // here substitutes a default ring.

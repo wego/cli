@@ -229,6 +229,64 @@ describe("malformed input", () => {
 });
 
 /**
+ * THE FAILURE CLASS, which is what a consumer branches on.
+ *
+ * `reason` is prose for a human; `kind` is the contract. `update.ts` maps it to
+ * an exit code and to whether reinstalling is worth suggesting, so a refusal
+ * filed under the wrong class is a wrong instruction to a machine - the shape
+ * that let a mid-promote window report itself as permanent and tell a wrapper to
+ * stop retrying something that clears in seconds.
+ *
+ * The mid-promote window is the reason `inconsistent` exists: the publisher
+ * copies the signed record and the manifest as two adjacent writes, so a reader
+ * landing between them sees one new and one old, and a cache can straddle the
+ * pair for its whole TTL.
+ */
+describe("the class a refusal is filed under", () => {
+  const refusalFor = async (
+    over: Partial<Parameters<typeof verifySignedManifest>[0]>,
+  ) => {
+    const r = await verifySignedManifest(input(over));
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("expected a refusal");
+    return r;
+  };
+
+  it("files a record over OTHER bytes as inconsistent - the promote window", async () => {
+    const r = await refusalFor({
+      payload: new TextEncoder().encode("a different manifest\n"),
+    });
+    expect(r.kind).toBe("inconsistent");
+  });
+
+  it("files an unreadable record as inconsistent, not invalid", async () => {
+    // A bundle we cannot parse is more often a truncated or straddled read than
+    // a forged record, and the two are indistinguishable here. The install is
+    // refused either way, so the asymmetry favours the self-resolving class: a
+    // wasted retry costs nothing, a wrapper that gives up costs recovery.
+    const r = await refusalFor({
+      bundle: {
+        verificationMaterial: { certificate: { rawBytes: "not base64!!" } },
+        messageSignature: { signature: "AA==" },
+      },
+    });
+    expect(r.kind).toBe("inconsistent");
+  });
+
+  it("files a wrong signing identity as identity - the only reinstallable class", async () => {
+    const r = await refusalFor({
+      bundle: bundle({ certDer: OTHER_IDENTITY_CERT_DER }),
+    });
+    expect(r.kind).toBe("identity");
+  });
+
+  it("files a record that reaches no pinned root as invalid", async () => {
+    const r = await refusalFor({ rootsPem: ROGUE_ROOT_PEM });
+    expect(r.kind).toBe("invalid");
+  });
+});
+
+/**
  * The RULE SET, on its own. `release-cli.yml` has two documented entries — a
  * `workflow_call` from release-please (which runs on main) and a tag push (the
  * recovery release) — so the release rings accept two identities per repository

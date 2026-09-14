@@ -7,6 +7,7 @@ import {
   MANIFEST_ASSET,
   SIGNATURE_ASSET,
   SIGNING_OIDC_ISSUER,
+  type VerifyFailure,
   verifySignedManifest,
 } from "./release-signing";
 import {
@@ -65,6 +66,9 @@ export interface UpdateDeps extends UpdateIo {
   /** Where that record lives, named in the refusal so the user can see what is
    *  missing. */
   installRecordPath: string;
+  /** The new-version notice's throttle file (`config.ts` `defaultUpdateCheckPath`).
+   *  DELETED after a successful swap, never read here - see the call site. */
+  updateCheckPath?: string;
   /** Where this install's files lived before the config scope became the command
    *  name (`config.ts` `legacyScopeDir`); `undefined` for every install whose name
    *  still matches its release. Only ever printed, in the no-record refusal. */
@@ -340,6 +344,26 @@ async function downloadAndReplace(
   } catch {
     /* Swap already succeeded; the skill refreshes on the next update. */
   }
+  // THE NOTICE'S CACHE IS NOW WRONG BY CONSTRUCTION, so drop it.
+  //
+  // `.update-check` records the version the channel last advertised, and the
+  // throttle governs the network READ rather than the message - so within the
+  // window the notice reports from that file WITHOUT re-fetching. We have just
+  // moved the binary underneath it, and the stored value describes the version
+  // we were told about before the swap.
+  //
+  // While the notice only ever fired FORWARD this was invisible: the stale value
+  // equalled the version we just became, and equal is silent. Now that it fires
+  // on any difference, a cached value that has fallen BEHIND us speaks, and says
+  // something false in the present tense - "your channel now serves 1.1.0 (you
+  // have 1.2.3)" from a reading hours old.
+  //
+  // DELETED rather than rewritten, because `update` compares CHECKSUMS and never
+  // learns the version string the ring advertises. It knows the file is wrong; it
+  // does not know what is right. Dropping it makes the next run ask, which costs
+  // one read and cannot be stale. Best-effort: a swap that already succeeded must
+  // never be reported as failed over a cache file.
+  if (deps.updateCheckPath) await deps.rm(deps.updateCheckPath).catch(() => {});
   deps.log(
     `Updated ${deps.flavor} from ring ${ring} → ${deps.execPath}. Run \`${deps.flavor} version\` to confirm.`,
   );
@@ -449,6 +473,9 @@ interface RecordRefusal {
    * is the permanent, fail-closed case this rung exists for, not a blip to retry.
    */
   unreachable?: unknown;
+  /** WHY verification refused, when it got far enough to have an opinion.
+   *  Absent on the fetch failure above, which `unreachable` already classifies. */
+  kind?: VerifyFailure;
 }
 
 async function verifyRingManifest(
@@ -490,6 +517,7 @@ async function verifyRingManifest(
   });
   if (!result.ok) {
     return {
+      kind: result.kind,
       reason: `${MANIFEST_ASSET} on ring ${ring} is not vouched for: ${result.reason}`,
     };
   }
@@ -520,29 +548,45 @@ async function runUpdate(
     // checked first, and a manifest without a good one is not read at all.
     const refusal = await verifyRingManifest(deps, base, ring, sumsBytes);
     if (refusal) {
-      // A record that fails VERIFICATION - or is absent, or unreadable - is
-      // permanent. Only a host we never reached is temporary, and it keeps the
-      // taxonomy's own code so a wrapper can retry it. Refusing is not in question
-      // either way; only the exit code differs.
-      const permanent = refusal.unreachable === undefined;
-      // THE PERMANENT BRANCH IS A DEAD END, SO IT MUST NAME THE WAY OUT. The ring
-      // is serving bytes this binary can never accept; running `update` again
-      // produces the same refusal forever, and reinstalling is the only exit.
-      // Every other permanent refusal in this file already says so - the
-      // unwritable path, the cross-device path, the read-only path, the
-      // from-source path and the unreadable-record path all append
-      // `reinstallHint`. This one did not, which is how wego/cli#29 stranded
-      // people with a message that named the problem and no remedy.
+      // REFUSING IS NOT IN QUESTION - nothing is installed in any branch below.
+      // What differs is the exit code a wrapper branches on, and the one line a
+      // human reads. Three outcomes, because there are three different things
+      // the person in front of this can usefully do.
       //
-      // NOT on the unreachable branch: that one is temporary by construction, and
-      // telling someone to reinstall because their network blinked is wrong
-      // advice that costs them their install.
+      //  unreachable  the host was never reached. Keeps the taxonomy's own code
+      //               so a caller retries; no advice, a network blip is not a
+      //               reason to touch your install.
+      //  inconsistent the record and the manifest do not agree. A ring MID-
+      //               PROMOTE produces exactly this - the publisher copies the
+      //               record and the manifest as two adjacent writes, and a cache
+      //               can straddle the pair - so it clears on its own. RETRYABLE,
+      //               not PERMANENT: telling a wrapper to stop retrying something
+      //               that resolves in seconds is a lie told to a machine, which
+      //               is worse than a confusing sentence told to a person.
+      //  identity     the ring serves a record this binary's trust set can never
+      //               accept. A dead end, and the ONLY class reinstalling fixes -
+      //               a newer build carries a different trust set. This is what
+      //               stranded every 1.2.0 and 1.2.1 install (wego/cli#29), with
+      //               a message that named the problem and no remedy.
+      //  invalid      not a Fulcio record at all. Permanent, and reinstalling
+      //               changes nothing, so it gets the reason and no advice
+      //               rather than advice that would not work.
+      if (refusal.unreachable !== undefined) {
+        deps.error(refusal.reason);
+        return exitCodeForError(refusal.unreachable);
+      }
+      if (refusal.kind === "inconsistent") {
+        deps.error(
+          `${refusal.reason}\nThe ${ring} channel may be mid-update: its manifest and its signed record do not yet agree. Nothing was installed. Try again in a minute.`,
+        );
+        return EXIT.RETRYABLE;
+      }
       deps.error(
-        permanent
+        refusal.kind === "identity"
           ? `${refusal.reason}\nThis binary cannot install what ring ${ring} is serving, and retrying will not change that. Reinstall the latest with:\n  ${reinstallHint(deps)}`
           : refusal.reason,
       );
-      return permanent ? EXIT.PERMANENT : exitCodeForError(refusal.unreachable);
+      return EXIT.PERMANENT;
     }
     const sums = new TextDecoder().decode(sumsBytes);
     expected = expectedSum(sums, asset);
