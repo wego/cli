@@ -692,3 +692,50 @@ wrong, not merely early.
 separate prefix from the downloads it vouches for, and a sweep written against
 `cli/` alone would take the record while leaving the bytes — which fails the
 update fail-closed, with no clue as to why.
+
+### Rolling `stable` back to `cli-v1.1.0` — which binaries can take it
+
+The recovery this file and wego/foundations#134, #166 name for the whole cutover
+is: dispatch wego-ai's `promote-cli.yml` with `tag=cli-v1.1.0` and put `stable`
+back on the last pre-cutover release. That path was **broken in v1.2.0 and
+v1.2.1** and is fixed from **v1.2.2** (wego/cli#29).
+
+`src/release-signing/identity.ts`'s `RELEASE_TAG_IDENTITY` was ported into this
+repository with wego-ai's repo path but **this** repository's tag shape
+(`@refs/tags/vX.Y.Z`). wego-ai's release-please sets
+`include-component-in-tag: true`, so every release it cut is `cli-vX.Y.Z` and the
+rule matched nothing that has ever been published. A binary carrying it, offered
+1.1.0's record on `stable`, refuses fail-closed:
+
+```
+SHA256SUMS.txt on ring stable is not vouched for: the signed build record names
+https://github.com/wego/wego-ai/.github/workflows/release-cli.yml@refs/tags/cli-v1.1.0,
+not … - refusing it
+```
+
+Exit 6, `EXIT.PERMANENT`, and no reinstall hint on that path.
+
+| Installed version | Rollback of `stable` to `cli-v1.1.0` |
+|---|---|
+| 1.0.0, 1.0.1 | **Works.** Pinned to the bridge, never reads the live ring. |
+| 1.1.0 | **Works.** Signed under the identity it already trusts, and pinned besides. |
+| 1.2.0 | **Refuses**, exit 6. Reinstall is the only route. |
+| 1.2.1 | **Refuses**, exit 6. Reinstall is the only route. |
+| 1.2.2 and later | **Works.** Downgrades to 1.1.0 and follows `stable` from there. |
+
+So a rollback is still the right move, and it still reaches everyone who matters
+today: the install base this cutover was built to protect is 1.0.x, which the pin
+carries regardless. What it does not reach is anyone who installed 1.2.0 or
+1.2.1 directly. There are few of them, they are reachable by hand, and a
+reinstall fixes them, so this is a documented gap rather than a blocker.
+
+**Why accepting `cli-v1.1.0` is safe, since the question comes up.** The worry is
+a downgrade loop: a binary takes the bridge, becomes 1.1.0, sends a proper user
+agent, is no longer pinned, updates forward, and oscillates. Reaching the bridge
+at all requires sending a `Bun/` agent, and a build that names itself never is.
+A build that forgets the header (v1.2.0, the only one that ever did) would now
+verify the bridge and **downgrade onto 1.1.0** instead of refusing it, then
+settle: 1.1.0 sends no agent either, so it is pinned too, and the hashes it is
+served match what it runs. A silent downgrade, not a loop, and the release lane's
+self-update smoke plus `promote-cli.yml`'s pre-move agent check both refuse to
+ship a binary that could get there.

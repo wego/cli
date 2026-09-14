@@ -45,9 +45,15 @@ export function interpretUpdate(r: {
   // Exit 6 is EXIT.PERMANENT, which is what a record that does not verify
   // returns - the shape v1.2.0 shipped. Named because it is the one failure a
   // reader of a red run is most likely to misdiagnose as a network blip.
+  //
+  // The hint no longer points at the legacy bridge. Since wego/cli#29 the
+  // bridge's `cli-v1.1.0` record VERIFIES, so being served it is not a way to
+  // reach exit 6 any more - a binary that gets the bridge downgrades onto it
+  // instead. What is left here is a genuine identity or signature failure, so
+  // the message says to read the SAN rather than to suspect the agent.
   const hint =
     r.code === 6
-      ? " This is the fail-closed refusal: the binary fetched a signed record it does not accept. If the message names a tag this binary was not built to trust, it is being served the legacy bridge - check its user agent against the pin (wego/cli#25)."
+      ? " This is the fail-closed refusal: the binary fetched a signed record it does not accept. Read the SAN the message names and compare it with `identitiesForRing` - a tag shape that matches no rule is wego/cli#29 all over again."
       : "";
   return {
     ok: false,

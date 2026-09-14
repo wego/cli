@@ -11,10 +11,19 @@ import { USER_AGENT } from "./api";
  * because it never set an agent, so Bun's default went out.
  *
  * That rule is allow-by-default: ANY request that fails to identify itself is
- * treated as legacy. So a wego/cli build that forgets the header is served a
- * frozen 1.1.0 record it cannot verify (the bridge is signed under wego-ai's
- * `cli-v1.1.0` tag, which this binary's identity list does not accept), refuses
- * it, and can never self-update again. Shipped exactly that way in v1.2.0.
+ * treated as legacy. So a wego/cli build that forgets the header is served the
+ * frozen 1.1.0 release instead of the ring it asked for.
+ *
+ * WHAT THAT COSTS CHANGED WITH wego/cli#29, and both answers are bad. As v1.2.0
+ * shipped, the bridge's record was signed under wego-ai's `cli-v1.1.0` tag and
+ * the identity list could not match that shape, so the binary refused the record
+ * and could never self-update again - loudly, exit 6, with no way forward. Now
+ * that the shape is accepted, the same binary VERIFIES the bridge and installs
+ * 1.1.0 over itself: a silent downgrade rather than a dead end. It settles there
+ * (1.1.0 sends no agent either, so it is pinned too, and its hashes match what
+ * the bridge serves) rather than oscillating, which is the only reason this is
+ * the lesser failure. Neither is acceptable, and the header is what prevents
+ * both.
  *
  * These tests state the invariant in the terms of that failure rather than
  * checking a header for its own sake.
