@@ -406,6 +406,48 @@ jobs:
           fi
           echo "ok: $TAG's binary is not claimed by the pin. $loc"
 
+          # SECOND QUESTION, DIFFERENT TARGET. The check above asks what the PIN
+          # does with this binary, and the pin's only input is the agent - so a
+          # HEAD request answers it completely.
+          #
+          # This asks whether the binary can actually COMPLETE an update: route,
+          # signed-record verification, manifest coverage, hash comparison,
+          # replace. That needs a ring serving bytes this binary can verify, and
+          # `cli/next` is serving this very tag - so the correct outcome is
+          # "already up to date".
+          #
+          # NOT `stable`, which is what the first version of this gate got wrong.
+          # `stable` is where the pin lives but it may hold a release this binary
+          # cannot verify at all - during this migration it held wego-ai's
+          # `cli-v1.1.0`, which no wego/cli binary accepts (wego/cli#29) - so an
+          # outcome test there fails for a reason that has nothing to do with the
+          # candidate. Two questions, two targets; conflating them blocked a safe
+          # promote of v1.2.1.
+          #
+          # The release lane runs this same assertion before the tag ships. It is
+          # repeated here because the promote is a later decision: `cli/next` or
+          # the store could have moved in between, and this is the last moment
+          # before the pointer does.
+          rm -rf "$work/outcome"; mkdir -p "$work/outcome/bin" "$work/outcome/home/.config/wego"
+          cp "$work/bin/wego" "$work/outcome/bin/wego"
+          printf '{"ring":"next","installUrl":"%s"}\n' "$url" \
+            > "$work/outcome/home/.config/wego/install.json"
+          set +e
+          up=$(HOME="$work/outcome/home" XDG_CONFIG_HOME="$work/outcome/home/.config" \
+               WEGO_CLI_TELEMETRY=0 "$work/outcome/bin/wego" update -y 2>&1)
+          code=$?
+          set -e
+          echo "$up"
+          if [ "$code" -ne 0 ]; then
+            echo "::error::$TAG's binary cannot complete an update against cli/next (exit $code), which serves this very tag. Promoting it would put a build in front of every install that cannot receive another release. Exit 6 means a signed record it does not accept; anything else is in the download, manifest or replace path."
+            exit 1
+          fi
+          if ! printf '%s' "$up" | grep -qi 'up to date'; then
+            echo "::error::$TAG's binary did not report itself current against cli/next, which serves ${TAG#v} - it replaced itself instead. cli/next is not serving the bytes this tag published."
+            exit 1
+          fi
+          echo "ok: $TAG's binary completes a real update against cli/next and reports itself current."
+
       # THE MOVE. A server-side copy of the frozen cli/<tag> blobs onto cli/stable.
       # REQUIRE_PUBLISH: an absent token must FAIL here rather than exit 0 having
       # promoted nothing - a "successful" promote that moved no pointer would read as
