@@ -35,7 +35,8 @@ record, not an assumption, and a difference is a reason to stop and re-plan.
 | `wego/cli` tag ruleset | `22870024` "v-tags", target `tag`, `refs/tags/v*`, rules `creation` + `update` + `deletion`; bypass actors `OrganizationAdmin` and one Integration (the release-please App) | Tag deletion in step 3 needs an **org admin**, not merely a code owner. A code owner's push is refused with `GH013 … Cannot create ref due to creations being restricted`. |
 | `cli-frozen-until-cutover` ruleset | Does not exist | #128 dropped it by decision. The deletion command in Appendix B is kept for completeness and is expected to 404. |
 | `rehearsal/cli-install` branch and its Vercel variables | Never created | #128 amended the preview away; #129's manual install runs on loopback. Nothing to delete in step 7. |
-| `production` environment on `wego/cli` today | variables `SKILLS_PUBLISH_ENABLED`, `SMOKE_INSTALL_URL`, `WEGO_API_URL`, `WEGO_AUTH_AUTHORIZE_URL`, `WEGO_AUTH_TOKEN_URL`, `WEGO_CLI_CLIENT_ID`; secret `BLOB_READ_WRITE_TOKEN` | Step 1 adds `WEGO_CLI_POSTHOG_PROJECT_KEY`, `SKILLS_PUBLISH_APP_CLIENT_ID` and the secret `SKILLS_PUBLISH_APP_PRIVATE_KEY`, and overwrites the two that already exist. |
+| `production` environment on `wego/cli` today | variables `SKILLS_PUBLISH_ENABLED`, `SMOKE_INSTALL_URL`, `WEGO_API_URL`, `WEGO_AUTH_AUTHORIZE_URL`, `WEGO_AUTH_TOKEN_URL`, `WEGO_CLI_CLIENT_ID`; secret `BLOB_READ_WRITE_TOKEN` | Step 1 adds `SKILLS_PUBLISH_APP_CLIENT_ID` and the secret `SKILLS_PUBLISH_APP_PRIVATE_KEY`, and overwrites the two that already exist. |
+| Build-time variables (`WEGO_CLI_POSTHOG_PROJECT_KEY`, `WEGO_CLI_SKILL_ORIGIN`) | Belong at **repo** level, not in the `production` environment | `release-cli.yml`'s `build` job has no `environment:`, so it reads `vars.*` from the repository only. Setting these with `--env production` bakes an empty value and fails silently — see step 1. |
 | Extraction source sha | `wego/wego-ai@0e9f6bfe60864e6226decbebdd3e5b7535c7080e` — the sha #133's drift check compares from | The squash commit subject in step 4 names it. |
 
 Record the production rings before touching anything, and diff against
@@ -110,23 +111,45 @@ BLOB_READ_WRITE_TOKEN="$PROD_TOKEN" vercel blob list --prefix cli/stable/   # mu
 
 Then set the environment. Values, in the order of the #133 prerequisites table:
 
+**Two of these are REPO-level, not environment-level, and the difference is not
+cosmetic.** `release-cli.yml`'s `build` job carries no `environment:` — deliberately,
+so a build can never reach the store token. A job without an environment resolves
+`vars.*` from the repository only, so a build-time variable set with `--env production`
+is invisible to the job that bakes it: the build silently produces a binary with an
+empty value and nothing fails. That is exactly what happened to the PostHog key, which
+sat unset through the v1.2.0 release (fixed 2026-09-14). It is also why
+`WEGO_API_URL`, `WEGO_AUTH_*` and `WEGO_CLI_CLIENT_ID` are duplicated at both levels.
+
+The rule: **baked into the binary → repo level. Touches the store → `--env production`.**
+
 ```bash
+# Repo level — read by release-cli.yml's `build` job, which has NO environment.
+gh variable set WEGO_CLI_POSTHOG_PROJECT_KEY -R wego/cli --body <key>
+gh variable set WEGO_CLI_SKILL_ORIGIN        -R wego/cli --body <store origin>
+
+# Environment level — read only by jobs that enter `production`.
 gh secret   set BLOB_READ_WRITE_TOKEN        --env production -R wego/cli < prod-token.txt
 gh variable set SMOKE_INSTALL_URL            --env production -R wego/cli --body https://api.wego.com/install
-gh variable set WEGO_CLI_POSTHOG_PROJECT_KEY --env production -R wego/cli --body <key>
 gh variable set SKILLS_PUBLISH_ENABLED       --env production -R wego/cli --body true
 gh variable set SKILLS_PUBLISH_APP_CLIENT_ID --env production -R wego/cli --body <id>
 gh secret   set SKILLS_PUBLISH_APP_PRIVATE_KEY --env production -R wego/cli < skills-app.pem
 ```
 
+- `WEGO_CLI_POSTHOG_PROJECT_KEY` — copied from wego-ai's `Production – cli`
+  environment: `gh variable list -R wego/wego-ai --env 'Production – cli'`. Must be a
+  write-only `phc_` project key; `release-config.ts` rejects anything else. Because it
+  lives at repo level it is visible to **every** job, including `edge-cli.yml`'s — which
+  is why that lane suppresses telemetry by not passing the variable to its build step
+  rather than by relying on the key's absence from an environment.
+- `WEGO_CLI_SKILL_ORIGIN` — the bare origin of the Blob store `wego skill install`
+  fetches from. Must name the store `wego/cli`'s own production `BLOB_READ_WRITE_TOKEN`
+  writes to; do not copy wego-ai's value without confirming it is the same store.
 - `BLOB_READ_WRITE_TOKEN` — the production blob store token minted for `wego/cli`.
   Overwrites the rehearsal token. wego-ai keeps its own until the 3c tail.
 - `SMOKE_INSTALL_URL` — `https://api.wego.com/install`. Repointing it away from
   loopback makes the Phase 1 resolver step **inert** (the variable is both the value
   and the switch: the step runs only when it names loopback) but does not remove it.
   Step 1b below deletes it in the same PR.
-- `WEGO_CLI_POSTHOG_PROJECT_KEY` — copied from wego-ai's `Production – cli`
-  environment: `gh variable list -R wego/wego-ai --env 'Production – cli'`.
 - `SKILLS_PUBLISH_ENABLED` — `true`.
 - `SKILLS_PUBLISH_APP_CLIENT_ID` / `SKILLS_PUBLISH_APP_PRIVATE_KEY` — copied from
   wego-ai. The secret cannot be read back from wego-ai; whoever holds the PEM supplies
@@ -144,8 +167,12 @@ gh api -X PUT /user/installations/<skills App installation id>/repositories/$(gh
 
 ```bash
 gh api repos/wego/cli/environments/production/secrets -q '.secrets[].name'   # BLOB_READ_WRITE_TOKEN, SKILLS_PUBLISH_APP_PRIVATE_KEY
-gh variable list -R wego/cli --env production                                 # SMOKE_INSTALL_URL=https://api.wego.com/install, SKILLS_PUBLISH_ENABLED=true, PostHog key present
+gh variable list -R wego/cli --env production                                 # SMOKE_INSTALL_URL=https://api.wego.com/install, SKILLS_PUBLISH_ENABLED=true
+gh variable list -R wego/cli                                                  # WEGO_CLI_POSTHOG_PROJECT_KEY and WEGO_CLI_SKILL_ORIGIN present HERE, not in the environment
 ```
+
+Checking the environment listing alone is what let the missing PostHog key go
+unnoticed: the build-time variables will never appear there.
 
 **Rollback:** set `BLOB_READ_WRITE_TOKEN` back to the rehearsal token and
 `SMOKE_INSTALL_URL` back to its loopback value. Nothing has been published yet, so
@@ -155,6 +182,9 @@ this fully undoes the step.
 
 Amended into #133 on 2026-09-11: repointing the variable makes the resolver step inert
 but leaves it in the production tree as dead code nothing was scheduled to remove.
+
+**Done 2026-09-14**, not in #133's PR — it was missed there and the scaffolding survived
+into the v1.2.0 tree, inert but present.
 
 Delete `scripts/rehearsal-install-resolver.ts`, its step in
 `.github/workflows/release-cli.yml`, and SMOKE 3's `--install-url "$SMOKE_INSTALL_URL"`
