@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { readdirSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -77,38 +77,6 @@ describe("buildVersionNoticeDeps", () => {
     expect(buildVersionNoticeDeps().fromSource).toBe(true);
   });
 
-  it("round-trips the stored answer and the throttle stamp", async () => {
-    const d = buildVersionNoticeDeps();
-    expect(await d.readState()).toBeNull();
-    expect(await d.claimWindow()).toBe(true);
-    const claimed = await d.readState();
-    expect(claimed?.latest).toBe("");
-    expect(claimed?.checkedAt).toBeGreaterThan(0);
-    await d.writeLatest("0.4.2");
-    expect((await d.readState())?.latest).toBe("0.4.2");
-    // Trailing newline on disk, trimmed on read — the same shape the published
-    // `VERSION` object has.
-    expect(await readFile(join(home, "wego", ".update-check"), "utf8")).toBe(
-      "0.4.2\n",
-    );
-  });
-
-  it("clears the stored answer without removing the stamp", async () => {
-    const d = buildVersionNoticeDeps();
-    await d.writeLatest("0.4.2");
-    await d.writeLatest("");
-    const state = await d.readState();
-    expect(state?.latest).toBe("");
-    expect(state?.checkedAt).toBeGreaterThan(0);
-  });
-
-  it("claiming the window does not truncate an answer we are about to nag about", async () => {
-    const d = buildVersionNoticeDeps();
-    await d.writeLatest("0.4.2");
-    expect(await d.claimWindow()).toBe(true);
-    expect((await d.readState())?.latest).toBe("0.4.2");
-  });
-
   it("advances the stamp on every claim", async () => {
     const d = buildVersionNoticeDeps();
     await d.claimWindow();
@@ -138,10 +106,19 @@ describe("buildVersionNoticeDeps", () => {
     expect(statSync(join(home, "wego", ".update-check")).mode & 0o777).toBe(
       0o600,
     );
-    await d.writeLatest("0.4.2");
-    expect(statSync(join(home, "wego", ".update-check")).mode & 0o777).toBe(
-      0o600,
+  });
+
+  // THE FILE IS A TIMESTAMP. Pinned because its emptiness is the design, not an
+  // oversight: an answer stored here would be half of a comparison whose other
+  // half changes on every update and reinstall, which is the whole of wego/cli#33
+  // and #35. Anyone reintroducing a write should have to delete this test.
+  it("stores nothing but the stamp", async () => {
+    const d = buildVersionNoticeDeps();
+    await d.claimWindow();
+    expect(await readFile(join(home, "wego", ".update-check"), "utf8")).toBe(
+      "",
     );
+    expect(Object.keys((await d.readState()) ?? {})).toEqual(["checkedAt"]);
   });
 
   it("creates every level it has to create as 0700, intermediates included", async () => {
@@ -156,21 +133,6 @@ describe("buildVersionNoticeDeps", () => {
     await buildVersionNoticeDeps().claimWindow();
     expect(statSync(join(nested, "wego")).mode & 0o777).toBe(0o700);
     expect(statSync(nested).mode & 0o777).toBe(0o700);
-  });
-
-  it("replaces the state file atomically, never truncating it in place", async () => {
-    // A truncating write is observable by a concurrent command as an EMPTY file
-    // whose mtime already looks fresh; that reader concludes "checked recently,
-    // nothing to report" and a real notice goes silent for the whole window. So the
-    // write must land by rename, and must leave no temp file behind.
-    const d = buildVersionNoticeDeps();
-    await d.writeLatest("0.4.2");
-    await d.writeLatest("0.4.3");
-    expect((await d.readState())?.latest).toBe("0.4.3");
-    const leftovers = readdirSync(join(home, "wego")).filter((f) =>
-      f.endsWith(".tmp"),
-    );
-    expect(leftovers).toEqual([]);
   });
 
   it("never chmods a directory it did not create", async () => {

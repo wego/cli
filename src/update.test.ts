@@ -827,63 +827,6 @@ describe("update", () => {
     expect(out).not.toContain("may be mid-update");
   });
 
-  // THE NOTICE'S CACHE, AFTER A SWAP.
-  //
-  // `.update-check` stores the version the channel last advertised, and the
-  // throttle governs the network READ rather than the message - so inside the
-  // window the notice reports from that file without re-fetching. A successful
-  // update moves the binary underneath it, which makes the stored value describe
-  // a comparison that no longer holds.
-  //
-  // Invisible while the notice only fired forward (the stale value equalled what
-  // we just became, and equal is silent). Once it fires on any difference, a
-  // cached value that has fallen BEHIND speaks, in the present tense, and is
-  // wrong: "your channel now serves 1.1.0 (you have 1.2.3)".
-  it("drops the new-version cache after replacing the binary", async () => {
-    const latest = enc("NEW");
-    const sums = await sumsFor({ "wego-linux-x64": latest });
-    const removed: string[] = [];
-    const { deps } = makeDeps(
-      {
-        updateCheckPath: "/home/u/.config/wego/.update-check",
-        rm: async (path) => {
-          removed.push(path);
-        },
-        // `fakeFetch` mints the matching record from the manifest route, so
-        // this exercises the real verifier rather than a stub of it.
-        fetch: fakeFetch({
-          [`${BASE}?dl=SHA256SUMS.txt&ring=${RING}`]: { body: sums },
-          [`${BASE}?dl=wego-linux-x64&ring=${RING}`]: { body: latest },
-        }),
-      },
-      enc("OLD"),
-    );
-    expect(await update(["-y"], deps)).toBe(EXIT.OK);
-    expect(removed).toContain("/home/u/.config/wego/.update-check");
-  });
-
-  // The mirror: nothing was replaced, so the cache still describes the truth and
-  // deleting it would only cost a needless read on the next command.
-  it("leaves the cache alone when it did not replace anything", async () => {
-    const current = enc("SAME");
-    const sums = await sumsFor({ "wego-linux-x64": current });
-    const removed: string[] = [];
-    const { deps } = makeDeps(
-      {
-        updateCheckPath: "/home/u/.config/wego/.update-check",
-        rm: async (path) => {
-          removed.push(path);
-        },
-        fetch: fakeFetch({
-          [`${BASE}?dl=SHA256SUMS.txt&ring=${RING}`]: { body: sums },
-        }),
-      },
-      current,
-    );
-    expect(await update(["-y"], deps)).toBe(EXIT.OK);
-    expect(removed).not.toContain("/home/u/.config/wego/.update-check");
-  });
-
   // The record is fetched from the ring's own record prefix, through the same
   // first-party endpoint - the release store's hostname stays server-side here too.
   it("fetches the record for the ring it follows, marked as a record", async () => {

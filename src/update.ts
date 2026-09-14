@@ -66,9 +66,6 @@ export interface UpdateDeps extends UpdateIo {
   /** Where that record lives, named in the refusal so the user can see what is
    *  missing. */
   installRecordPath: string;
-  /** The new-version notice's throttle file (`config.ts` `defaultUpdateCheckPath`).
-   *  DELETED after a successful swap, never read here - see the call site. */
-  updateCheckPath?: string;
   /** Where this install's files lived before the config scope became the command
    *  name (`config.ts` `legacyScopeDir`); `undefined` for every install whose name
    *  still matches its release. Only ever printed, in the no-record refusal. */
@@ -344,26 +341,6 @@ async function downloadAndReplace(
   } catch {
     /* Swap already succeeded; the skill refreshes on the next update. */
   }
-  // THE NOTICE'S CACHE IS NOW WRONG BY CONSTRUCTION, so drop it.
-  //
-  // `.update-check` records the version the channel last advertised, and the
-  // throttle governs the network READ rather than the message - so within the
-  // window the notice reports from that file WITHOUT re-fetching. We have just
-  // moved the binary underneath it, and the stored value describes the version
-  // we were told about before the swap.
-  //
-  // While the notice only ever fired FORWARD this was invisible: the stale value
-  // equalled the version we just became, and equal is silent. Now that it fires
-  // on any difference, a cached value that has fallen BEHIND us speaks, and says
-  // something false in the present tense - "your channel now serves 1.1.0 (you
-  // have 1.2.3)" from a reading hours old.
-  //
-  // DELETED rather than rewritten, because `update` compares CHECKSUMS and never
-  // learns the version string the ring advertises. It knows the file is wrong; it
-  // does not know what is right. Dropping it makes the next run ask, which costs
-  // one read and cannot be stale. Best-effort: a swap that already succeeded must
-  // never be reported as failed over a cache file.
-  if (deps.updateCheckPath) await deps.rm(deps.updateCheckPath).catch(() => {});
   deps.log(
     `Updated ${deps.flavor} from ring ${ring} → ${deps.execPath}. Run \`${deps.flavor} version\` to confirm.`,
   );

@@ -26,7 +26,6 @@ import {
  */
 
 const NOW = 1_800_000_000_000;
-const BASE = "https://blob.example.com/cli/latest";
 /** The install endpoint + ring an installed binary records (foundations#74 rung 3).
  *  `stable` because that is what a plain `curl … | bash` writes. */
 const INSTALL_URL = "https://api.wego.com/install";
@@ -40,14 +39,12 @@ const LATEST = "0.4.2";
 interface Harness extends VersionNoticeDeps {
   fetches: () => string[];
   claims: () => number;
-  written: () => string[];
 }
 
 /** A deps bundle whose default state DOES check and DOES notify, so each test can
  *  flip exactly one field and attribute the outcome to it. */
 function deps(over: Partial<VersionNoticeDeps> = {}): Harness {
   const fetches: string[] = [];
-  const written: string[] = [];
   const claims = { n: 0 };
   const base: VersionNoticeDeps = {
     command: "whoami",
@@ -63,15 +60,11 @@ function deps(over: Partial<VersionNoticeDeps> = {}): Harness {
     now: NOW,
     // Stale by a day and a second ⇒ past the prod window.
     readState: async () => ({
-      latest: "",
       checkedAt: NOW - NOTICE_INTERVAL_PROD_MS - 1_000,
     }),
     claimWindow: async () => {
       claims.n++;
       return true;
-    },
-    writeLatest: async (latest) => {
-      written.push(latest);
     },
     fetch: (async (url: string) => {
       fetches.push(String(url));
@@ -82,13 +75,14 @@ function deps(over: Partial<VersionNoticeDeps> = {}): Harness {
   return Object.assign(base, {
     fetches: () => fetches,
     claims: () => claims.n,
-    written: () => written,
   });
 }
 
 /** A stored answer `age` ms old. */
-function stored(latest: string, age: number): () => Promise<UpdateCheckState> {
-  return async () => ({ latest, checkedAt: NOW - age });
+/** A throttle stamp of a given age. There is no stored answer to model: the file
+ *  records WHEN we asked and nothing else. */
+function stored(age: number): () => Promise<UpdateCheckState> {
+  return async () => ({ checkedAt: NOW - age });
 }
 
 describe("parseSemver / isNewerVersion", () => {
@@ -194,7 +188,6 @@ describe("maybeNotifyNewVersion", () => {
     expect(r.outcome).toBe("checked");
     expect(r.message).toBe(formatVersionNotice("wego", CURRENT, LATEST));
     expect(d.fetches()).toEqual([DEFAULT_VERSION_URL]);
-    expect(d.written()).toEqual([LATEST]);
   });
 
   it("notifies on the same run that discovers the release", async () => {
@@ -266,13 +259,14 @@ describe("maybeNotifyNewVersion", () => {
     }
   });
 
-  it("nags from the stored answer inside the window, with NO network call", async () => {
-    // This is the whole "persist, then nag" contract: the throttle governs the
-    // channel READ, not the message, so a stale install keeps being told.
-    const d = deps({ readState: stored(LATEST, 60_000) });
+  it("says nothing inside the window, and asks nobody", async () => {
+    // The throttle used to govern the READ while the message came from a stored
+    // answer - "persist, then nag". The answer is gone, so a throttled run is
+    // silent: this file never says anything it has not just been told.
+    const d = deps({ readState: stored(60_000) });
     const r = await maybeNotifyNewVersion(d);
-    expect(r.outcome).toBe("cached");
-    expect(r.message).toBe(formatVersionNotice("wego", CURRENT, LATEST));
+    expect(r.outcome).toBe("throttled");
+    expect(r.message).toBeUndefined();
     expect(d.fetches()).toHaveLength(0);
     expect(d.claims()).toBe(0);
   });
@@ -281,13 +275,12 @@ describe("maybeNotifyNewVersion", () => {
     const age = NOTICE_INTERVAL_STAGING_MS + 1_000;
     // Same age: fresh for prod, stale for staging.
     expect(
-      (await maybeNotifyNewVersion(deps({ readState: stored("", age) })))
-        .outcome,
-    ).toBe("cached");
+      (await maybeNotifyNewVersion(deps({ readState: stored(age) }))).outcome,
+    ).toBe("throttled");
     expect(
       (
         await maybeNotifyNewVersion(
-          deps({ flavor: "wegostaging", readState: stored("", age) }),
+          deps({ flavor: "wegostaging", readState: stored(age) }),
         )
       ).outcome,
     ).toBe("checked");
@@ -296,7 +289,7 @@ describe("maybeNotifyNewVersion", () => {
   it("treats a stamp in the future as stale instead of throttling forever", async () => {
     // A clock set backwards (or a bad write) would otherwise pin `now - checkedAt`
     // negative and freeze the check permanently.
-    const d = deps({ readState: stored("", -60_000) });
+    const d = deps({ readState: stored(-60_000) });
     expect((await maybeNotifyNewVersion(d)).outcome).toBe("checked");
     expect(d.fetches()).toHaveLength(1);
   });
@@ -319,51 +312,64 @@ describe("maybeNotifyNewVersion", () => {
     expect(order).toEqual(["claim", "fetch"]);
   });
 
-  it("does not fetch when the window cannot be claimed, but still nags from cache", async () => {
-    // A read-only $HOME must not turn into a network call per command; a version we
-    // already know about is still worth saying.
+  it("does not fetch when the window cannot be claimed, and says nothing", async () => {
+    // A read-only $HOME must not turn into a network call per command. It used to
+    // still nag from a stored answer here; with nothing stored there is nothing
+    // honest to say.
     const d = deps({
       claimWindow: async () => false,
-      readState: stored(LATEST, NOTICE_INTERVAL_PROD_MS + 1_000),
+      readState: stored(NOTICE_INTERVAL_PROD_MS + 1_000),
     });
     const r = await maybeNotifyNewVersion(d);
     expect(r.outcome).toBe("skipped-unclaimable");
-    expect(r.message).toBeTruthy();
+    expect(r.message).toBeUndefined();
     expect(d.fetches()).toHaveLength(0);
   });
 
-  it("clears the stored answer on a 404, the one authoritative absence", async () => {
-    // A pre-VERSION tag, or a channel that stopped publishing one: stop nagging
-    // rather than advertising a version nobody serves.
-    const d = deps({
-      readState: stored(LATEST, NOTICE_INTERVAL_PROD_MS + 1_000),
-      fetch: (async () =>
-        new Response("nope", { status: 404 })) as unknown as typeof fetch,
-    });
-    const r = await maybeNotifyNewVersion(d);
-    expect(r.message).toBeUndefined();
-    expect(d.written()).toEqual([""]);
-  });
-
-  it("keeps the stored answer on a transport failure or 5xx", async () => {
-    // One flaky minute must not erase a real answer.
-    const failures: Array<() => Promise<Response>> = [
-      async () => {
-        throw new Error("network down");
-      },
-      async () => {
-        throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
-      },
-      async () => new Response("oops", { status: 500 }),
+  // EVERY WAY OF NOT KNOWING IS THE SAME ANSWER NOW: silence.
+  //
+  // These used to be four different behaviours, because each decided what was
+  // allowed to overwrite the stored answer - a 404 cleared it, a 5xx kept it, a
+  // garbage body must not replace it, a 403 was not proof of absence. With
+  // nothing stored there is one rule, and it is the whole point of the design:
+  // say nothing you were not just told.
+  it("says nothing when the channel cannot be read", async () => {
+    const cases: Array<[string, () => Promise<Response>]> = [
+      [
+        "404, a channel with no VERSION",
+        async () => new Response("nope", { status: 404 }),
+      ],
+      [
+        "403, an edge rule rather than an absence",
+        async () => new Response("no", { status: 403 }),
+      ],
+      ["500", async () => new Response("oops", { status: 500 })],
+      [
+        "a transport failure",
+        async () => {
+          throw new Error("network down");
+        },
+      ],
+      [
+        "a timeout",
+        async () => {
+          throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+        },
+      ],
+      [
+        "a 200 carrying a captive-portal page",
+        async () => new Response("<html>hi</html>"),
+      ],
+      ["a 200 carrying an empty body", async () => new Response("")],
     ];
-    for (const f of failures) {
+    for (const [why, f] of cases) {
       const d = deps({
-        readState: stored(LATEST, NOTICE_INTERVAL_PROD_MS + 1_000),
+        readState: stored(NOTICE_INTERVAL_PROD_MS + 1_000),
         fetch: f as unknown as typeof fetch,
       });
       const r = await maybeNotifyNewVersion(d);
-      expect(r.message).toBe(formatVersionNotice("wego", CURRENT, LATEST));
-      expect(d.written()).toHaveLength(0);
+      expect(r.message, why).toBeUndefined();
+      expect(r.outcome, why).toBe("checked");
     }
   });
 
@@ -377,7 +383,6 @@ describe("maybeNotifyNewVersion", () => {
         })) as unknown as typeof fetch,
     });
     expect((await maybeNotifyNewVersion(declared)).message).toBeUndefined();
-    expect(declared.written()).toHaveLength(0);
     // Chunked responses declare no length, so the body is bounded again after read.
     const chunked = deps({
       fetch: (async () => {
@@ -387,7 +392,6 @@ describe("maybeNotifyNewVersion", () => {
       }) as unknown as typeof fetch,
     });
     expect((await maybeNotifyNewVersion(chunked)).message).toBeUndefined();
-    expect(chunked.written()).toHaveLength(0);
   });
 
   it("stops pulling an oversized chunked body instead of buffering it", async () => {
@@ -409,15 +413,14 @@ describe("maybeNotifyNewVersion", () => {
       },
     });
     const d = deps({
-      readState: stored(LATEST, NOTICE_INTERVAL_PROD_MS + 1_000),
+      readState: stored(NOTICE_INTERVAL_PROD_MS + 1_000),
       fetch: (async () => new Response(stream)) as unknown as typeof fetch,
     });
     const r = await maybeNotifyNewVersion(d);
     expect(pulled).toBeLessThan(10);
     expect(cancelled).toBe(true);
-    // An over-limit body teaches us nothing, so the stored answer survives.
-    expect(d.written()).toHaveLength(0);
-    expect(r.message).toBe(formatVersionNotice("wego", CURRENT, LATEST));
+    // An over-limit body teaches us nothing, so nothing is said.
+    expect(r.message).toBeUndefined();
   });
 
   it("reads a version split across chunks", async () => {
@@ -433,54 +436,19 @@ describe("maybeNotifyNewVersion", () => {
       fetch: (async () => new Response(stream)) as unknown as typeof fetch,
     });
     const r = await maybeNotifyNewVersion(d);
-    expect(d.written()).toEqual([LATEST]);
     expect(r.message).toBe(formatVersionNotice("wego", CURRENT, LATEST));
   });
 
-  it("never persists a garbage body over a real stored answer", async () => {
-    // Asserting `written()`, not just the absent message, is the whole point: a
-    // `200` carrying a captive-portal page is short enough to pass the byte cap, so
-    // persisting it verbatim would erase a genuine known version and silence the
-    // notice for the rest of the window — one flukey response, 24h of silence.
-    for (const body of ["", "\n", "v0.4.3", "v0.4.3", "<!DOCTYPE html>"]) {
-      const d = deps({
-        readState: stored(LATEST, NOTICE_INTERVAL_PROD_MS + 1_000),
-        fetch: (async () => new Response(body)) as unknown as typeof fetch,
-      });
-      const r = await maybeNotifyNewVersion(d);
-      expect(d.written()).toHaveLength(0);
-      // The known-newer version is intact, so the user is still told about it.
-      expect(r.message).toBe(formatVersionNotice("wego", CURRENT, LATEST));
-    }
-  });
-
-  it("keeps the stored answer on a 403, which is not proof of absence", async () => {
-    // A public store answering 403 is a misconfiguration or an edge rule, not
-    // "this object was never published" — only a 404 is authoritative.
+  it("trims the trailing newline the published file carries", async () => {
+    // `VERSION` ships with a trailing newline. Asserted through the message now
+    // rather than through what was written, since nothing is written.
     const d = deps({
-      readState: stored(LATEST, NOTICE_INTERVAL_PROD_MS + 1_000),
       fetch: (async () =>
-        new Response("denied", { status: 403 })) as unknown as typeof fetch,
+        new Response(`${LATEST}\n`)) as unknown as typeof fetch,
     });
     expect((await maybeNotifyNewVersion(d)).message).toBe(
       formatVersionNotice("wego", CURRENT, LATEST),
     );
-    expect(d.written()).toHaveLength(0);
-  });
-
-  it("still returns the notice when persisting the answer fails", async () => {
-    const d = deps({
-      writeLatest: async () => {
-        throw new Error("EROFS");
-      },
-    });
-    expect((await maybeNotifyNewVersion(d)).message).toBeTruthy();
-  });
-
-  it("trims the trailing newline the published file carries", async () => {
-    const d = deps();
-    await maybeNotifyNewVersion(d);
-    expect(d.written()).toEqual([LATEST]);
   });
 
   it("reads a slashed record through the real parser and still asks one URL", async () => {
