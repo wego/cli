@@ -240,6 +240,19 @@ jobs:
           WEGO_AUTH_TOKEN_URL: ${{ vars.WEGO_AUTH_TOKEN_URL }}
           WEGO_API_URL: ${{ vars.WEGO_API_URL }}
           WEGO_CLI_CLIENT_ID: ${{ vars.WEGO_CLI_CLIENT_ID }}
+          # Optional: the Blob store ORIGIN `wego skill install` fetches from - a
+          # bare origin, never a channel URL. Baked as WEGO_BUILD_SKILL_ORIGIN;
+          # absent it does NOT fail the build, `skill install` silently degrades to
+          # the copy embedded at compile time and never reads `skill/<ring>` at all.
+          # That is why this line has to exist even though nothing breaks without
+          # it: the promote lane advances `skill/stable` on every release, and a
+          # binary built without this reads none of it.
+          #
+          # The `skill/<ring>` half is composed at RUN time from the install record
+          # (wego/wego-ai#1751), so no ring reaches the binary from here, and
+          # `scripts/release-config.ts` refuses a value carrying any path - a baked
+          # pointer that names a ring is wrong on one side of every promote.
+          WEGO_CLI_SKILL_ORIGIN: ${{ vars.WEGO_CLI_SKILL_ORIGIN }}
           # Optional: the write-only PostHog PROJECT key the binary posts its one
           # per-invocation event with (issue #1302). Baked as
           # WEGO_BUILD_POSTHOG_PROJECT_KEY; absent → the binary emits nothing at
