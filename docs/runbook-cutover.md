@@ -729,13 +729,39 @@ carries regardless. What it does not reach is anyone who installed 1.2.0 or
 1.2.1 directly. There are few of them, they are reachable by hand, and a
 reinstall fixes them, so this is a documented gap rather than a blocker.
 
-**Why accepting `cli-v1.1.0` is safe, since the question comes up.** The worry is
-a downgrade loop: a binary takes the bridge, becomes 1.1.0, sends a proper user
-agent, is no longer pinned, updates forward, and oscillates. Reaching the bridge
-at all requires sending a `Bun/` agent, and a build that names itself never is.
-A build that forgets the header (v1.2.0, the only one that ever did) would now
-verify the bridge and **downgrade onto 1.1.0** instead of refusing it, then
-settle: 1.1.0 sends no agent either, so it is pinned too, and the hashes it is
-served match what it runs. A silent downgrade, not a loop, and the release lane's
-self-update smoke plus `promote-cli.yml`'s pre-move agent check both refuse to
-ship a binary that could get there.
+**Why accepting `cli-v1.1.0` is safe, since the question comes up — and what it
+genuinely costs.** The worry is a downgrade loop: a binary takes the bridge,
+becomes 1.1.0, sends a proper user agent, is no longer pinned, updates forward,
+and oscillates.
+
+**That loop is real.** An earlier version of this section claimed it "settles"
+because 1.1.0 is pinned too. It is not. Measured:
+
+```
+$ git show cli-v1.1.0:apps/cli/src/update.ts | grep -c user-agent
+2
+$ git show cli-v1.0.1:apps/cli/src/update.ts | grep -c user-agent
+0
+```
+
+1.1.0 sends `Wego-CLI/1.1.0`, and it carries `CLI_RELEASE_TAG_IDENTITY` because
+**1.1.0 is the relay release**. It is the one version that is neither pre-relay
+nor post-cutover: pinned by nothing, trusting both repositories. So an
+agent-less build that downgrades onto it does not stop there — 1.1.0 reads the
+live `cli/stable`, finds the agent-less build, accepts it, installs it, is
+pinned again, and the cycle repeats on every `wego update`.
+
+So accepting `cli-v1.1.0` converts a loud dead end (exit 6, stuck) into a silent
+oscillation, for one hypothetical class of build. That trade is only acceptable
+because the precondition is unreachable: the loop requires an agent-less build
+to be **serving on a ring**, and two independent gates now refuse to put one
+there.
+
+| Gate | Where | Refuses before |
+|---|---|---|
+| `Require this build to be distinguishable from a pre-relay install` | `release-cli.yml`, after the build smoke | the first store write of the run |
+| `Require this tag's binary to be distinguishable from a pre-relay install` | `promote-cli.yml`, step 331 | `Advance cli/stable`, step 455 |
+
+Both measure the real user agent of the real compiled binary against the pin's
+own predicate. The identity fix is what makes a **rollback** work; these gates,
+not the identity fix, are what keep the loop out of reach.

@@ -14,16 +14,31 @@ import { USER_AGENT } from "./api";
  * treated as legacy. So a wego/cli build that forgets the header is served the
  * frozen 1.1.0 release instead of the ring it asked for.
  *
- * WHAT THAT COSTS CHANGED WITH wego/cli#29, and both answers are bad. As v1.2.0
- * shipped, the bridge's record was signed under wego-ai's `cli-v1.1.0` tag and
- * the identity list could not match that shape, so the binary refused the record
- * and could never self-update again - loudly, exit 6, with no way forward. Now
- * that the shape is accepted, the same binary VERIFIES the bridge and installs
- * 1.1.0 over itself: a silent downgrade rather than a dead end. It settles there
- * (1.1.0 sends no agent either, so it is pinned too, and its hashes match what
- * the bridge serves) rather than oscillating, which is the only reason this is
- * the lesser failure. Neither is acceptable, and the header is what prevents
- * both.
+ * WHAT THAT COSTS CHANGED WITH wego/cli#29, and the new answer is WORSE, which
+ * is exactly why this test exists rather than a comment saying "be careful".
+ *
+ * As v1.2.0 shipped, the bridge's record was signed under wego-ai's `cli-v1.1.0`
+ * tag and the identity list could not match that shape, so the binary refused
+ * the record and could never self-update again: a loud dead end, exit 6.
+ *
+ * Now that the shape is accepted, an agent-less build VERIFIES the bridge and
+ * installs 1.1.0 over itself - and 1.1.0 DOES send `Wego-CLI/1.1.0` (measured:
+ * `git show cli-v1.1.0:apps/cli/src/update.ts` carries the header on both
+ * fetches) and DOES carry `CLI_RELEASE_TAG_IDENTITY`, because 1.1.0 is the relay
+ * release. So it is not pinned, it reads the live `cli/stable`, and it accepts
+ * whatever wego/cli signed there. If the agent-less build is what `stable`
+ * serves, that is the agent-less build again - and every `wego update` flips
+ * between the two, forever.
+ *
+ * An earlier version of this comment claimed it "settles" because 1.1.0 is
+ * pinned too. That was wrong and wrong in the reassuring direction: 1.1.0 is the
+ * one release that is neither pre-relay nor post-cutover, so it is pinned by
+ * nothing and trusts both repositories.
+ *
+ * Nothing about the identity fix is therefore load-bearing for safety here. What
+ * prevents the loop is that an agent-less build cannot reach a ring at all:
+ * `release-cli.yml` refuses to publish one and `promote-cli.yml` refuses to
+ * promote one, both by measuring this exact header on the compiled binary.
  *
  * These tests state the invariant in the terms of that failure rather than
  * checking a header for its own sake.
