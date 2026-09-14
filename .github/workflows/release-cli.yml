@@ -592,92 +592,6 @@ jobs:
       # channel (the script SKIPs, exit 0). Predecessor is linux-x64
       # (this runner); the macOS-only quarantine-clear is the sole path not exercised
       # here.
-      # PHASE 1 REHEARSAL SCAFFOLDING (wego/foundations#128). This step, the
-      # script it runs and the `SMOKE_INSTALL_URL` variable are deleted together
-      # at cutover; the smoke then falls back to the predecessor's own reinstall
-      # hint, which is what wego-ai has always done.
-      #
-      # `scripts/rehearsal-install-resolver.ts` carries the full reasoning. In
-      # short: the rehearsal must resolve `/install` into the REHEARSAL store,
-      # a non-production `apps/api` deployment is the natural way to do that,
-      # and the binary cannot reach one — every preview sits behind Vercel
-      # Authentication, `update.ts` sends `fetch` no headers, and
-      # `ring-follow.ts` strips the query string the documented bypass would
-      # otherwise ride on. The API's contract for this path is a pure
-      # `302 -> <store>/cli/<ring>/<asset>`, and loopback http is permitted by
-      # `assertSecureUrl`, so the lane serves that one hop itself.
-      #
-      # It is pointed at the store THIS RUN published to, never at a configured
-      # address, so a rehearsal cannot read a store its own run did not write.
-      - name: Start the rehearsal install resolver
-        if: steps.publish.outputs.store_origin != '' && startsWith(vars.SMOKE_INSTALL_URL, 'http://127.0.0.1:')
-        env:
-          STORE_ORIGIN: ${{ steps.publish.outputs.store_origin }}
-          INSTALL_URL: ${{ vars.SMOKE_INSTALL_URL }}
-        run: |
-          set -euo pipefail
-          PORT=$(printf '%s' "$INSTALL_URL" | sed -n 's#^http://127\.0\.0\.1:\([0-9]\{1,5\}\)/install$#\1#p')
-          if [ -z "$PORT" ]; then
-            echo "::error::SMOKE_INSTALL_URL must be exactly http://127.0.0.1:<port>/install to start the resolver; got '$INSTALL_URL'."
-            exit 1
-          fi
-          # REFUSE a port that is already in use rather than adopting whatever is
-          # there. On a persistent runner a resolver leaked by an earlier run would
-          # still be listening and would still answer - pointing at THAT run's
-          # store. The smoke would then verify a self-update against bytes this run
-          # never published, and pass. Fail loudly instead.
-          if curl -sS -m 2 -o /dev/null "http://127.0.0.1:$PORT/install" 2>/dev/null; then
-            echo "::error::something is already listening on 127.0.0.1:$PORT. A resolver leaked from an earlier run would answer for ITS store, so this refuses rather than trusting it."
-            exit 1
-          fi
-
-          # Output goes to a file, never to the step's stdout. A backgrounded
-          # process that holds the step's pipe open can keep the runner waiting for
-          # the step to finish.
-          LOG="${RUNNER_TEMP}/rehearsal-resolver.log"
-          PORT="$PORT" STORE_ORIGIN="$STORE_ORIGIN" \
-            bun run scripts/rehearsal-install-resolver.ts > "$LOG" 2>&1 &
-          echo "RESOLVER_PID=$!" >> "$GITHUB_ENV"
-          echo "RESOLVER_LOG=$LOG" >> "$GITHUB_ENV"
-
-          # Wait for it, and prove it is OURS in the same probe. A resolver is
-          # identified by where it redirects: asking for a known asset and checking
-          # the Location against this run's store origin is the only check that
-          # distinguishes our process from any other thing on the port. Polling
-          # rather than sleeping because a smoke that starts too early fails as a
-          # download error, which reads as a publish fault.
-          # `|| loc=` is load-bearing, not defensive noise. This step runs under
-          # `set -e` with `pipefail`, so until the resolver has bound the port the
-          # probe curl exits 7 (couldn't connect), pipefail hands that 7 to the
-          # pipeline, and the assignment — a simple command, not a condition —
-          # takes it as its own status. `set -e` then kills the step on the FIRST
-          # poll iteration, which is the one guaranteed to race the server's bind.
-          # The loop could never wait for anything: it had 50 attempts and could
-          # only ever survive the zeroth.
-          ready=
-          for _ in $(seq 1 50); do
-            loc=$(curl -sS -m 2 -o /dev/null -D - "http://127.0.0.1:$PORT/install?dl=VERSION&ring=next" 2>/dev/null \
-                    | tr -d '\r' | sed -n 's/^[Ll]ocation: //p') || loc=
-            if [ -n "$loc" ]; then ready=$loc; break; fi
-            sleep 0.2
-          done
-          if [ -z "$ready" ]; then
-            echo "::error::the rehearsal install resolver never began listening on 127.0.0.1:$PORT."
-            cat "$LOG" || true
-            exit 1
-          fi
-          # Compared case-insensitively: the resolver builds its Location through
-          # `Response.redirect`, which runs the URL through `new URL()` and
-          # lowercases the host. `store_origin` carries whatever case the publisher
-          # emitted, so a literal match could fail on a correct redirect.
-          lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
-          if [ "$(lc "$ready")" != "$(lc "$STORE_ORIGIN/cli/next/VERSION")" ]; then
-            echo "::error::the resolver on 127.0.0.1:$PORT redirects to '$ready', not to this run's store ($STORE_ORIGIN/cli/next/VERSION)."
-            cat "$LOG" || true
-            exit 1
-          fi
-          echo "resolver listening on 127.0.0.1:$PORT and redirecting into $STORE_ORIGIN"
-
       - name: Smoke test real self-update (cli/next)
         if: steps.publish.outputs.store_origin != '' && steps.prev_channel.outputs.usable == '1'
         env:
@@ -688,16 +602,15 @@ jobs:
           # so the smoke — which places a binary rather than installing it — has to
           # name the ring it is smoking.
           RING: next
-          # WHERE the predecessor is told it was installed from. Without this the
-          # script reads the URL out of the predecessor's own reinstall hint, and a
-          # predecessor built against production names production - so the
-          # self-update would follow the real store instead of the one this run
-          # published to. During Phase 1 this names the loopback resolver started
-          # above; empty (the post-cutover state) restores the hint-reading path.
-          SMOKE_INSTALL_URL: ${{ vars.SMOKE_INSTALL_URL }}
+        # No install-URL override: the smoke reads WHERE it was installed from out of
+        # the predecessor's own reinstall hint, which is what wego-ai always did.
+        # Phase 1 overrode that with a loopback resolver, because a rehearsal had to
+        # resolve `/install` into the rehearsal store rather than production; with
+        # the lane publishing to the real store there is nothing left to redirect.
+        #
         # The exec bit is already restored by the verify step above (and update-smoke.sh
         # chmods its own working copy regardless), so no chmod is needed here.
-        run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING" --install-url "$SMOKE_INSTALL_URL"
+        run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING"
 
       # SMOKE 4: the binary THIS RUN BUILT must be able to update itself.
       #
@@ -715,47 +628,26 @@ jobs:
       # this lane only ever touches `next`. The promote lane carries the check
       # that does. This one proves the update path functions at all, before a
       # tag exists to clean up.
+      #
+      # The install URL is FIXED, not read from `SMOKE_INSTALL_URL`. That
+      # variable was the Phase 1 rehearsal switch and its last consumers go with
+      # the resolver in this same change; honouring it here would leave this gate
+      # pointable at a loopback shim, where it would pass having proved nothing
+      # about the real route - the exact class of failure it exists to catch.
       - name: Smoke test self-update from the new binary (cli/next)
         if: steps.publish.outputs.store_origin != ''
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-          SMOKE_INSTALL_URL: ${{ vars.SMOKE_INSTALL_URL }}
         run: |
           set -euo pipefail
-          install_url="${SMOKE_INSTALL_URL:-https://api.wego.com/install}"
           # WEGO_BUILD_VERSION matters: `update` returns EXIT.OK without doing
           # anything for a dev-versioned binary, so a gate handed one would go
           # green having tested nothing. assert-self-update.ts refuses that case
           # outright, and this keeps it from arising.
           WEGO_BUILD_VERSION="$VERSION" \
             bun run scripts/assert-self-update.ts \
-              ./dist/wego-linux-x64 "$install_url" next \
+              ./dist/wego-linux-x64 https://api.wego.com/install next \
               --expect "$VERSION" --expect-unchanged
-
-      # PHASE 1 REHEARSAL SCAFFOLDING (wego/foundations#128). Deleted with the
-      # resolver step above.
-      #
-      # `always()` because the whole point is that the process does not outlive the
-      # job. Runners in a group are not guaranteed to be ephemeral, and a resolver
-      # left listening would answer the NEXT run's smoke for THIS run's store - a
-      # self-update verified against bytes that run never published. The start step
-      # refuses an occupied port for the same reason; this is the half that keeps it
-      # from ever being occupied.
-      - name: Stop the rehearsal install resolver
-        if: always() && env.RESOLVER_PID != ''
-        run: |
-          set -uo pipefail
-          if [ -n "${RESOLVER_LOG:-}" ] && [ -f "$RESOLVER_LOG" ]; then
-            echo "--- resolver log ---"
-            cat "$RESOLVER_LOG"
-          fi
-          kill "$RESOLVER_PID" 2>/dev/null || true
-          for _ in $(seq 1 25); do
-            kill -0 "$RESOLVER_PID" 2>/dev/null || break
-            sleep 0.2
-          done
-          kill -9 "$RESOLVER_PID" 2>/dev/null || true
-          echo "resolver $RESOLVER_PID stopped."
 
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new
