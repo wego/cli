@@ -426,56 +426,57 @@ jobs:
       # in ring-rules.ts) on the runner's own platform, which is what makes the
       # predecessor capture and the self-update smoke executable here.
 
-      # SMOKE 3's predecessor, read from the IMMUTABLE `cli/<prev-tag>/` prefix.
+      # SMOKE 3's predecessor, read from `cli/next` — the RING THIS JOB ADVANCES —
+      # before the pointer moves.
       #
-      # It used to be read from `cli/next` - the pointer THIS JOB advances a few steps
-      # later. That one choice cost five steps and an artifact: the read had to happen
-      # before the pointer moved, so a rerun could no longer see the old bytes, so the
-      # binary was uploaded as a run artifact, so a probe was needed to tell an
-      # attempt-1 miss from a real download failure, so a 404 needed a persisted
-      # sentinel to stay rerun-recoverable, so a separate gate had to read the
-      # resulting directory. Every one of those existed to work around reading a
-      # moving pointer.
+      # It was read from the immutable `cli/<prev-tag>/` prefix, which was the right
+      # answer while the tag namespace and the store namespace agreed. They no longer
+      # do. `prepare` derives `prev_tag` from this repository's git tags, and the
+      # release that `cli/next` currently points at was published by wego-ai under a
+      # DIFFERENT tag spelling: the 1.1.0 bytes live at `cli/cli-v1.1.0/`, not at
+      # `cli/v1.1.0/`. So the 1.2.0 run would compose a prefix that has never
+      # existed, take the 404 skip path below, and silently skip the only live test
+      # of hop 2 (foundations#133) — on the one release where hop 2 is the thing
+      # being proven. A skip is not a failure, so nothing would have flagged it.
       #
-      # An immutable prefix does not move: any rerun reads the same bytes, in any
-      # order, with nothing persisted. `prepare` already knows the predecessor tag, and
-      # "no previous release" is now knowable UP FRONT instead of discovered as a 404.
+      # The ring does not have that problem: `cli/next` names whatever was last
+      # published to it, under whichever repository's tag spelling, which is also
+      # exactly what a consumer's `wego update` is following. That was the original
+      # fidelity argument for reading the ring, and it now costs nothing to honour —
+      # the five steps and the run artifact that reading a moving pointer used to
+      # require are not coming back, because this reads it ONCE, before the advance,
+      # in the same job that does the advancing.
       #
-      # ONE FIDELITY TRADE, STATED. `cli/next` served what consumers actually run; the
-      # previous TAG may be a version no ring ever pointed at, because a release can
-      # fail after publishing its immutable objects but before advancing the pointer -
-      # v0.7.0 and v0.7.1 are both exactly that. This is acceptable because
-      # SMOKE 3 tests the PREDECESSOR's update code path, not which bytes a ring
-      # served: an unpublished-but-built binary exercises that path identically, and it
-      # was built by this same pipeline. If the smoke ever needs "what consumers really
-      # run", it needs the pointer read back, and the five steps come back with it.
+      # Rerun safety, which the immutable prefix used to provide: a rerun that gets
+      # this far has already advanced the pointer, so it captures the release it is
+      # re-releasing and the smoke becomes a same-version self-update. That is a
+      # weaker test, not a wrong one, and it is confined to reruns of an already
+      # published release.
+      #
+      # `VERSION` is read alongside the bytes so the summary can NAME the release
+      # being updated from. A skipped hop-2 test and a passing one must not look
+      # alike in the log.
       - name: Capture the predecessor binary (for the update smoke)
         id: prev_channel
-        if: steps.publish.outputs.store_origin != '' && needs.prepare.outputs.prev_tag != ''
+        if: steps.publish.outputs.store_origin != ''
         env:
-          BASE: ${{ steps.publish.outputs.store_origin }}/cli/${{ needs.prepare.outputs.prev_tag }}
+          BASE: ${{ steps.publish.outputs.store_origin }}/cli/next
           ASSET: wego-linux-x64
         run: |
           set -eu
           dir="${RUNNER_TEMP}/prev-channel"
           mkdir -p "$dir"
-          # Both the binary and its manifest: the fail-closed verify-then-execute in
-          # the next step checks one against the other before running anything.
+          # The binary, its manifest and the ring's version: the fail-closed
+          # verify-then-execute in the next step checks the first against the second
+          # before running anything, and the third names what is being updated FROM.
           #
-          # A 404 is SKIP, not failure - and this is the one place that distinction
-          # decides whether a release can ship. A tag exists from the moment the
-          # release PR merges; its `cli/<tag>/` objects exist only if that release's
-          # job got as far as `--freeze`. So a release that failed EARLIER than the
-          # publish (a build break, a runner outage) leaves a tag in git with no
-          # prefix behind it - and that tag is the next release's predecessor. Under
-          # `curl -f` this step would then abort AFTER this job published its own
-          # immutable objects and BEFORE it advanced the pointer, identically on
-          # every re-run, and the only way out would be deleting a git tag. A missing
-          # predecessor is not evidence that self-update is broken, so it skips
-          # SMOKE 3 instead. Any OTHER status stays fatal: a 403 or a 500 says the
-          # store is misbehaving, which is not something to shrug at.
+          # A 404 is SKIP, not failure, and now means exactly one thing: the ring is
+          # EMPTY — no release has ever been published to `cli/next`. That is the
+          # first-release case, where there is by definition nothing to update from.
+          # Any OTHER status stays fatal: a 403 or a 500 says the store is
+          # misbehaving, which is not something to shrug at.
           usable=1
-          for obj in "$ASSET" SHA256SUMS.txt; do
+          for obj in "$ASSET" SHA256SUMS.txt VERSION; do
             code=$(curl -sSL --connect-timeout 15 --max-time 600 \
                      -w '%{http_code}' -o "$dir/$obj" "$BASE/$obj") \
               || { echo "::error::transport failure fetching $BASE/$obj (curl exit $?)." >&2; exit 1; }
@@ -489,9 +490,13 @@ jobs:
             # Drop the partial directory so nothing downstream can mistake a 404
             # body for a captured binary.
             rm -rf "$dir"
-            echo "::notice::predecessor ${BASE##*/} has no published objects (404) - SMOKE 3 skipped. This release is unaffected."
+            echo "::notice::cli/next is empty (404) - SMOKE 3 skipped. This release is unaffected."
+            echo "SMOKE 3 skipped: cli/next is empty, nothing to update from." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Captured predecessor $BASE (verified before execution below)."
+            prev_version=$(tr -d '\r\n' < "$dir/VERSION")
+            echo "predecessor $prev_version from cli/next" >> "$GITHUB_STEP_SUMMARY"
+            echo "predecessor $prev_version from cli/next (verified before execution below)."
+            echo "prev_version=$prev_version" >> "$GITHUB_OUTPUT"
           fi
           echo "usable=$usable" >> "$GITHUB_OUTPUT"
 
@@ -533,10 +538,9 @@ jobs:
       # downloads the binary and its SHA256SUMS.txt, and this step checks one against
       # the other before anything is chmod'd or run. Separate from the capture so the
       # verification is a step in its own right rather than a branch inside a download.
-      # Gated on `usable` as well as on the tag, because a predecessor that 404'd has
-      # no binary to verify.
+      # Gated on `usable`, because an empty `cli/next` leaves no binary to verify.
       - name: Verify predecessor checksum
-        if: steps.publish.outputs.store_origin != '' && needs.prepare.outputs.prev_tag != '' && steps.prev_channel.outputs.usable == '1'
+        if: steps.publish.outputs.store_origin != '' && steps.prev_channel.outputs.usable == '1'
         env:
           DIR: ${{ runner.temp }}/prev-channel
           ASSET: wego-linux-x64
@@ -662,7 +666,7 @@ jobs:
           echo "resolver listening on 127.0.0.1:$PORT and redirecting into $STORE_ORIGIN"
 
       - name: Smoke test real self-update (cli/next)
-        if: steps.publish.outputs.store_origin != '' && needs.prepare.outputs.prev_tag != '' && steps.prev_channel.outputs.usable == '1'
+        if: steps.publish.outputs.store_origin != '' && steps.prev_channel.outputs.usable == '1'
         env:
           OLD_BINARY: ${{ runner.temp }}/prev-channel/wego-linux-x64
           VERSION: ${{ needs.prepare.outputs.version }}

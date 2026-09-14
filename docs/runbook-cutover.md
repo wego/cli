@@ -380,7 +380,9 @@ preview out of existence and #129's manual install ran on loopback.
 
 **Keep**, deliberately:
 
-- `cli/cli-v1.1.0/` in the production store — immutable, the last wego-ai build.
+- `cli/cli-v1.1.0/` **and** `cli-sig/cli-v1.1.0/` in the production store — the
+  legacy bridge. **Never deleted by any lane, issue or cleanup.** See the
+  never-delete rule at the end of this file; it has no expiry date.
 - `skill/next` and `skill/stable` — frozen, read by pre-relay binaries.
 - wego-ai's `promote-cli.yml`, `publish-skill.yml`, repo-scope `BLOB_READ_WRITE_TOKEN`
   and skills App secrets — the way back, until the 3c tail.
@@ -544,3 +546,119 @@ gh api repos/wego/wego-ai/compare/0e9f6bfe60864e6226decbebdd3e5b7535c7080e...mai
 - wego-ai has no `release-cli.yml`, `edge-cli.yml` or `ci-cli.yml`; its `main` is
   green and its open PRs are mergeable.
 - The rehearsal blob store and the Phase 1 resolver are gone.
+
+---
+
+## 3c — prerequisites, and the two-hop test
+
+3b moves `next` and `edge`. **`stable` moves in 3c**, and that is the move the
+1.0.x install base cannot survive unaided. Everything in this section is the
+preflight for that sitting (wego/foundations#134). Built in 3p
+(wego/foundations#159); read here.
+
+### Why `stable` is different
+
+Every 1.0.0 and 1.0.1 install following `stable` must reach every later release
+with nothing but `wego update` — at any time, with no deadline and no reinstall.
+Those binaries trust only wego-ai's signing identity. The moment `stable` names a
+release signed under wego/cli's, they cannot verify what `stable` points at: they
+refuse, fail-closed, and keep refusing. **There is no later fix.** A binary that
+cannot verify an update cannot be updated into one that can.
+
+The mechanism is the **legacy bridge pin**: a frozen copy of 1.1.0 — the last
+release those binaries can verify — at an immutable tag prefix, served to old
+binaries only, while everyone else sees the live ring. Old binaries reach 1.1.0 by
+`wego update`; the 1.1.0 they land on names itself `Wego-CLI/1.1.0`, is therefore
+no longer pinned, and reaches 1.2.0 and everything after by `wego update` again.
+Two hops, both automatic. That is what the test below proves.
+
+### Prerequisite 1 — the pin is live (four curls)
+
+All four must answer as shown before `stable` moves. The first is the pin; the
+other three are its scope, and a pin that caught them would break the installer
+script or freeze a ring that exists to move.
+
+```bash
+# 1. PINNED — an old binary asking stable is answered from the bridge
+curl -sI -A 'Bun/1.3.14'     'https://api.wego.com/install?dl=SHA256SUMS.txt&ring=stable' | grep -i '^location:'
+#    must name  /cli/cli-v1.1.0/
+
+# 2. NOT PINNED — a binary that names itself
+curl -sI -A 'Wego-CLI/1.1.0' 'https://api.wego.com/install?dl=SHA256SUMS.txt&ring=stable' | grep -i '^location:'
+#    must name  /cli/stable/
+
+# 3. NOT PINNED — another ring
+curl -sI -A 'Bun/1.3.14'     'https://api.wego.com/install?dl=SHA256SUMS.txt&ring=next'   | grep -i '^location:'
+#    must name  /cli/next/
+
+# 4. NOT PINNED — the installer script's own read (no agent)
+curl -sI                     'https://api.wego.com/install?dl=SHA256SUMS.txt&ring=stable' | grep -i '^location:'
+#    must name  /cli/stable/
+```
+
+Curl 1 failing means the pin is not on, or the bridge prefix is empty. **Do not
+continue**; setting the variables with no bridge behind them 404s every `stable`
+1.0.x update check, which is the failure this whole apparatus exists to prevent.
+The switch-on order and the two variables are in wego-ai's
+`apps/api/docs/runtime-configuration.md`.
+
+### Prerequisite 2 — the promote guard is on `main`
+
+`promote-cli.yml` refuses to move `stable` unless curl 1 above passes. It asks
+production the same question, with the same user agent, in the step immediately
+before the pointer move, and it has no bypass input — `allow_not_next` does not
+reach it either, because a rollback moves `stable` just as surely.
+
+```bash
+gh api repos/wego/cli/contents/.github/workflows/promote-cli.yml \
+  -H 'Accept: application/vnd.github.raw' | grep -q 'cli/cli-v1.1.0/' && echo "guard present"
+```
+
+It refuses today, correctly. It passes from the end of 3a on.
+
+### The two-hop machine test
+
+The one test that exercises the guarantee end to end, on a real machine, rather
+than asserting it. Run it on the **kept 1.0.1 install** — the un-upgraded machine
+following `stable`, named on wego/foundations#134 and deliberately not updated
+since 3p. There is exactly one of these; do not use it for anything else first.
+
+```bash
+wego version          # 1.0.1 — the starting point, and the reason this machine was kept
+
+# HOP 1 — the pin hands an old binary the last release it can verify
+wego update -y
+wego version          # must print 1.1.0
+
+# HOP 2 — the binary now names itself, is no longer pinned, and follows the live ring
+wego update -y
+wego version          # must print 1.2.0 (or whatever stable serves by then)
+```
+
+**Both hops must need no flag, no reinstall and no human step beyond `wego
+update`.** That is the whole claim. If hop 1 prints "Already up to date", the pin
+is catching a binary that names itself — check curl 2. If hop 2 prints "Already up
+to date", the 1.1.0 it landed on does NOT carry the `Wego-CLI/` header
+(wego-ai#1915) and is still being pinned to the bridge: that binary is stuck, and
+`stable` must not move until a 1.1.0 that sends the header is what the bridge
+serves.
+
+### The never-delete rule
+
+> **`cli/cli-v1.1.0/` and `cli-sig/cli-v1.1.0/` in the production store are never
+> deleted — by any lane, any issue, any teardown, any cleanup, at any time.**
+
+They are the bridge. Deleting either one strands every 1.0.0 and 1.0.1 install
+that has not yet taken hop 1, permanently and unrecoverably — and those installs
+are un-countable and un-contactable, so there is no point at which "everyone has
+upgraded" becomes checkable. **The guarantee has no deadline, so the bridge has no
+end date.**
+
+This rule outranks every teardown list in this file and in wego/foundations#133,
+#134 and their successors. A cleanup that proposes to reclaim the prefix is
+wrong, not merely early.
+
+`cli-sig/` is named explicitly because it is the easier one to miss: it is a
+separate prefix from the downloads it vouches for, and a sweep written against
+`cli/` alone would take the record while leaving the bytes — which fails the
+update fail-closed, with no clue as to why.
