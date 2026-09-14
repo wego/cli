@@ -458,9 +458,9 @@ export function buildVersionNoticeDeps(): VersionNoticeDeps {
     claimWindow: async () => {
       try {
         await ensureOwnerDir(dirname(statePath));
-        // Create-if-absent WITHOUT truncating: a zero-byte append leaves an
-        // already-stored answer intact, so claiming the window can never lose the
-        // version we are about to nag about.
+        // Append rather than write: create-if-absent without truncating, and the
+        // only writer there is. The file stays empty by design - its mtime is the
+        // entire record.
         await appendFile(statePath, "", { mode: 0o600 });
         const now = new Date();
         await utimes(statePath, now, now);
