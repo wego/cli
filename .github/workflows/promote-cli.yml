@@ -335,9 +335,19 @@ jobs:
           # `.config/wego-linux-x64/`, finds no install record, and exits without
           # touching the network - a green check that tested nothing.
           mkdir -p "$work/bin" "$work/home/.config/wego"
-          # `--require-serving next` below guarantees cli/next IS this tag, so
-          # this fetches exactly the bytes about to be promoted.
-          curl -fsSL "$url?dl=wego-linux-x64&ring=next" -o "$work/bin/wego"
+          # `--require-serving next` in `Advance cli/stable` guarantees cli/next IS
+          # this tag - but that runs AFTER this step, so a mismatch would surface
+          # here first as a bare curl error. Say it plainly instead, and point at
+          # the gate that owns the rule.
+          served=$(curl -fsSL "$url?dl=VERSION&ring=next" || true)
+          if [ "$served" != "${TAG#v}" ]; then
+            echo "::error::cli/next serves '${served:-nothing}', not ${TAG#v}, so the bytes this gate would test are not $TAG's. Promote the build that ring has been running, or use allow_not_next if this is a deliberate rollback (which skips this gate). The publisher refuses this too, at Advance cli/stable."
+            exit 1
+          fi
+          if ! curl -fsSL "$url?dl=wego-linux-x64&ring=next" -o "$work/bin/wego"; then
+            echo "::error::could not download wego-linux-x64 from cli/next at $url. The ring reports ${TAG#v} but is not serving a complete artifact set."
+            exit 1
+          fi
           chmod +x "$work/bin/wego"
           printf '{"ring":"stable","installUrl":"%s"}\n' "$url" \
             > "$work/home/.config/wego/install.json"
