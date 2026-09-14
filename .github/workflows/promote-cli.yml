@@ -300,6 +300,74 @@ jobs:
           echo "::error::the legacy bridge pin is NOT live: a Bun/ user agent asking for stable is answered with '${loc:-no location header}', which does not name /cli/cli-v1.1.0/. Moving cli/stable now would strand every 1.0.0 and 1.0.1 install that follows it, permanently and unrecoverably. Publish the bridge and set CLI_LEGACY_BRIDGE_RING + CLI_LEGACY_BRIDGE_TAG on the production apps/api deploy first (wego/foundations#132)."
           exit 1
 
+      # THE COMPLEMENT OF THE PROBE ABOVE, and the check whose absence shipped
+      # v1.2.0 (wego/cli#25).
+      #
+      # That probe asserts OLD binaries are pinned. This asserts the binary we
+      # are about to put in front of everybody is NOT - by running its real
+      # `wego update` against the real production route, in a throwaway
+      # directory, BEFORE the pointer moves.
+      #
+      # `stable` still serves the outgoing version here, so a correct binary
+      # performs a genuine update and lands on it (a downgrade, in a temp dir,
+      # affecting nothing). That is the point: a successful round trip proves
+      # the whole chain - user agent, pin decision, record verification,
+      # manifest coverage, hash comparison, replace - rather than one property
+      # that is supposed to imply it. v1.2.0's binary refuses here with exit 6.
+      #
+      # DELIBERATELY INLINE, not `scripts/assert-self-update.ts`: this job checks
+      # out the TAG's tree, so a script-based check would silently skip on every
+      # tag cut before it existed - including the one tag this must refuse.
+      #
+      # Skipped on a rollback: `allow_not_next` promotes a tag `next` does not
+      # serve, so there is nothing at `ring=next` to fetch, and a rollback target
+      # is by definition a build that already shipped.
+      - name: Require this tag's binary to be able to update itself
+        if: ${{ !inputs.allow_not_next }}
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          url='https://api.wego.com/install'
+          work="$RUNNER_TEMP/selfupdate"; rm -rf "$work"
+          # The binary MUST be named `wego`: the config directory is derived from
+          # the name it is invoked as, so `wego-linux-x64` looks for
+          # `.config/wego-linux-x64/`, finds no install record, and exits without
+          # touching the network - a green check that tested nothing.
+          mkdir -p "$work/bin" "$work/home/.config/wego"
+          # `--require-serving next` below guarantees cli/next IS this tag, so
+          # this fetches exactly the bytes about to be promoted.
+          curl -fsSL "$url?dl=wego-linux-x64&ring=next" -o "$work/bin/wego"
+          chmod +x "$work/bin/wego"
+          printf '{"ring":"stable","installUrl":"%s"}\n' "$url" \
+            > "$work/home/.config/wego/install.json"
+
+          before=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
+                   WEGO_CLI_TELEMETRY=0 "$work/bin/wego" version)
+          echo "candidate binary reports $before"
+
+          set +e
+          out=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
+                WEGO_CLI_TELEMETRY=0 "$work/bin/wego" update -y 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+
+          # `update` returns 0 without acting for a dev-versioned or from-source
+          # binary (update.ts:364), so an exit-code-only check could pass having
+          # done nothing.
+          if printf '%s' "$out" | grep -q 'Self-update applies to installed release binaries'; then
+            echo "::error::$TAG's binary does not consider itself a release build, so update did nothing and this check proved NOTHING. It was built without WEGO_BUILD_VERSION."
+            exit 1
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::error::$TAG's binary CANNOT UPDATE ITSELF (exit $code). Promoting it would put a build in front of every install that can never receive another release. Exit 6 means it fetched a signed record it does not accept - if the message names a tag it was not built to trust, it is being served the legacy bridge, which means it sends a Bun/ user agent (wego/cli#25)."
+            exit 1
+          fi
+          after=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
+                  WEGO_CLI_TELEMETRY=0 "$work/bin/wego" version)
+          echo "ok: $TAG's binary completed a real self-update against $url ($before -> $after). cli/stable has not moved."
+
       # THE MOVE. A server-side copy of the frozen cli/<tag> blobs onto cli/stable.
       # REQUIRE_PUBLISH: an absent token must FAIL here rather than exit 0 having
       # promoted nothing - a "successful" promote that moved no pointer would read as
@@ -357,6 +425,46 @@ jobs:
           fi
           echo "ok: cli/next and cli/stable serve byte-identical artifacts."
           cat "$RUNNER_TEMP/stable.sums"
+
+      # THE "LEAVING" TEST. The pre-move gate proved this binary can update
+      # against the OUTGOING stable. This proves the state we just created is
+      # self-consistent: a binary of the version now on `stable`, asking
+      # `stable`, must report it is already current.
+      #
+      # Post-move on purpose, and safe to be: it asserts a property of the ring
+      # as it now stands, which cannot be known before the move. The gate that
+      # must never fail late is the pre-move one above; this is verification,
+      # the same role `Verify cli/stable` plays.
+      - name: Verify a promoted binary reports itself current
+        if: steps.promote.outputs.store_origin != ''
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          url='https://api.wego.com/install'
+          work="$RUNNER_TEMP/selfupdate-after"; rm -rf "$work"
+          mkdir -p "$work/bin" "$work/home/.config/wego"
+          curl -fsSL "$url?dl=wego-linux-x64&ring=stable" -o "$work/bin/wego"
+          chmod +x "$work/bin/wego"
+          printf '{"ring":"stable","installUrl":"%s"}\n' "$url" \
+            > "$work/home/.config/wego/install.json"
+
+          set +e
+          out=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
+                WEGO_CLI_TELEMETRY=0 "$work/bin/wego" update -y 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+
+          if [ "$code" -ne 0 ]; then
+            echo "::error::a binary taken from cli/stable cannot update itself (exit $code). cli/stable now serves $TAG and every install following it is affected. Roll back with wego-ai's promote-cli.yml (tag=cli-v1.1.0, allow_not_next=true) and see wego/cli#25."
+            exit 1
+          fi
+          if ! printf '%s' "$out" | grep -qi 'up to date'; then
+            echo "::error::a binary taken from cli/stable did not report itself current - it replaced itself. cli/stable is not serving the bytes this promote just copied."
+            exit 1
+          fi
+          echo "ok: a binary from cli/stable asks stable and is told it is current."
 
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new
