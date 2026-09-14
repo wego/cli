@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  CLI_EDGE_SIGNING_IDENTITY,
   EDGE_SIGNING_IDENTITY,
   identitiesForRing,
   SIGNING_IDENTITY,
@@ -229,12 +230,21 @@ describe("malformed input", () => {
 
 /**
  * The RULE SET, on its own. `release-cli.yml` has two documented entries — a
- * `workflow_call` from release-please (which runs on main) and a `v*` tag push
- * (the recovery release) — so the release rings accept two identities. These cases
- * pin BOTH directions: the tag path is accepted, and everything adjacent to it is
- * not. Asserted through the exported rules rather than through a minted certificate,
- * because what is under test here is the matching, not the X.509 reading that the
- * cases above already cover end to end.
+ * `workflow_call` from release-please (which runs on main) and a tag push (the
+ * recovery release) — so the release rings accept two identities per repository
+ * that has both. Asserted through the exported rules rather than through a minted
+ * certificate, because what is under test here is the matching, not the X.509
+ * reading that the cases above already cover end to end.
+ *
+ * THE TWO REPOSITORIES CUT DIFFERENT TAG SHAPES, and these cases exist mostly to
+ * pin that (wego/cli#29). wego-ai's release-please sets `include-component-in-tag:
+ * true` with `component: "cli"`, so it only ever cut `cli-vX.Y.Z`; this repository
+ * sets it false and cuts a bare `vX.Y.Z`. The shipped v1.2.0 rule had wego-ai's
+ * repo path with THIS repository's tag shape, which matches no record that has
+ * ever existed — and the suite here agreed with it, because it asserted the
+ * invented `v1.2.3` rather than a release anyone published. So each direction is
+ * now pinned against a REAL tag, and the other repository's shape is asserted to
+ * be refused on the same path.
  */
 describe("the identities a ring accepts", () => {
   const accepts = (ring: string, uri: string): boolean =>
@@ -242,34 +252,70 @@ describe("the identities a ring accepts", () => {
       typeof rule === "string" ? uri === rule : rule.test(uri),
     );
 
+  /** A SAN for wego-ai's release workflow on `ref`. */
   const tag = (ref: string) =>
     `https://github.com/wego/wego-ai/.github/workflows/release-cli.yml@refs/tags/${ref}`;
+
+  /** The same, for this repository's release workflow. */
+  const cliTag = (ref: string) =>
+    `https://github.com/wego/cli/.github/workflows/release-cli.yml@refs/tags/${ref}`;
 
   it("accepts the release workflow on main, for next and stable", () => {
     expect(accepts("next", SIGNING_IDENTITY)).toBe(true);
     expect(accepts("stable", SIGNING_IDENTITY)).toBe(true);
   });
 
-  it("accepts the release workflow on a vX.Y.Z tag — the recovery release", () => {
-    expect(accepts("next", tag("v1.2.3"))).toBe(true);
-    expect(accepts("next", tag("v10.0.11"))).toBe(true);
+  it("accepts wego-ai's LAST REAL RELEASE, cli-v1.1.0", () => {
+    // Not a hypothetical. This is the record `cli/stable` served through the
+    // rollback of 2026-09-14, and the one a rollback to the pre-cutover release
+    // puts back. A binary that refuses it cannot update off that ring at all:
+    // exit 6, EXIT.PERMANENT, with no way forward. That is what v1.2.0 did.
+    expect(accepts("stable", tag("cli-v1.1.0"))).toBe(true);
+    expect(accepts("next", tag("cli-v1.1.0"))).toBe(true);
+  });
+
+  it("accepts wego-ai's tag shape generally - the recovery release", () => {
+    expect(accepts("next", tag("cli-v1.0.1"))).toBe(true);
+    expect(accepts("next", tag("cli-v10.0.11"))).toBe(true);
+  });
+
+  it("accepts THIS repository's tag shape, which carries no component", () => {
+    expect(accepts("next", cliTag("v1.2.1"))).toBe(true);
+    expect(accepts("stable", cliTag("v1.2.1"))).toBe(true);
+    expect(accepts("next", cliTag("v10.0.11"))).toBe(true);
+  });
+
+  it("does not accept either repository under the OTHER's tag shape", () => {
+    // The whole of wego/cli#29 in two lines. wego-ai never cut a bare `vX.Y.Z`
+    // and this repository never cut a `cli-vX.Y.Z`, so a rule that accepted the
+    // swapped shape would be trusting a ref neither repo can produce - and,
+    // as shipped, refusing the one it does.
+    expect(accepts("next", tag("v1.1.0"))).toBe(false);
+    expect(accepts("next", cliTag("cli-v1.2.1"))).toBe(false);
   });
 
   it("refuses a prerelease tag: the -rc.N line is gone", () => {
-    expect(accepts("next", tag("v1.2.3-rc.1"))).toBe(false);
+    expect(accepts("next", tag("cli-v1.2.3-rc.1"))).toBe(false);
+    expect(accepts("next", cliTag("v1.2.3-rc.1"))).toBe(false);
   });
 
   it("refuses a tag that is not a bare version", () => {
-    expect(accepts("next", tag("v1.2"))).toBe(false);
-    expect(accepts("next", tag("vnext"))).toBe(false);
-    expect(accepts("next", tag("v1.2.3/../evil"))).toBe(false);
+    expect(accepts("next", tag("cli-v1.2"))).toBe(false);
+    expect(accepts("next", tag("cli-vnext"))).toBe(false);
+    expect(accepts("next", tag("cli-v1.2.3/../evil"))).toBe(false);
+    expect(accepts("next", cliTag("v1.2"))).toBe(false);
   });
 
   it("refuses the pattern as a SUBSTRING of a longer SAN", () => {
     // What the anchors buy: a SAN the signer chose that merely CONTAINS an
     // acceptable one must not pass.
-    expect(accepts("next", `${tag("v1.2.3")}@refs/heads/attacker`)).toBe(false);
-    expect(accepts("next", `https://evil.example/${tag("v1.2.3")}`)).toBe(
+    expect(accepts("next", `${tag("cli-v1.2.3")}@refs/heads/attacker`)).toBe(
+      false,
+    );
+    expect(accepts("next", `https://evil.example/${tag("cli-v1.2.3")}`)).toBe(
+      false,
+    );
+    expect(accepts("next", `${cliTag("v1.2.3")}@refs/heads/attacker`)).toBe(
       false,
     );
   });
@@ -285,16 +331,24 @@ describe("the identities a ring accepts", () => {
     expect(
       accepts(
         "next",
-        "https://github.com/evil/wego-ai/.github/workflows/release-cli.yml@refs/tags/v1.2.3",
+        "https://github.com/evil/wego-ai/.github/workflows/release-cli.yml@refs/tags/cli-v1.2.3",
+      ),
+    ).toBe(false);
+    expect(
+      accepts(
+        "next",
+        "https://github.com/evil/cli/.github/workflows/release-cli.yml@refs/tags/v1.2.3",
       ),
     ).toBe(false);
   });
 
-  it("keeps the edge lane to its own single identity", () => {
-    // The edge lane triggers only on main, so it gets no tag rule — a dogfood
+  it("keeps the edge lane to its own identities", () => {
+    // The edge lanes trigger only on main, so they get no tag rule — a dogfood
     // record must never be able to pass as a release record.
     expect(accepts("edge", EDGE_SIGNING_IDENTITY)).toBe(true);
+    expect(accepts("edge", CLI_EDGE_SIGNING_IDENTITY)).toBe(true);
     expect(accepts("edge", SIGNING_IDENTITY)).toBe(false);
-    expect(accepts("edge", tag("v1.2.3"))).toBe(false);
+    expect(accepts("edge", tag("cli-v1.2.3"))).toBe(false);
+    expect(accepts("edge", cliTag("v1.2.3"))).toBe(false);
   });
 });

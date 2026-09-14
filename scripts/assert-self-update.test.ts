@@ -39,8 +39,12 @@ describe("the self-update gate's verdict", () => {
     expect(v.ok).toBe(false);
     if (!v.ok) {
       expect(v.reason).toContain("exited 6");
-      expect(v.reason).toContain("legacy bridge");
-      expect(v.reason).toContain("user agent");
+      expect(v.reason).toContain("fail-closed refusal");
+      // Points at the SAN, not at the bridge: since wego/cli#29 the bridge's
+      // `cli-v1.1.0` record verifies, so it is no longer a route to exit 6.
+      expect(v.reason).toContain("SAN");
+      expect(v.reason).toContain("wego/cli#29");
+      expect(v.reason).not.toContain("legacy bridge");
     }
   });
 

@@ -303,45 +303,47 @@ jobs:
       # THE COMPLEMENT OF THE PROBE ABOVE, and the check whose absence shipped
       # v1.2.0 (wego/cli#25).
       #
-      # That probe asserts OLD binaries are pinned. This asserts the binary we
-      # are about to put in front of everybody is NOT - by running its real
-      # `wego update` against the real production route, in a throwaway
-      # directory, BEFORE the pointer moves.
+      # That probe asserts OLD binaries ARE pinned. This asserts the binary about
+      # to go in front of everybody is NOT - by measuring the user agent it
+      # actually sends and asking the real route what it does with it.
       #
-      # `stable` still serves the outgoing version here, so a correct binary
-      # performs a genuine update and lands on it (a downgrade, in a temp dir,
-      # affecting nothing). That is the point: a successful round trip proves
-      # the whole chain - user agent, pin decision, record verification,
-      # manifest coverage, hash comparison, replace - rather than one property
-      # that is supposed to imply it. v1.2.0's binary refuses here with exit 6.
+      # REWRITTEN 2026-09-14 after the first version blocked a safe promote.
+      # That version ran a real `wego update` against live `stable`, on the
+      # premise that a correct binary would update onto the outgoing release.
+      # The premise is false across a repository migration: `stable` served
+      # wego-ai's `cli-v1.1.0`, and wego/cli's RELEASE_TAG_IDENTITY matches
+      # `wego-ai/...@refs/tags/vX.Y.Z` - never `cli-vX.Y.Z` - so ANY wego/cli
+      # binary refuses it, pinned or not. Exit 6 from the pin and exit 6 from a
+      # tag-shape mismatch are indistinguishable, so the outcome test cannot
+      # answer the question it was asked. Measure the agent instead: that IS the
+      # pin's whole input, and it is knowable before the pointer moves.
       #
-      # DELIBERATELY INLINE, not `scripts/assert-self-update.ts`: this job checks
-      # out the TAG's tree, so a script-based check would silently skip on every
-      # tag cut before it existed - including the one tag this must refuse.
+      # The outcome test still exists, AFTER the move, where `stable` serves a
+      # release this binary can verify and a successful round trip means what it
+      # says.
+      #
+      # DELIBERATELY INLINE, not a script in `scripts/`: this job checks out the
+      # TAG's tree, so a script-based check would silently skip on every tag cut
+      # before it existed - including the tags it most needs to refuse.
       #
       # Skipped on a rollback: `allow_not_next` promotes a tag `next` does not
-      # serve, so there is nothing at `ring=next` to fetch, and a rollback target
-      # is by definition a build that already shipped.
-      - name: Require this tag's binary to be able to update itself
+      # serve, so there is nothing at `ring=next` to fetch.
+      - name: Require this tag's binary to be distinguishable from a pre-relay install
         if: ${{ !inputs.allow_not_next }}
         env:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           url='https://api.wego.com/install'
-          work="$RUNNER_TEMP/selfupdate"; rm -rf "$work"
-          # The binary MUST be named `wego`: the config directory is derived from
-          # the name it is invoked as, so `wego-linux-x64` looks for
-          # `.config/wego-linux-x64/`, finds no install record, and exits without
-          # touching the network - a green check that tested nothing.
+          work="$RUNNER_TEMP/agent-probe"; rm -rf "$work"
           mkdir -p "$work/bin" "$work/home/.config/wego"
-          # `--require-serving next` in `Advance cli/stable` guarantees cli/next IS
-          # this tag - but that runs AFTER this step, so a mismatch would surface
-          # here first as a bare curl error. Say it plainly instead, and point at
-          # the gate that owns the rule.
+
+          # `--require-serving next` in `Advance cli/stable` owns this rule, but it
+          # runs AFTER this step, so a mismatch would surface here as a bare curl
+          # error. Say it plainly and point at the gate that owns it.
           served=$(curl -fsSL "$url?dl=VERSION&ring=next" || true)
           if [ "$served" != "${TAG#v}" ]; then
-            echo "::error::cli/next serves '${served:-nothing}', not ${TAG#v}, so the bytes this gate would test are not $TAG's. Promote the build that ring has been running, or use allow_not_next if this is a deliberate rollback (which skips this gate). The publisher refuses this too, at Advance cli/stable."
+            echo "::error::cli/next serves '${served:-nothing}', not ${TAG#v}, so the bytes this gate would test are not $TAG's. Promote the build that ring has been running, or use allow_not_next for a deliberate rollback (which skips this gate)."
             exit 1
           fi
           if ! curl -fsSL "$url?dl=wego-linux-x64&ring=next" -o "$work/bin/wego"; then
@@ -349,34 +351,102 @@ jobs:
             exit 1
           fi
           chmod +x "$work/bin/wego"
-          printf '{"ring":"stable","installUrl":"%s"}\n' "$url" \
+
+          # A listener that records the agent and 404s. The 404 is fine: the agent
+          # goes out on the FIRST request, which is all this needs.
+          #
+          # `bun -e`, not a heredoc: a heredoc body inside a YAML block scalar
+          # carries the block's indentation into the file and has to be stripped
+          # back out, which is a silent breakage waiting to happen in a lane
+          # nothing lints.
+          : > "$work/agent.txt"
+          AGENT_FILE="$work/agent.txt" bun -e 'const out=Bun.file(process.env.AGENT_FILE).writer();Bun.serve({hostname:"127.0.0.1",port:8977,fetch(r){out.write((r.headers.get("user-agent")??"")+"\n");out.flush();return new Response("probe",{status:404});}});' &
+          LPID=$!
+          sleep 2
+
+          # THE BINARY MUST BE NAMED `wego`: the config directory is derived from
+          # the name it is invoked as, so `wego-linux-x64` looks for
+          # `.config/wego-linux-x64/`, finds no install record, and exits without
+          # touching the network - a green check that measured nothing.
+          printf '{"ring":"stable","installUrl":"http://127.0.0.1:8977/install"}\n' \
             > "$work/home/.config/wego/install.json"
-
-          before=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
-                   WEGO_CLI_TELEMETRY=0 "$work/bin/wego" version)
-          echo "candidate binary reports $before"
-
           set +e
           out=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
                 WEGO_CLI_TELEMETRY=0 "$work/bin/wego" update -y 2>&1)
-          code=$?
           set -e
+          kill "$LPID" 2>/dev/null || true
           echo "$out"
 
           # `update` returns 0 without acting for a dev-versioned or from-source
-          # binary (update.ts:364), so an exit-code-only check could pass having
-          # done nothing.
+          # binary (update.ts:364), so a check that tolerated an empty result
+          # would pass having measured nothing.
           if printf '%s' "$out" | grep -q 'Self-update applies to installed release binaries'; then
-            echo "::error::$TAG's binary does not consider itself a release build, so update did nothing and this check proved NOTHING. It was built without WEGO_BUILD_VERSION."
+            echo "::error::$TAG's binary does not consider itself a release build, so it never made a request and this check measured NOTHING. It was built without WEGO_BUILD_VERSION."
             exit 1
           fi
+          agent=$(head -1 "$work/agent.txt" || true)
+          if [ -z "$agent" ]; then
+            echo "::error::$TAG's binary made no request to the probe, so its user agent could not be measured and this check proved NOTHING. Output above."
+            exit 1
+          fi
+          echo "$TAG's binary sends: $agent"
+
+          # The pin's own predicate, applied to the measured value.
+          if printf '%s' "$agent" | grep -qiE '^bun/'; then
+            echo "::error::$TAG's binary sends '$agent', which apps/api's legacy bridge pin treats as a pre-relay 1.0.x install. Promoting it would pin every install of this build to the frozen bridge, whose record it cannot verify - it could never update again. That is exactly what v1.2.0 shipped (wego/cli#25)."
+            exit 1
+          fi
+
+          # And the real route's actual decision, which is the claim that matters.
+          loc=$(curl -sI -A "$agent" "$url?dl=SHA256SUMS.txt&ring=stable" \
+                  | grep -i '^location:' || true)
+          if printf '%s' "$loc" | grep -q '/cli/cli-v1.1.0/'; then
+            echo "::error::api.wego.com serves $TAG's binary ('$agent') from the legacy bridge on ring stable: '$loc'. Promoting it would strand every install of this build."
+            exit 1
+          fi
+          echo "ok: $TAG's binary is not claimed by the pin. $loc"
+
+          # SECOND QUESTION, DIFFERENT TARGET. The check above asks what the PIN
+          # does with this binary, and the pin's only input is the agent - so a
+          # HEAD request answers it completely.
+          #
+          # This asks whether the binary can actually COMPLETE an update: route,
+          # signed-record verification, manifest coverage, hash comparison,
+          # replace. That needs a ring serving bytes this binary can verify, and
+          # `cli/next` is serving this very tag - so the correct outcome is
+          # "already up to date".
+          #
+          # NOT `stable`, which is what the first version of this gate got wrong.
+          # `stable` is where the pin lives but it may hold a release this binary
+          # cannot verify at all - during this migration it held wego-ai's
+          # `cli-v1.1.0`, which no wego/cli binary accepts (wego/cli#29) - so an
+          # outcome test there fails for a reason that has nothing to do with the
+          # candidate. Two questions, two targets; conflating them blocked a safe
+          # promote of v1.2.1.
+          #
+          # The release lane runs this same assertion before the tag ships. It is
+          # repeated here because the promote is a later decision: `cli/next` or
+          # the store could have moved in between, and this is the last moment
+          # before the pointer does.
+          rm -rf "$work/outcome"; mkdir -p "$work/outcome/bin" "$work/outcome/home/.config/wego"
+          cp "$work/bin/wego" "$work/outcome/bin/wego"
+          printf '{"ring":"next","installUrl":"%s"}\n' "$url" \
+            > "$work/outcome/home/.config/wego/install.json"
+          set +e
+          up=$(HOME="$work/outcome/home" XDG_CONFIG_HOME="$work/outcome/home/.config" \
+               WEGO_CLI_TELEMETRY=0 "$work/outcome/bin/wego" update -y 2>&1)
+          code=$?
+          set -e
+          echo "$up"
           if [ "$code" -ne 0 ]; then
-            echo "::error::$TAG's binary CANNOT UPDATE ITSELF (exit $code). Promoting it would put a build in front of every install that can never receive another release. Exit 6 means it fetched a signed record it does not accept - if the message names a tag it was not built to trust, it is being served the legacy bridge, which means it sends a Bun/ user agent (wego/cli#25)."
+            echo "::error::$TAG's binary cannot complete an update against cli/next (exit $code), which serves this very tag. Promoting it would put a build in front of every install that cannot receive another release. Exit 6 means a signed record it does not accept; anything else is in the download, manifest or replace path."
             exit 1
           fi
-          after=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
-                  WEGO_CLI_TELEMETRY=0 "$work/bin/wego" version)
-          echo "ok: $TAG's binary completed a real self-update against $url ($before -> $after). cli/stable has not moved."
+          if ! printf '%s' "$up" | grep -qi 'up to date'; then
+            echo "::error::$TAG's binary did not report itself current against cli/next, which serves ${TAG#v} - it replaced itself instead. cli/next is not serving the bytes this tag published."
+            exit 1
+          fi
+          echo "ok: $TAG's binary completes a real update against cli/next and reports itself current."
 
       # THE MOVE. A server-side copy of the frozen cli/<tag> blobs onto cli/stable.
       # REQUIRE_PUBLISH: an absent token must FAIL here rather than exit 0 having

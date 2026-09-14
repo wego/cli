@@ -35,7 +35,9 @@ record, not an assumption, and a difference is a reason to stop and re-plan.
 | `wego/cli` tag ruleset | `22870024` "v-tags", target `tag`, `refs/tags/v*`, rules `creation` + `update` + `deletion`; bypass actors `OrganizationAdmin` and one Integration (the release-please App) | Tag deletion in step 3 needs an **org admin**, not merely a code owner. A code owner's push is refused with `GH013 … Cannot create ref due to creations being restricted`. |
 | `cli-frozen-until-cutover` ruleset | Does not exist | #128 dropped it by decision. The deletion command in Appendix B is kept for completeness and is expected to 404. |
 | `rehearsal/cli-install` branch and its Vercel variables | Never created | #128 amended the preview away; #129's manual install runs on loopback. Nothing to delete in step 7. |
-| `production` environment on `wego/cli` today | variables `SKILLS_PUBLISH_ENABLED`, `SMOKE_INSTALL_URL`, `WEGO_API_URL`, `WEGO_AUTH_AUTHORIZE_URL`, `WEGO_AUTH_TOKEN_URL`, `WEGO_CLI_CLIENT_ID`; secret `BLOB_READ_WRITE_TOKEN` | Step 1 adds `WEGO_CLI_POSTHOG_PROJECT_KEY`, `SKILLS_PUBLISH_APP_CLIENT_ID` and the secret `SKILLS_PUBLISH_APP_PRIVATE_KEY`, and overwrites the two that already exist. |
+| `production` environment on `wego/cli` today | variables `SKILLS_PUBLISH_ENABLED`, `SMOKE_INSTALL_URL`, `WEGO_API_URL`, `WEGO_AUTH_AUTHORIZE_URL`, `WEGO_AUTH_TOKEN_URL`, `WEGO_CLI_CLIENT_ID`; secret `BLOB_READ_WRITE_TOKEN` | Step 1 adds `SKILLS_PUBLISH_APP_CLIENT_ID` and the secret `SKILLS_PUBLISH_APP_PRIVATE_KEY`, and overwrites the two that already exist. |
+| Build-time variable `WEGO_CLI_POSTHOG_PROJECT_KEY` | Belongs at **repo** level, not in the `production` environment | `release-cli.yml`'s `build` job has no `environment:`, so it reads `vars.*` from the repository only. Setting it with `--env production` bakes an empty value and fails silently — see step 1. |
+| `WEGO_CLI_SKILL_ORIGIN` | **Do not set it. It is inert.** | The skill channel did not move to this repository: the body ships embedded in the binary (`src/index.ts` supplies no `skillUrl`), and `readReleaseEnvSpec` bakes no skill address under any name. `release-config.test.ts` asserts a lingering `WEGO_CLI_SKILL_URL`/`WEGO_CLI_SKILL_ORIGIN` is ignored rather than honoured. |
 | Extraction source sha | `wego/wego-ai@0e9f6bfe60864e6226decbebdd3e5b7535c7080e` — the sha #133's drift check compares from | The squash commit subject in step 4 names it. |
 
 Record the production rings before touching anything, and diff against
@@ -110,23 +112,51 @@ BLOB_READ_WRITE_TOKEN="$PROD_TOKEN" vercel blob list --prefix cli/stable/   # mu
 
 Then set the environment. Values, in the order of the #133 prerequisites table:
 
+**Two of these are REPO-level, not environment-level, and the difference is not
+cosmetic.** `release-cli.yml`'s `build` job carries no `environment:` — deliberately,
+so a build can never reach the store token. A job without an environment resolves
+`vars.*` from the repository only, so a build-time variable set with `--env production`
+is invisible to the job that bakes it: the build silently produces a binary with an
+empty value and nothing fails. That is exactly what happened to the PostHog key, which
+sat unset through the v1.2.0 release (fixed 2026-09-14). It is also why
+`WEGO_API_URL`, `WEGO_AUTH_*` and `WEGO_CLI_CLIENT_ID` are duplicated at both levels.
+
+The rule: **baked into the binary → repo level. Touches the store → `--env production`.**
+
 ```bash
+# Repo level — read by release-cli.yml's `build` job, which has NO environment.
+gh variable set WEGO_CLI_POSTHOG_PROJECT_KEY -R wego/cli --body <key>
+# NO WEGO_CLI_SKILL_ORIGIN — see below. Setting it does nothing.
+
+# Environment level — read only by jobs that enter `production`.
 gh secret   set BLOB_READ_WRITE_TOKEN        --env production -R wego/cli < prod-token.txt
 gh variable set SMOKE_INSTALL_URL            --env production -R wego/cli --body https://api.wego.com/install
-gh variable set WEGO_CLI_POSTHOG_PROJECT_KEY --env production -R wego/cli --body <key>
 gh variable set SKILLS_PUBLISH_ENABLED       --env production -R wego/cli --body true
 gh variable set SKILLS_PUBLISH_APP_CLIENT_ID --env production -R wego/cli --body <id>
 gh secret   set SKILLS_PUBLISH_APP_PRIVATE_KEY --env production -R wego/cli < skills-app.pem
 ```
 
+- `WEGO_CLI_POSTHOG_PROJECT_KEY` — copied from wego-ai's `Production – cli`
+  environment: `gh variable list -R wego/wego-ai --env 'Production – cli'`. Must be a
+  write-only `phc_` project key; `release-config.ts` rejects anything else. Because it
+  lives at repo level it is visible to **every** job, including `edge-cli.yml`'s — which
+  is why that lane suppresses telemetry by not passing the variable to its build step
+  rather than by relying on the key's absence from an environment.
+- `WEGO_CLI_SKILL_ORIGIN` — **do not set it.** This instruction was carried over from
+  wego-ai and is wrong for this repository. The skill channel did not move here: the
+  SKILL.md ships embedded in the binary, `src/index.ts` supplies neither `skillUrl` nor
+  `fetchRemoteSkill`, and `readReleaseEnvSpec` returns no skill field at all
+  (`bin`, `authorizeUrl`, `tokenUrl`, `apiUrl`, `clientId`, `posthogKey`). Setting the
+  variable bakes nothing and changes nothing; `release-config.test.ts` has a case
+  asserting exactly that, precisely because a stale variable is the likeliest thing to
+  survive the move. `release-cli.yml` still passes it to the build step, which is
+  harmless but is dead wiring worth removing.
 - `BLOB_READ_WRITE_TOKEN` — the production blob store token minted for `wego/cli`.
   Overwrites the rehearsal token. wego-ai keeps its own until the 3c tail.
 - `SMOKE_INSTALL_URL` — `https://api.wego.com/install`. Repointing it away from
   loopback makes the Phase 1 resolver step **inert** (the variable is both the value
   and the switch: the step runs only when it names loopback) but does not remove it.
   Step 1b below deletes it in the same PR.
-- `WEGO_CLI_POSTHOG_PROJECT_KEY` — copied from wego-ai's `Production – cli`
-  environment: `gh variable list -R wego/wego-ai --env 'Production – cli'`.
 - `SKILLS_PUBLISH_ENABLED` — `true`.
 - `SKILLS_PUBLISH_APP_CLIENT_ID` / `SKILLS_PUBLISH_APP_PRIVATE_KEY` — copied from
   wego-ai. The secret cannot be read back from wego-ai; whoever holds the PEM supplies
@@ -144,8 +174,12 @@ gh api -X PUT /user/installations/<skills App installation id>/repositories/$(gh
 
 ```bash
 gh api repos/wego/cli/environments/production/secrets -q '.secrets[].name'   # BLOB_READ_WRITE_TOKEN, SKILLS_PUBLISH_APP_PRIVATE_KEY
-gh variable list -R wego/cli --env production                                 # SMOKE_INSTALL_URL=https://api.wego.com/install, SKILLS_PUBLISH_ENABLED=true, PostHog key present
+gh variable list -R wego/cli --env production                                 # SMOKE_INSTALL_URL=https://api.wego.com/install, SKILLS_PUBLISH_ENABLED=true
+gh variable list -R wego/cli                                                  # WEGO_CLI_POSTHOG_PROJECT_KEY present HERE, not in the environment (no WEGO_CLI_SKILL_ORIGIN — it is inert)
 ```
+
+Checking the environment listing alone is what let the missing PostHog key go
+unnoticed: the build-time variables will never appear there.
 
 **Rollback:** set `BLOB_READ_WRITE_TOKEN` back to the rehearsal token and
 `SMOKE_INSTALL_URL` back to its loopback value. Nothing has been published yet, so
@@ -156,13 +190,16 @@ this fully undoes the step.
 Amended into #133 on 2026-09-11: repointing the variable makes the resolver step inert
 but leaves it in the production tree as dead code nothing was scheduled to remove.
 
+**Done 2026-09-14**, not in #133's PR — it was missed there and the scaffolding survived
+into the v1.2.0 tree, inert but present.
+
 Delete `scripts/rehearsal-install-resolver.ts`, its step in
 `.github/workflows/release-cli.yml`, and SMOKE 3's `--install-url "$SMOKE_INSTALL_URL"`
 argument — so the smoke reads the predecessor's own reinstall hint, as wego-ai always
 did.
 
 ```bash
-grep -rn rehearsal-install-resolver .    # must print nothing
+grep -rn rehearsal-install-resolver .github/ scripts/ src/   # must print nothing
 grep -rn 'install-url' .github/          # must print nothing
 ```
 
@@ -662,3 +699,76 @@ wrong, not merely early.
 separate prefix from the downloads it vouches for, and a sweep written against
 `cli/` alone would take the record while leaving the bytes — which fails the
 update fail-closed, with no clue as to why.
+
+### Rolling `stable` back to `cli-v1.1.0` — which binaries can take it
+
+The recovery this file and wego/foundations#134, #166 name for the whole cutover
+is: dispatch wego-ai's `promote-cli.yml` with `tag=cli-v1.1.0` and put `stable`
+back on the last pre-cutover release. That path was **broken in v1.2.0 and
+v1.2.1** and is fixed from **v1.2.2** (wego/cli#29).
+
+`src/release-signing/identity.ts`'s `RELEASE_TAG_IDENTITY` was ported into this
+repository with wego-ai's repo path but **this** repository's tag shape
+(`@refs/tags/vX.Y.Z`). wego-ai's release-please sets
+`include-component-in-tag: true`, so every release it cut is `cli-vX.Y.Z` and the
+rule matched nothing that has ever been published. A binary carrying it, offered
+1.1.0's record on `stable`, refuses fail-closed:
+
+```
+SHA256SUMS.txt on ring stable is not vouched for: the signed build record names
+https://github.com/wego/wego-ai/.github/workflows/release-cli.yml@refs/tags/cli-v1.1.0,
+not … - refusing it
+```
+
+Exit 6, `EXIT.PERMANENT`, and no reinstall hint on that path.
+
+| Installed version | Rollback of `stable` to `cli-v1.1.0` |
+|---|---|
+| 1.0.0, 1.0.1 | **Works.** Pinned to the bridge, never reads the live ring. |
+| 1.1.0 | **Works.** Signed under the identity it already trusts, and pinned besides. |
+| 1.2.0 | **Refuses**, exit 6. Reinstall is the only route. |
+| 1.2.1 | **Refuses**, exit 6. Reinstall is the only route. |
+| 1.2.2 and later | **Works.** Downgrades to 1.1.0 and follows `stable` from there. |
+
+So a rollback is still the right move, and it still reaches everyone who matters
+today: the install base this cutover was built to protect is 1.0.x, which the pin
+carries regardless. What it does not reach is anyone who installed 1.2.0 or
+1.2.1 directly. There are few of them, they are reachable by hand, and a
+reinstall fixes them, so this is a documented gap rather than a blocker.
+
+**Why accepting `cli-v1.1.0` is safe, since the question comes up — and what it
+genuinely costs.** The worry is a downgrade loop: a binary takes the bridge,
+becomes 1.1.0, sends a proper user agent, is no longer pinned, updates forward,
+and oscillates.
+
+**That loop is real.** An earlier version of this section claimed it "settles"
+because 1.1.0 is pinned too. It is not. Measured:
+
+```
+$ git show cli-v1.1.0:apps/cli/src/update.ts | grep -c user-agent
+2
+$ git show cli-v1.0.1:apps/cli/src/update.ts | grep -c user-agent
+0
+```
+
+1.1.0 sends `Wego-CLI/1.1.0`, and it carries `CLI_RELEASE_TAG_IDENTITY` because
+**1.1.0 is the relay release**. It is the one version that is neither pre-relay
+nor post-cutover: pinned by nothing, trusting both repositories. So an
+agent-less build that downgrades onto it does not stop there — 1.1.0 reads the
+live `cli/stable`, finds the agent-less build, accepts it, installs it, is
+pinned again, and the cycle repeats on every `wego update`.
+
+So accepting `cli-v1.1.0` converts a loud dead end (exit 6, stuck) into a silent
+oscillation, for one hypothetical class of build. That trade is only acceptable
+because the precondition is unreachable: the loop requires an agent-less build
+to be **serving on a ring**, and two independent gates now refuse to put one
+there.
+
+| Gate | Where | Refuses before |
+|---|---|---|
+| `Require this build to be distinguishable from a pre-relay install` | `release-cli.yml`, after the build smoke | the first store write of the run |
+| `Require this tag's binary to be distinguishable from a pre-relay install` | `promote-cli.yml`, step 331 | `Advance cli/stable`, step 455 |
+
+Both measure the real user agent of the real compiled binary against the pin's
+own predicate. The identity fix is what makes a **rollback** work; these gates,
+not the identity fix, are what keep the loop out of reach.
