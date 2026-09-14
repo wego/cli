@@ -36,7 +36,8 @@ record, not an assumption, and a difference is a reason to stop and re-plan.
 | `cli-frozen-until-cutover` ruleset | Does not exist | #128 dropped it by decision. The deletion command in Appendix B is kept for completeness and is expected to 404. |
 | `rehearsal/cli-install` branch and its Vercel variables | Never created | #128 amended the preview away; #129's manual install runs on loopback. Nothing to delete in step 7. |
 | `production` environment on `wego/cli` today | variables `SKILLS_PUBLISH_ENABLED`, `SMOKE_INSTALL_URL`, `WEGO_API_URL`, `WEGO_AUTH_AUTHORIZE_URL`, `WEGO_AUTH_TOKEN_URL`, `WEGO_CLI_CLIENT_ID`; secret `BLOB_READ_WRITE_TOKEN` | Step 1 adds `SKILLS_PUBLISH_APP_CLIENT_ID` and the secret `SKILLS_PUBLISH_APP_PRIVATE_KEY`, and overwrites the two that already exist. |
-| Build-time variables (`WEGO_CLI_POSTHOG_PROJECT_KEY`, `WEGO_CLI_SKILL_ORIGIN`) | Belong at **repo** level, not in the `production` environment | `release-cli.yml`'s `build` job has no `environment:`, so it reads `vars.*` from the repository only. Setting these with `--env production` bakes an empty value and fails silently — see step 1. |
+| Build-time variable `WEGO_CLI_POSTHOG_PROJECT_KEY` | Belongs at **repo** level, not in the `production` environment | `release-cli.yml`'s `build` job has no `environment:`, so it reads `vars.*` from the repository only. Setting it with `--env production` bakes an empty value and fails silently — see step 1. |
+| `WEGO_CLI_SKILL_ORIGIN` | **Do not set it. It is inert.** | The skill channel did not move to this repository: the body ships embedded in the binary (`src/index.ts` supplies no `skillUrl`), and `readReleaseEnvSpec` bakes no skill address under any name. `release-config.test.ts` asserts a lingering `WEGO_CLI_SKILL_URL`/`WEGO_CLI_SKILL_ORIGIN` is ignored rather than honoured. |
 | Extraction source sha | `wego/wego-ai@0e9f6bfe60864e6226decbebdd3e5b7535c7080e` — the sha #133's drift check compares from | The squash commit subject in step 4 names it. |
 
 Record the production rings before touching anything, and diff against
@@ -125,7 +126,7 @@ The rule: **baked into the binary → repo level. Touches the store → `--env p
 ```bash
 # Repo level — read by release-cli.yml's `build` job, which has NO environment.
 gh variable set WEGO_CLI_POSTHOG_PROJECT_KEY -R wego/cli --body <key>
-gh variable set WEGO_CLI_SKILL_ORIGIN        -R wego/cli --body <store origin>
+# NO WEGO_CLI_SKILL_ORIGIN — see below. Setting it does nothing.
 
 # Environment level — read only by jobs that enter `production`.
 gh secret   set BLOB_READ_WRITE_TOKEN        --env production -R wego/cli < prod-token.txt
@@ -141,9 +142,15 @@ gh secret   set SKILLS_PUBLISH_APP_PRIVATE_KEY --env production -R wego/cli < sk
   lives at repo level it is visible to **every** job, including `edge-cli.yml`'s — which
   is why that lane suppresses telemetry by not passing the variable to its build step
   rather than by relying on the key's absence from an environment.
-- `WEGO_CLI_SKILL_ORIGIN` — the bare origin of the Blob store `wego skill install`
-  fetches from. Must name the store `wego/cli`'s own production `BLOB_READ_WRITE_TOKEN`
-  writes to; do not copy wego-ai's value without confirming it is the same store.
+- `WEGO_CLI_SKILL_ORIGIN` — **do not set it.** This instruction was carried over from
+  wego-ai and is wrong for this repository. The skill channel did not move here: the
+  SKILL.md ships embedded in the binary, `src/index.ts` supplies neither `skillUrl` nor
+  `fetchRemoteSkill`, and `readReleaseEnvSpec` returns no skill field at all
+  (`bin`, `authorizeUrl`, `tokenUrl`, `apiUrl`, `clientId`, `posthogKey`). Setting the
+  variable bakes nothing and changes nothing; `release-config.test.ts` has a case
+  asserting exactly that, precisely because a stale variable is the likeliest thing to
+  survive the move. `release-cli.yml` still passes it to the build step, which is
+  harmless but is dead wiring worth removing.
 - `BLOB_READ_WRITE_TOKEN` — the production blob store token minted for `wego/cli`.
   Overwrites the rehearsal token. wego-ai keeps its own until the 3c tail.
 - `SMOKE_INSTALL_URL` — `https://api.wego.com/install`. Repointing it away from
@@ -168,7 +175,7 @@ gh api -X PUT /user/installations/<skills App installation id>/repositories/$(gh
 ```bash
 gh api repos/wego/cli/environments/production/secrets -q '.secrets[].name'   # BLOB_READ_WRITE_TOKEN, SKILLS_PUBLISH_APP_PRIVATE_KEY
 gh variable list -R wego/cli --env production                                 # SMOKE_INSTALL_URL=https://api.wego.com/install, SKILLS_PUBLISH_ENABLED=true
-gh variable list -R wego/cli                                                  # WEGO_CLI_POSTHOG_PROJECT_KEY and WEGO_CLI_SKILL_ORIGIN present HERE, not in the environment
+gh variable list -R wego/cli                                                  # WEGO_CLI_POSTHOG_PROJECT_KEY present HERE, not in the environment (no WEGO_CLI_SKILL_ORIGIN — it is inert)
 ```
 
 Checking the environment listing alone is what let the missing PostHog key go
