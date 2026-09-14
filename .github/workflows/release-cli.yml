@@ -699,6 +699,39 @@ jobs:
         # chmods its own working copy regardless), so no chmod is needed here.
         run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING" --install-url "$SMOKE_INSTALL_URL"
 
+      # SMOKE 4: the binary THIS RUN BUILT must be able to update itself.
+      #
+      # SMOKE 3 above updates the PREDECESSOR onto these bytes - it proves
+      # machines can ARRIVE at this version. Nothing proved one could LEAVE it.
+      # v1.2.0 shipped a binary whose update path set no user agent and which
+      # could therefore never update again (wego/cli#25); every check in this
+      # lane passed, because none of them ran `wego update` from the artifact.
+      #
+      # `cli/next` now serves exactly these bytes, so the correct outcome is
+      # "already up to date" - asserted, so a run that silently replaced itself
+      # with something else is a failure rather than a pass.
+      #
+      # This CANNOT see the legacy bridge pin: the pin is `stable`-only, and
+      # this lane only ever touches `next`. The promote lane carries the check
+      # that does. This one proves the update path functions at all, before a
+      # tag exists to clean up.
+      - name: Smoke test self-update from the new binary (cli/next)
+        if: steps.publish.outputs.store_origin != ''
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SMOKE_INSTALL_URL: ${{ vars.SMOKE_INSTALL_URL }}
+        run: |
+          set -euo pipefail
+          install_url="${SMOKE_INSTALL_URL:-https://api.wego.com/install}"
+          # WEGO_BUILD_VERSION matters: `update` returns EXIT.OK without doing
+          # anything for a dev-versioned binary, so a gate handed one would go
+          # green having tested nothing. assert-self-update.ts refuses that case
+          # outright, and this keeps it from arising.
+          WEGO_BUILD_VERSION="$VERSION" \
+            bun run scripts/assert-self-update.ts \
+              ./dist/wego-linux-x64 "$install_url" next \
+              --expect "$VERSION" --expect-unchanged
+
       # PHASE 1 REHEARSAL SCAFFOLDING (wego/foundations#128). Deleted with the
       # resolver step above.
       #

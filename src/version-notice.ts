@@ -1,3 +1,4 @@
+import { USER_AGENT } from "./api";
 import {
   type InstallRecord,
   ringAssetUrl,
@@ -424,6 +425,7 @@ async function readChannelVersion(
 ): Promise<string | null> {
   try {
     const res = await deps.fetch(versionUrl(channel), {
+      headers: { "user-agent": USER_AGENT },
       signal: AbortSignal.timeout(NOTICE_FETCH_TIMEOUT_MS),
     });
     // A pre-`VERSION` tag, or a channel that never published one. `404` ALONE is

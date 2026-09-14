@@ -1,3 +1,4 @@
+import { USER_AGENT } from "./api";
 import { isHelpArg } from "./commands";
 import { assertSecureUrl } from "./config";
 import { EXIT, exitCodeForError } from "./error-report";
@@ -208,7 +209,10 @@ async function fetchOk(
   url: string,
   timeoutMs: number,
 ): Promise<Response> {
-  const res = await deps.fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  const res = await deps.fetch(url, {
+    headers: { "user-agent": USER_AGENT },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   if (!res.ok) throw new Error(`failed to fetch ${url} (HTTP ${res.status})`);
   return res;
 }
@@ -267,6 +271,7 @@ async function fetchNewBinary(
 ): Promise<Uint8Array> {
   const gzUrl = ringAssetUrl(base, `${asset}.gz`, ring);
   const gz = await deps.fetch(gzUrl, {
+    headers: { "user-agent": USER_AGENT },
     signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
   });
   if (gz.status === 404) {
