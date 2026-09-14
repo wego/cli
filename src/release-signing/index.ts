@@ -30,6 +30,7 @@ export {
   SIGNING_OIDC_ISSUER,
 } from "./identity";
 export {
+  type VerifyFailure,
   type VerifyInput,
   type VerifyResult,
   verifySignedManifest,

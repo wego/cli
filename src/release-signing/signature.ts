@@ -51,11 +51,37 @@ import {
  * switch that turns verification off.
  */
 
-/** A refusal carries the reason, ready for stderr; success carries the identity it
- *  verified, so the caller can log WHICH workflow's record it accepted. */
+/**
+ * WHY a record was refused, in the three classes a CONSUMER has to act on
+ * differently. The `reason` string carries the detail; this says what to do
+ * about it.
+ *
+ *  - `identity` — the record is genuine and well-formed, and signed by someone
+ *    this consumer does not accept. Permanent: waiting never helps, and only a
+ *    build carrying a different trust set can take it. This is the class that
+ *    stranded every 1.2.0 and 1.2.1 install (wego/cli#29).
+ *  - `inconsistent` — the record and the manifest do not agree, or the record
+ *    could not be read at all. **A ring mid-promote produces exactly this**: the
+ *    publisher copies the record and the manifest as two adjacent writes, so a
+ *    reader between them sees one new and one old, and a cache can straddle the
+ *    pair for up to its TTL. Self-resolving.
+ *  - `invalid` — the record is not a Fulcio record at all: no pinned root, a
+ *    chain that does not reach one, or a log time outside the leaf's validity.
+ *    Permanent, and reinstalling changes nothing.
+ *
+ * WHEN IN DOUBT, `inconsistent`. The install is refused in every class, so the
+ * only cost of over-classifying as self-resolving is a wasted retry, while the
+ * cost of over-classifying as permanent is a wrapper that stops retrying
+ * something that would have cleared on its own.
+ */
+export type VerifyFailure = "identity" | "inconsistent" | "invalid";
+
+/** A refusal carries the reason, ready for stderr, and the class of failure it
+ *  belongs to; success carries the identity it verified, so the caller can log
+ *  WHICH workflow's record it accepted. */
 export type VerifyResult =
   | { ok: true; identity: string; issuer: string }
-  | { ok: false; reason: string };
+  | { ok: false; kind: VerifyFailure; reason: string };
 
 export interface VerifyInput {
   /** The bundle, already `JSON.parse`d. Any shape is tolerated as INPUT; only the
@@ -428,7 +454,9 @@ interface ParsedRecord {
 /** Read the bundle and the pinned roots, or the refusal for why we could not. */
 function readRecord(
   input: VerifyInput,
-): { ok: true; record: ParsedRecord } | { ok: false; reason: string } {
+):
+  | { ok: true; record: ParsedRecord }
+  | { ok: false; kind: VerifyFailure; reason: string } {
   try {
     const parts = parseBundle(input.bundle);
     return {
@@ -443,6 +471,10 @@ function readRecord(
   } catch (err) {
     return {
       ok: false,
+      // Not `invalid`: a bundle we cannot parse is usually a truncated or
+      // straddled read rather than a forged record, and the asymmetry above says
+      // to prefer the self-resolving class when the two are indistinguishable.
+      kind: "inconsistent",
       reason: `unreadable signed build record: ${
         err instanceof Error ? err.message : String(err)
       }`,
@@ -462,19 +494,24 @@ export async function verifySignedManifest(
   if (!read.ok) return read;
   const { parts, leaf, intermediates, roots } = read.record;
   if (roots.length === 0) {
-    return { ok: false, reason: "no pinned Sigstore root to verify against" };
+    return {
+      ok: false,
+      kind: "invalid",
+      reason: "no pinned Sigstore root to verify against",
+    };
   }
 
   const identityFailure = identityRefusal(leaf, input.identity, input.issuer);
-  if (identityFailure) return { ok: false, reason: identityFailure };
+  if (identityFailure)
+    return { ok: false, kind: "identity", reason: identityFailure };
 
   // WHETHER FULCIO ISSUED IT. Without this the identity above is just a string the
   // signer chose for itself.
   const chainFailure = await chainToRoot(leaf, intermediates, roots);
-  if (chainFailure) return { ok: false, reason: chainFailure };
+  if (chainFailure) return { ok: false, kind: "invalid", reason: chainFailure };
 
   const timeFailure = timeRefusal(leaf, parts.integratedTime, now);
-  if (timeFailure) return { ok: false, reason: timeFailure };
+  if (timeFailure) return { ok: false, kind: "invalid", reason: timeFailure };
 
   // WHAT it covers. The digest claim and the signature are both checked against the
   // bytes we actually hold, so a record for a DIFFERENT manifest cannot be replayed
@@ -485,12 +522,14 @@ export async function verifySignedManifest(
   if (parts.claimedDigest && !sameBytes(parts.claimedDigest, actual)) {
     return {
       ok: false,
+      kind: "inconsistent",
       reason: "the signed build record is for a different manifest",
     };
   }
   if (!(await payloadSigned(leaf, parts.signature, input.payload))) {
     return {
       ok: false,
+      kind: "inconsistent",
       reason: "the signed build record's signature does not verify",
     };
   }

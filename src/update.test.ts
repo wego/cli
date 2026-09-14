@@ -1,7 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { EXIT } from "./error-report";
 import { MANIFEST_ASSET, SIGNATURE_ASSET } from "./release-signing";
-import { signManifest, TEST_ROOT_PEM } from "./release-signing/testing/fixture";
+import {
+  OTHER_IDENTITY_CERT_DER,
+  signManifest,
+  TEST_ROOT_PEM,
+} from "./release-signing/testing/fixture";
 import {
   parseUpdateArgs,
   UPDATE_USAGE,
@@ -762,30 +766,51 @@ describe("update", () => {
       },
       enc("OLD"),
     );
-    expect(await update(["-y"], deps)).toBe(EXIT.PERMANENT);
-    expect(err.join("\n")).toContain("not vouched for");
+    // RETRYABLE, not PERMANENT. This exact shape is what a ring mid-promote
+    // serves: `upload-release-blob.ts` copies the record and the manifest as two
+    // adjacent writes, so a reader between them sees a record for the OTHER
+    // manifest, and a cache can straddle the pair for its whole TTL. Reporting
+    // that as permanent tells every wrapper to stop retrying a condition that
+    // clears in seconds.
+    expect(await update(["-y"], deps)).toBe(EXIT.RETRYABLE);
+    const out = err.join("\n");
+    expect(out).toContain("not vouched for");
+    expect(out).toContain("may be mid-update");
+    expect(out).toContain("Nothing was installed");
+    // Must NOT tell them to reinstall: waiting fixes this, reinstalling is a
+    // pointless round trip that happens to work for the wrong reason.
+    expect(out).not.toContain("Reinstall the latest with:");
   });
 
-  // THE DEAD END MUST NAME ITS EXIT. A record that does not verify is permanent:
-  // the ring is serving bytes this binary can never accept, so running `update`
-  // again produces the identical refusal forever. Reinstalling is the only way
-  // out, and it is the message - not the exit code - that a person reads.
+  // THE DEAD END MUST NAME ITS EXIT - and this is the case that IS one.
   //
-  // Not hypothetical: this is what every 1.2.0 and 1.2.1 install saw when
-  // `cli/stable` served a record signed under wego-ai's `cli-v1.1.0` tag
-  // (wego/cli#29). The message named the problem precisely and offered no remedy,
-  // while five other permanent refusals in `update.ts` already appended
-  // `reinstallHint`.
-  it("tells the user to reinstall when the record can never verify", async () => {
+  // v1.2.3 shipped this test against a payload mismatch, which is the promote
+  // window above and self-resolving. The assertion passed while describing the
+  // wrong scenario, and the code it was guarding gave reinstall advice on four
+  // failure classes that reinstalling does not fix.
+  //
+  // The real dead end is IDENTITY: the ring serves a record signed by someone
+  // this binary's trust set does not accept. Waiting never helps, and only a
+  // build carrying different rules can take it - which is exactly why
+  // reinstalling is the remedy here and nowhere else. It is what every 1.2.0 and
+  // 1.2.1 install hit when `cli/stable` served a record signed under wego-ai's
+  // `cli-v1.1.0` tag (wego/cli#29).
+  it("tells the user to reinstall when the RECORD'S IDENTITY is not accepted", async () => {
     const latest = enc("NEW");
     const sums = await sumsFor({ "wego-linux-x64": latest });
-    const record = JSON.stringify(await signManifest(enc("other manifest\n")));
+    // A correctly-signed record over the RIGHT bytes, re-issued to a leaf whose
+    // SAN names a workflow this binary does not trust. Identity is checked before
+    // any cryptography, so the swap alone produces the refusal.
+    const signed = (await signManifest(sums)) as {
+      verificationMaterial: { certificate: { rawBytes: string } };
+    };
+    signed.verificationMaterial.certificate.rawBytes = OTHER_IDENTITY_CERT_DER;
     const { deps, err } = makeDeps(
       {
         fetch: fakeFetch({
           [`${BASE}?dl=SHA256SUMS.txt&ring=${RING}`]: { body: sums },
           [`${BASE}?dl=SHA256SUMS.txt.sigstore.json&ring=${RING}&sig=1`]: {
-            body: record,
+            body: JSON.stringify(signed),
           },
           [`${BASE}?dl=wego-linux-x64&ring=${RING}`]: { body: latest },
         }),
@@ -794,33 +819,69 @@ describe("update", () => {
     );
     expect(await update(["-y"], deps)).toBe(EXIT.PERMANENT);
     const out = err.join("\n");
-    // The reason still leads - the remedy is added, never substituted.
     expect(out).toContain("not vouched for");
     expect(out).toContain("Reinstall the latest with:");
     expect(out).toContain("curl -fsSL");
-    expect(out).toContain("/install | bash");
-    // Says WHY retrying is pointless, so the reinstall reads as the only route
-    // rather than as one of two things worth trying.
     expect(out).toContain("retrying will not change that");
+    // And NOT the mid-update wording: this one does not clear on its own.
+    expect(out).not.toContain("may be mid-update");
   });
 
-  it("refuses a record that is not JSON at all", async () => {
+  // THE NOTICE'S CACHE, AFTER A SWAP.
+  //
+  // `.update-check` stores the version the channel last advertised, and the
+  // throttle governs the network READ rather than the message - so inside the
+  // window the notice reports from that file without re-fetching. A successful
+  // update moves the binary underneath it, which makes the stored value describe
+  // a comparison that no longer holds.
+  //
+  // Invisible while the notice only fired forward (the stale value equalled what
+  // we just became, and equal is silent). Once it fires on any difference, a
+  // cached value that has fallen BEHIND speaks, in the present tense, and is
+  // wrong: "your channel now serves 1.1.0 (you have 1.2.3)".
+  it("drops the new-version cache after replacing the binary", async () => {
     const latest = enc("NEW");
     const sums = await sumsFor({ "wego-linux-x64": latest });
-    const { deps, err } = makeDeps(
+    const removed: string[] = [];
+    const { deps } = makeDeps(
       {
+        updateCheckPath: "/home/u/.config/wego/.update-check",
+        rm: async (path) => {
+          removed.push(path);
+        },
+        // `fakeFetch` mints the matching record from the manifest route, so
+        // this exercises the real verifier rather than a stub of it.
         fetch: fakeFetch({
           [`${BASE}?dl=SHA256SUMS.txt&ring=${RING}`]: { body: sums },
-          [`${BASE}?dl=SHA256SUMS.txt.sigstore.json&ring=${RING}&sig=1`]: {
-            body: "<html>nope</html>",
-          },
           [`${BASE}?dl=wego-linux-x64&ring=${RING}`]: { body: latest },
         }),
       },
       enc("OLD"),
     );
-    expect(await update(["-y"], deps)).toBe(EXIT.PERMANENT);
-    expect(err.join("\n")).toContain("not JSON");
+    expect(await update(["-y"], deps)).toBe(EXIT.OK);
+    expect(removed).toContain("/home/u/.config/wego/.update-check");
+  });
+
+  // The mirror: nothing was replaced, so the cache still describes the truth and
+  // deleting it would only cost a needless read on the next command.
+  it("leaves the cache alone when it did not replace anything", async () => {
+    const current = enc("SAME");
+    const sums = await sumsFor({ "wego-linux-x64": current });
+    const removed: string[] = [];
+    const { deps } = makeDeps(
+      {
+        updateCheckPath: "/home/u/.config/wego/.update-check",
+        rm: async (path) => {
+          removed.push(path);
+        },
+        fetch: fakeFetch({
+          [`${BASE}?dl=SHA256SUMS.txt&ring=${RING}`]: { body: sums },
+        }),
+      },
+      current,
+    );
+    expect(await update(["-y"], deps)).toBe(EXIT.OK);
+    expect(removed).not.toContain("/home/u/.config/wego/.update-check");
   });
 
   // The record is fetched from the ring's own record prefix, through the same
