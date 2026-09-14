@@ -87,8 +87,25 @@ function deps(over: Partial<VersionNoticeDeps> = {}): Harness {
 }
 
 /** A stored answer `age` ms old. */
-function stored(latest: string, age: number): () => Promise<UpdateCheckState> {
-  return async () => ({ latest, checkedAt: NOW - age });
+/**
+ * A stored answer, stamped by default as written by the binary under test.
+ *
+ * The stamp matters: a cache written by a DIFFERENT version is suppressed for
+ * reporting (see `maybeNotifyNewVersion`), so a test about THROTTLING or network
+ * behaviour has to carry its own version or it would be measuring staleness
+ * instead. Pass `undefined` to model the pre-stamp format, and any other string
+ * to model a cache written by another build.
+ */
+function stored(
+  latest: string,
+  age: number,
+  writtenBy: string | undefined = CURRENT,
+): () => Promise<UpdateCheckState> {
+  return async () => ({
+    latest,
+    checkedAt: NOW - age,
+    ...(writtenBy === undefined ? {} : { writtenBy }),
+  });
 }
 
 describe("parseSemver / isNewerVersion", () => {
@@ -596,6 +613,74 @@ describe("channel resolution", () => {
     expect(result.outcome).toBe("skipped-no-record");
     expect(result.message).toBeUndefined();
     expect(d.fetches()).toHaveLength(0);
+  });
+});
+
+describe("a cache written by another binary", () => {
+  // THE FIELD REPORT THIS FIXES, reproduced exactly.
+  //
+  // `cli/stable` served 1.2.3; a command cached it. 1.2.4 was promoted; the user
+  // updated. The swap was performed by the 1.2.3 binary, which predates the
+  // delete-on-swap in wego/cli#33, so the cache survived saying "1.2.3". The
+  // 1.2.4 binary then read it, found it different from itself, and announced a
+  // rollback that had not happened - on every command, for the whole window.
+  it("says nothing rather than announcing a rollback that did not happen", async () => {
+    const d = deps({
+      version: "1.2.4",
+      readState: stored("1.2.3", 60_000, "1.2.3"),
+    });
+    const r = await maybeNotifyNewVersion(d);
+    expect(r.message).toBeUndefined();
+    // And no network: the throttle is still honoured. Falling through to a fresh
+    // read would be one command more correct and would re-fetch on EVERY command
+    // for a window whenever the fetch fails, which is the cost this refuses.
+    expect(d.fetches()).toEqual([]);
+  });
+
+  // The same conclusion for every file in the field today, which carries no
+  // stamp at all. This is the case that covers a REINSTALL: `curl … | sh`
+  // replaces the binary and writes only `install.json`, so nothing on that path
+  // can clear the cache and only a reader-side check helps.
+  it("ignores a pre-stamp cache, which is what a reinstall leaves behind", async () => {
+    const d = deps({
+      version: "1.2.4",
+      readState: stored("1.1.0", 60_000, undefined),
+    });
+    const r = await maybeNotifyNewVersion(d);
+    expect(r.message).toBeUndefined();
+    expect(d.fetches()).toEqual([]);
+  });
+
+  // Suppressed for REPORTING, remembered for THROTTLING - and self-healing. Once
+  // the window passes, the normal path fetches, `writeLatest` stamps the answer,
+  // and the file stops being anyone else's.
+  it("reports normally again once the window has passed", async () => {
+    const d = deps({
+      version: "1.2.4",
+      readState: stored("1.2.3", 48 * 60 * 60 * 1000, "1.2.3"),
+      fetch: (async () => new Response("1.2.5\n")) as unknown as typeof fetch,
+    });
+    const r = await maybeNotifyNewVersion(d);
+    expect(r.message).toBe(
+      "A new wego is available: 1.2.4 -> 1.2.5. Run `wego update -y`.",
+    );
+    // `written` is the proof it went to the network: `writeLatest` runs only
+    // after a successful read. (Not `fetches`, which the overridden `fetch`
+    // above no longer records.)
+    expect(d.written()).toEqual(["1.2.5"]);
+  });
+
+  // The guard must not swallow a cache that IS this binary's own, or it would
+  // silence every legitimate throttled notice.
+  it("still reports from its own cache", async () => {
+    const d = deps({
+      version: "1.2.4",
+      readState: stored("1.2.5", 60_000, "1.2.4"),
+    });
+    expect((await maybeNotifyNewVersion(d)).message).toBe(
+      "A new wego is available: 1.2.4 -> 1.2.5. Run `wego update -y`.",
+    );
+    expect(d.fetches()).toEqual([]);
   });
 });
 

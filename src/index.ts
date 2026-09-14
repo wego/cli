@@ -448,7 +448,16 @@ export function buildVersionNoticeDeps(): VersionNoticeDeps {
           await handle.readFile("utf8"),
           await handle.stat(),
         ];
-        return { latest: body.trim(), checkedAt: info.mtimeMs };
+        // TWO LINES: the channel's answer, then the version that wrote it. A file
+        // with one line was written before this format (or by an older build),
+        // and `writtenBy` is left undefined - which is the honest answer and the
+        // one `maybeNotifyNewVersion` treats as "not mine".
+        const [latest = "", writtenBy] = body.split("\n", 2);
+        return {
+          latest: latest.trim(),
+          checkedAt: info.mtimeMs,
+          ...(writtenBy?.trim() ? { writtenBy: writtenBy.trim() } : {}),
+        };
       } catch {
         // Absent or unreadable — "we don't know", which the caller turns into a
         // fresh check rather than a guess.
@@ -485,7 +494,14 @@ export function buildVersionNoticeDeps(): VersionNoticeDeps {
       // on it (the same reason `update.ts` builds its temp path from a UUID).
       const tmp = `${statePath}.${crypto.randomUUID()}.tmp`;
       try {
-        await writeFile(tmp, latest ? `${latest}\n` : "", { mode: 0o600 });
+        // Stamped with the version doing the writing, so a later build can tell
+        // this answer was not its own. An OLD build reading the two-line form
+        // reads both lines as one string, which `looksLikeVersion` rejects - so
+        // it goes silent rather than reporting a mangled version. That is the
+        // safe direction: a missed notice, never a false one.
+        await writeFile(tmp, latest ? `${latest}\n${VERSION}\n` : "", {
+          mode: 0o600,
+        });
         await rename(tmp, statePath);
       } catch (err) {
         await rm(tmp, { force: true }).catch(() => {});

@@ -85,12 +85,32 @@ describe("buildVersionNoticeDeps", () => {
     expect(claimed?.latest).toBe("");
     expect(claimed?.checkedAt).toBeGreaterThan(0);
     await d.writeLatest("0.4.2");
-    expect((await d.readState())?.latest).toBe("0.4.2");
-    // Trailing newline on disk, trimmed on read — the same shape the published
-    // `VERSION` object has.
-    expect(await readFile(join(home, "wego", ".update-check"), "utf8")).toBe(
-      "0.4.2\n",
-    );
+    const state = await d.readState();
+    expect(state?.latest).toBe("0.4.2");
+    // TWO LINES: the channel's answer, then the version that wrote it. The stamp
+    // is what lets a later build tell this answer was not its own - the check
+    // that covers a REINSTALL, which never runs `update` and so can never be
+    // covered by deleting the file on swap.
+    const onDisk = await readFile(join(home, "wego", ".update-check"), "utf8");
+    const [line1, line2] = onDisk.split("\n");
+    expect(line1).toBe("0.4.2");
+    // Not hardcoded: the running version is whatever this process was built as.
+    expect(line2).toBe(d.version);
+    expect(line2).not.toBe("");
+    expect(state?.writtenBy).toBe(d.version);
+    expect(onDisk.endsWith("\n")).toBe(true);
+  });
+
+  // A file in the OLD one-line form must read back as "written by nobody I know"
+  // rather than as this binary's own answer - otherwise every cache in the field
+  // today would keep being reported after a reinstall, which is the bug.
+  it("reads a pre-stamp one-line file as having no writer", async () => {
+    const d = buildVersionNoticeDeps();
+    await d.claimWindow();
+    await writeFile(join(home, "wego", ".update-check"), "0.4.2\n");
+    const state = await d.readState();
+    expect(state?.latest).toBe("0.4.2");
+    expect(state?.writtenBy).toBeUndefined();
   });
 
   it("clears the stored answer without removing the stamp", async () => {

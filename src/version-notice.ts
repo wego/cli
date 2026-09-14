@@ -294,6 +294,14 @@ export interface NoticeResult {
 export interface UpdateCheckState {
   latest: string;
   checkedAt: number;
+  /**
+   * The running version that WROTE this answer, when the file records one.
+   *
+   * Absent for every file written before this field existed, and for a file
+   * written by an older build - both of which are exactly the case it exists to
+   * detect. See `maybeNotifyNewVersion` for what absence means.
+   */
+  writtenBy?: string;
 }
 
 export interface VersionNoticeDeps {
@@ -333,7 +341,8 @@ export interface VersionNoticeDeps {
    *  whether the stamp actually landed — the throttle is only real if it is
    *  durable (see `maybeNotifyNewVersion`). */
   claimWindow: () => Promise<boolean>;
-  /** Persist the channel's answer; `""` clears it. */
+  /** Persist the channel's answer, stamped with the version doing the writing;
+   *  `""` clears it. */
   writeLatest: (latest: string) => Promise<void>;
   /** `fetch`, injectable for tests. */
   fetch: typeof fetch;
@@ -508,11 +517,39 @@ export async function maybeNotifyNewVersion(
     return { outcome, message };
   };
 
+  // A CACHE WRITTEN BY A DIFFERENT BINARY DESCRIBES A COMPARISON THAT NO LONGER
+  // HOLDS, so it is remembered for throttling and ignored for reporting.
+  //
+  // The throttle governs the network read, not the message, so within the window
+  // the stored answer is reported WITHOUT re-fetching. That is right while the
+  // answer was written by the binary now asking. It is wrong the moment the
+  // binary underneath it changes: the file still describes "what the channel
+  // served, compared against who I was", and the second half is now false.
+  //
+  // `update` deletes the file after a swap (wego/cli#33), which covers the common
+  // path - but ONLY when the binary performing the swap already had that code,
+  // and not at all for a REINSTALL, where `curl … | sh` replaces the binary and
+  // writes just `install.json` (`apps/api` `renderInstallScript`). A reader-side
+  // check needs neither: it does not care how the binary changed.
+  //
+  // Absent `writtenBy` means the file predates this check, which is the same
+  // conclusion - written by something that is not us.
+  //
+  // SUPPRESSED, NOT RE-READ. Falling through to a fresh fetch would give a
+  // correct notice one command sooner, at the cost of re-fetching on EVERY
+  // command for a whole window whenever that fetch fails - the same per-
+  // invocation network call the unclaimable path below exists to avoid. Honouring
+  // the throttle instead costs at most one window of silence, and a missed notice
+  // is the failure this whole area should prefer: the bug being fixed here is a
+  // notice that was confidently WRONG.
+  const known =
+    state && state.writtenBy === deps.version ? state.latest : undefined;
+
   // A stamp in the FUTURE (clock set backwards, or a bad write) must not throttle
   // forever, so only a non-negative age inside the window counts as fresh.
   const age = state ? deps.now - state.checkedAt : Number.POSITIVE_INFINITY;
   if (age >= 0 && age < noticeIntervalMs(deps.flavor)) {
-    return result(state?.latest, "cached");
+    return result(known, "cached");
   }
 
   // Claim the window BEFORE the fetch, and only proceed if the claim LANDED. An
@@ -521,13 +558,13 @@ export async function maybeNotifyNewVersion(
   // dir turning into a per-invocation network call. Still nag from whatever is
   // already known: the claim governs the read, not the message.
   if (!(await deps.claimWindow())) {
-    return result(state?.latest, "skipped-unclaimable");
+    return result(known, "skipped-unclaimable");
   }
 
   const fresh = await readChannelVersion(deps, channel);
   // `null` = we learned nothing (a failure, or a body that is not a version).
   // Keep the stored answer rather than overwriting it with a non-answer.
-  if (fresh === null) return result(state?.latest, "checked");
+  if (fresh === null) return result(known, "checked");
   // Best-effort: `claimWindow` already proved the path writable, and a lost write
   // only costs one extra read next window.
   await deps.writeLatest(fresh).catch(() => {});
