@@ -270,17 +270,24 @@ export function formatChannelChangedNotice(
 
 /** Why the notice did (or didn't) reach the channel.
  *
- *  The four `skipped-*` guards above the state read produce no message at all.
- *  `cached`, `checked`, and `skipped-unclaimable` all still carry one when a newer
- *  version is known: the throttle and the claim govern the network READ, not the
- *  nag. That is the whole point — a stale install keeps being told, for free. */
+ *  A message accompanies exactly one of these: `checked`, and only when the read
+ *  succeeded. Every other outcome is silent, because every other outcome means we
+ *  did not ask — and this file says nothing it has not just been told.
+ *
+ *  It used to nag from a STORED answer on `throttled` and `skipped-unclaimable`
+ *  too, on the reasoning that "a stale install keeps being told, for free". Free
+ *  in network terms, expensive in correctness terms: the stored answer is half of
+ *  a comparison whose OTHER half — the running version — changes underneath it on
+ *  every update and every reinstall, and neither event is something this file can
+ *  observe. Three defects in one afternoon came out of defending that position
+ *  (wego/cli#33, #35). The cache is gone; only the timestamp remains. */
 export type NoticeOutcome =
   | "skipped-explicit-command"
   | "skipped-from-source"
   | "skipped-no-record"
   | "skipped-opt-out"
   | "skipped-unclaimable"
-  | "cached"
+  | "throttled"
   | "checked";
 
 export interface NoticeResult {
@@ -289,10 +296,13 @@ export interface NoticeResult {
   message?: string;
 }
 
-/** What the throttle file records: its content is the version the channel last
- *  advertised, its mtime is when we last asked. */
+/** What the throttle file records: WHEN we last asked, and nothing else.
+ *
+ *  Deliberately not the answer. The file's only job is to keep this off the
+ *  network on every command; storing what the channel said would make it half of
+ *  a stale comparison (see `NoticeOutcome`). The file's content is unused and its
+ *  mtime is the whole record. */
 export interface UpdateCheckState {
-  latest: string;
   checkedAt: number;
 }
 
@@ -333,8 +343,6 @@ export interface VersionNoticeDeps {
    *  whether the stamp actually landed — the throttle is only real if it is
    *  durable (see `maybeNotifyNewVersion`). */
   claimWindow: () => Promise<boolean>;
-  /** Persist the channel's answer; `""` clears it. */
-  writeLatest: (latest: string) => Promise<void>;
   /** `fetch`, injectable for tests. */
   fetch: typeof fetch;
 }
@@ -417,12 +425,15 @@ function versionUrl(channel: NoticeChannel): string {
 }
 
 /**
- * Read the channel's advertised version. Three outcomes, and the difference
- * matters: a **parseable** version string on `200`, `""` only on a `404` (the
- * channel authoritatively has no `VERSION`, so one that stops publishing stops
- * nagging), and `null` on anything else — a transport failure, a non-404 error, or
- * a `200` whose body is not a version. Only `""` and a real version overwrite the
- * stored answer, so no single bad response can erase what we already know.
+ * Read the channel's advertised version, or `null` for every way of not knowing:
+ * a transport failure, any non-2xx, an oversized body, or a `200` whose body is
+ * not version-SHAPED.
+ *
+ * This used to distinguish `404` (`""`, an authoritative absence) from everything
+ * else (`null`), because only the first was allowed to erase a STORED answer.
+ * Nothing is stored now, so both mean the same thing to the one caller: say
+ * nothing. A distinction that no longer changes behaviour is worse than no
+ * distinction, so it is gone.
  */
 async function readChannelVersion(
   deps: VersionNoticeDeps,
@@ -433,11 +444,9 @@ async function readChannelVersion(
       headers: { "user-agent": USER_AGENT },
       signal: AbortSignal.timeout(NOTICE_FETCH_TIMEOUT_MS),
     });
-    // A pre-`VERSION` tag, or a channel that never published one. `404` ALONE is
-    // authoritative: a `403` on a public store is a misconfiguration or an edge
-    // rule, not proof the object is absent, so it takes the keep-what-we-know
-    // path below with every other non-2xx.
-    if (res.status === 404) return "";
+    // Includes the `404` of a pre-`VERSION` tag or a channel that never published
+    // one, and the `403` of an edge rule on a public store. They differed only in
+    // what they were permitted to overwrite; now neither says anything.
     if (!res.ok) return null;
     const declared = Number(res.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > MAX_VERSION_BYTES) return null;
@@ -447,14 +456,12 @@ async function readChannelVersion(
     const body = await readBounded(res.body, MAX_VERSION_BYTES);
     if (body === null) return null;
     const trimmed = body.trim();
-    // Only a version-SHAPED body counts as an answer. A `200` carrying a
-    // captive-portal page, a proxy error, or an empty body would otherwise be
-    // persisted verbatim and overwrite a real stored version — one flukey response
-    // silencing a genuine notice for the rest of the window. Unparseable is a
-    // transport-grade failure, so it keeps what we already know.
+    // Only a version-SHAPED body counts as an answer: a `200` carrying a
+    // captive-portal page, a proxy error or an empty body is not one, and this
+    // file never repeats anything it cannot read as a version.
     //
     // SHAPE, not `parseSemver`: see `looksLikeVersion` — a semver-invalid but real
-    // edge build must not read as a transport failure forever.
+    // edge build is a real build.
     return looksLikeVersion(trimmed) ? trimmed : null;
   } catch {
     return null;
@@ -511,25 +518,18 @@ export async function maybeNotifyNewVersion(
   // A stamp in the FUTURE (clock set backwards, or a bad write) must not throttle
   // forever, so only a non-negative age inside the window counts as fresh.
   const age = state ? deps.now - state.checkedAt : Number.POSITIVE_INFINITY;
-  if (age >= 0 && age < noticeIntervalMs(deps.flavor)) {
-    return result(state?.latest, "cached");
-  }
+  if (age >= 0 && age < noticeIntervalMs(deps.flavor))
+    return { outcome: "throttled" };
 
   // Claim the window BEFORE the fetch, and only proceed if the claim LANDED. An
   // unwritable state file (read-only `$HOME`, immutable home) otherwise means
   // every single command pays the full fetch deadline forever — one unwritable
-  // dir turning into a per-invocation network call. Still nag from whatever is
-  // already known: the claim governs the read, not the message.
-  if (!(await deps.claimWindow())) {
-    return result(state?.latest, "skipped-unclaimable");
-  }
+  // dir turning into a per-invocation network call.
+  if (!(await deps.claimWindow())) return { outcome: "skipped-unclaimable" };
 
   const fresh = await readChannelVersion(deps, channel);
-  // `null` = we learned nothing (a failure, or a body that is not a version).
-  // Keep the stored answer rather than overwriting it with a non-answer.
-  if (fresh === null) return result(state?.latest, "checked");
-  // Best-effort: `claimWindow` already proved the path writable, and a lost write
-  // only costs one extra read next window.
-  await deps.writeLatest(fresh).catch(() => {});
+  // `null` = we learned nothing (a failure, or a body that is not a version), and
+  // this file never says anything it has not just been told.
+  if (fresh === null) return { outcome: "checked" };
   return result(fresh, "checked");
 }

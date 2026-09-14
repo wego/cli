@@ -437,18 +437,16 @@ export function buildVersionNoticeDeps(): VersionNoticeDeps {
     now: Date.now(),
     fetch,
     readState: async () => {
-      // ONE file handle for both halves, not two path lookups: the content and the
-      // stamp must describe the same file. A concurrent `writeLatest` re-points the
-      // path via rename, so two independent path reads could pair this file's
-      // content with the replacement's mtime.
+      // Opened rather than `stat`ed by path: `claimWindow` is the only writer and
+      // it never replaces the file, but a handle keeps this honest if that ever
+      // changes.
       let handle: Awaited<ReturnType<typeof open>> | undefined;
       try {
         handle = await open(statePath, "r");
-        const [body, info] = [
-          await handle.readFile("utf8"),
-          await handle.stat(),
-        ];
-        return { latest: body.trim(), checkedAt: info.mtimeMs };
+        // The mtime IS the record. The file's content is deliberately unused and
+        // deliberately never written: an answer stored here is half of a
+        // comparison whose other half changes on every update and reinstall.
+        return { checkedAt: (await handle.stat()).mtimeMs };
       } catch {
         // Absent or unreadable — "we don't know", which the caller turns into a
         // fresh check rather than a guess.
@@ -472,24 +470,6 @@ export function buildVersionNoticeDeps(): VersionNoticeDeps {
         // the throttle would not hold, so the caller skips the network read
         // instead of re-fetching on every command.
         return false;
-      }
-    },
-    writeLatest: async (latest) => {
-      await ensureOwnerDir(dirname(statePath));
-      // Write-then-rename, never a truncating write in place. A plain `writeFile`
-      // is observable mid-truncation as an EMPTY file whose mtime already looks
-      // fresh, and a concurrent command reading that pair concludes "checked
-      // recently, nothing to report" — silencing a real notice for the whole
-      // window. A rename is atomic, so a reader sees the old file or the new one.
-      // The temp name is per-write unique so two concurrent writers cannot collide
-      // on it (the same reason `update.ts` builds its temp path from a UUID).
-      const tmp = `${statePath}.${crypto.randomUUID()}.tmp`;
-      try {
-        await writeFile(tmp, latest ? `${latest}\n` : "", { mode: 0o600 });
-        await rename(tmp, statePath);
-      } catch (err) {
-        await rm(tmp, { force: true }).catch(() => {});
-        throw err;
       }
     },
   };
@@ -617,9 +597,6 @@ export function buildRealDeps(): RunDeps {
         version: VERSION,
         fromSource: runningFromSource(),
         installRecordPath,
-        // Dropped after a successful swap: the notice caches the version the
-        // channel last advertised, and the binary underneath it just changed.
-        updateCheckPath: defaultUpdateCheckPath(process.env, SCOPE),
         // The installer's record, read fresh per run. Absent / unreadable /
         // malformed all arrive as `null`, which `update` refuses on — nothing
         // here substitutes a default ring.
