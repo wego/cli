@@ -1,29 +1,35 @@
 /**
- * PLATFORM COVERAGE: the replace path is exercised on macOS, asserted.
+ * PLATFORM COVERAGE: the release runs the replace code it is shipping, on both
+ * platforms this lane gates, asserted.
  *
- * `update`'s replace half is compiled per platform and has one branch Linux
- * never reaches - `if (os === "darwin") await deps.clearQuarantine(tmp)` - so
- * for as long as every gate in the release lane ran linux-x64, a darwin-only bug
- * in the swap shipped GREEN. That is the wego/cli#25 shape: a lane where every
- * check passes and none of them runs the thing that breaks.
+ * Two failures hide here, and both leave a green lane:
  *
- * The leg that closes it is one job and two flags, which makes it exactly the
- * kind of thing a later edit removes without meaning to:
+ *  1. TIMING, every platform. Until `--force-replace`, no release executed its own
+ *     `downloadAndReplace`: SMOKE 3 runs the PREDECESSOR's copy, SMOKE 4 returns on
+ *     the up-to-date branch above it. The shipping build's replace half first ran a
+ *     release later, after publication.
+ *  2. PLATFORM, macOS only. The replace code is compiled per target and one line -
+ *     `if (os === "darwin") await deps.clearQuarantine(tmp)` - is unreachable from
+ *     any Linux runner, at any release. That is the wego/cli#25 shape: every check
+ *     passes and none of them runs the thing that breaks.
  *
- *   - the macOS job dropped ("the release takes 20 minutes and macOS runners
- *     bill at 10x") -> no platform coverage, and every release still green.
- *   - `--force-replace` dropped, or swapped for the linux leg's
- *     `--expect-unchanged` ("the ring already serves these bytes, why force?")
- *     -> the job runs, costs the minutes, and returns on the up-to-date branch
- *     without ever reaching the replace. Green, and proving nothing.
- *   - the asset pointed back at a linux binary -> the job cannot even execute it,
- *     which at least fails loudly; asserted anyway, because the failure would
+ * Both are closed by a flag and a job, which makes them exactly the kind of thing a
+ * later edit removes without meaning to:
+ *
+ *   - the macOS job dropped ("the release takes 20 minutes and macOS runners bill
+ *     at 10x") -> failure 2 is back, and every release still green.
+ *   - `--force-replace` dropped from either leg, or swapped for the sibling step's
+ *     `--expect-unchanged` ("the ring already serves these bytes, why force?") ->
+ *     the step runs, costs the minutes, and returns on the up-to-date branch
+ *     without reaching the replace. Green, and proving nothing.
+ *   - the macOS asset pointed back at a linux binary -> the job cannot even execute
+ *     it, which at least fails loudly; asserted anyway, because the failure would
  *     read as a runner problem rather than as a coverage one.
  *
- * ASSERTED BY PROPERTY, NOT BY NAME: nothing here pins the string
- * "replace-macos". The claim is "some job in this lane runs the self-update gate
- * on a macOS runner, against a darwin asset, in a mode that performs a real
- * swap" - rename or restructure freely.
+ * ASSERTED BY PROPERTY, NOT BY NAME: nothing here pins the string "replace-macos".
+ * The claim is "this lane runs the self-update gate in a real-swap mode on both a
+ * Linux and a macOS runner, each against its own asset" - rename or restructure
+ * freely.
  */
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -69,7 +75,15 @@ function macLegs(): ReturnType<typeof gateJobs> {
   return gateJobs().filter((j) => j.runs.startsWith("macos-"));
 }
 
-describe(`${LANE}: the replace path is exercised on macOS`, () => {
+describe(`${LANE}: the shipping build's replace code is executed`, () => {
+  it("forces a real swap on linux-x64, in the job that builds and publishes", () => {
+    // Closes the timing gap: without this the release ships replace code whose
+    // first execution is a consumer's machine, or the NEXT release's SMOKE 3.
+    const linux = gateJobs().filter((j) => j.runs.startsWith("ubuntu-"));
+    expect(linux.some((j) => j.body.includes("--force-replace"))).toBe(true);
+    expect(linux.some((j) => j.body.includes("wego-linux-x64"))).toBe(true);
+  });
+
   it("runs the self-update gate on a macOS runner", () => {
     expect(macLegs()).not.toEqual([]);
   });
@@ -86,13 +100,13 @@ describe(`${LANE}: the replace path is exercised on macOS`, () => {
     }
   });
 
-  it("keeps the arriving-direction leg on the runner-native binary", () => {
-    // The linux leg is not replaced by the macOS one: it asserts the ring is
-    // serving these exact bytes ("already up to date"), which the forced swap
-    // deliberately bypasses.
+  it("keeps the up-to-date assertion alongside it, not instead of it", () => {
+    // Two claims, one per step, and a forced run cannot make the first: only an
+    // unforced run proves `update`'s OWN comparison concluded "already current"
+    // against the ring. Collapsing the pair into one forced step would silently
+    // drop that.
     const linux = gateJobs().filter((j) => j.runs.startsWith("ubuntu-"));
     expect(linux.some((j) => j.body.includes("--expect-unchanged"))).toBe(true);
-    expect(linux.some((j) => j.body.includes("wego-linux-x64"))).toBe(true);
   });
 
   it("gives the macOS job neither capability the lane guards", () => {

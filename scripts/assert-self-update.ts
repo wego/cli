@@ -22,22 +22,30 @@
  * composition, the replace step and exit codes - including the next failure,
  * which will not look like the last one.
  *
- * `--force-replace` IS THE macOS LEG, and the reason it exists. Without `--force`
- * the gate's binary and the ring it follows hold the same bytes, so `update`
- * reports "already up to date" and returns before `downloadAndReplace` — the
- * fetch, the checksum, the chmod, the quarantine clear and the atomic rename all
- * go unrun. That is fine on the arriving direction (SMOKE 3 drives a real swap,
- * with the PREDECESSOR's code doing it), but the replace code that ships in THIS
- * binary is compiled per platform and has a branch Linux never reaches:
- * `if (os === "darwin") await deps.clearQuarantine(tmp)`. `--force` makes the
- * same-bytes case do the whole replace anyway, so a macOS runner exercises that
- * branch for real; the bytes landing identical is then itself an assertion (the
- * ring is serving what this run built).
+ * `--force-replace` EXISTS BECAUSE A RELEASE NEVER RAN THE REPLACE CODE IT WAS
+ * SHIPPING. Without `--force` the gate's binary and the ring it follows hold the
+ * same bytes, so `update` reports "already up to date" and returns before
+ * `downloadAndReplace` — the fetch, the checksum, the chmod, the quarantine clear
+ * and the atomic rename all go unrun. SMOKE 3 does drive a real swap, but with
+ * the PREDECESSOR's code, so the shipping build's replace half first executed one
+ * full release later — on a consumer's machine, or on the next release's SMOKE 3,
+ * whichever came first. Either way, after publication. `--force` makes the
+ * same-bytes case do the whole replace anyway, and the bytes landing identical is
+ * then itself an assertion: the ring is serving what this run built.
+ *
+ * TWO LEGS, ONE CLAIM. linux-x64 runs in the release job; darwin-arm64 runs in
+ * `replace-macos`, because the replace code is compiled per platform and one line
+ * of it — `if (os === "darwin") await deps.clearQuarantine(tmp)` — is unreachable
+ * from any Linux runner, at any release, early or late.
  *
  * WHAT IT DOES NOT COVER, so nobody reads more into a green run than it earns:
- *   - Other platforms. CI executes linux-x64 and darwin-arm64 (the latter through
- *     `--force-replace` in the release lane); darwin-x64, linux-arm64 and Windows
- *     are built and never run. Narrower than the 3c soak waiver's gap, not gone.
+ *   - Other platforms. CI executes linux-x64 and darwin-arm64, both through
+ *     `--force-replace`; darwin-x64, linux-arm64 and Windows are built, published
+ *     and never run. A deliberate line, not an oversight: darwin-x64 is Intel
+ *     hardware whose runner image is being retired, and Windows reaches no replace
+ *     path at all (`update` refuses — a running .exe cannot be swapped), so its
+ *     gate would assert the refusal and the download link it prints instead.
+ *     Narrower than the 3c soak waiver's gap, not gone.
  *   - A user's pre-existing install state: odd config, permissions, a
  *     half-written binary.
  *   - A regression that only appears on the NEXT release rather than this one.

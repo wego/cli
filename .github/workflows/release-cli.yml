@@ -889,9 +889,12 @@ jobs:
       #
       # WHICH MEANS THIS STOPS SHORT OF THE REPLACE. `update` returns on the
       # up-to-date branch, above `downloadAndReplace`, so the fetch, checksum,
-      # chmod, quarantine clear and atomic rename in THIS build's code are not
-      # executed here. Reaching them takes `--force`, and reaching the darwin-only
-      # one among them takes a macOS runner: SMOKE 5 (`replace-macos`, below).
+      # chmod and atomic rename in THIS build's code are not executed here.
+      # Reaching them takes `--force`: SMOKE 5, immediately below, which is why
+      # these are two steps and not one. Both claims are wanted, and only one of
+      # them can be made per run: this step proves `update`'s own COMPARISON
+      # concluded "already current" against the ring, which a forced run skips by
+      # construction.
       #
       # This CANNOT see the legacy bridge pin: the pin is `stable`-only, and
       # this lane only ever touches `next`. The promote lane carries the check
@@ -917,6 +920,42 @@ jobs:
             bun run scripts/assert-self-update.ts \
               ./dist/wego-linux-x64 https://api.wego.com/install next \
               --expect "$VERSION" --expect-unchanged
+
+      # SMOKE 5 (linux-x64) - THE REPLACE PATH IN THIS BUILD, ACTUALLY EXECUTED.
+      #
+      # The gap this closes is TIMING, and it is not macOS-specific. Until now no
+      # release ever ran the `downloadAndReplace` it was shipping:
+      #
+      #   release vN    SMOKE 3: v(N-1) replaces itself -> runs v(N-1)'s code
+      #                 SMOKE 4: vN reports up to date  -> runs nothing
+      #   release vN+1  SMOKE 3: vN replaces itself     -> runs vN's code, at last
+      #
+      # So the replace half of every build shipped one full release ahead of its
+      # first execution, and whoever got there first - a consumer on `cli/next`,
+      # or the NEXT release's SMOKE 3 - found the bug after publication. That is
+      # the standing caveat in `assert-self-update.ts`'s header ("a regression
+      # that only appears on the NEXT release rather than this one"), and it costs
+      # ~20 seconds on a runner that already holds the binary to stop paying it.
+      #
+      # `--force` is what makes it possible: the ring serves exactly these bytes,
+      # so only a forced run gets past the up-to-date branch and through the fetch,
+      # the checksum, the chmod and the atomic rename. The bytes landing IDENTICAL
+      # afterwards is then itself an assertion - the ring is serving the artifact
+      # this run built.
+      #
+      # The macOS leg (`replace-macos`) makes the SAME claim on the other platform
+      # this lane gates, and only a macOS runner can: `clearQuarantine` is compiled
+      # in per platform and this step can never reach it.
+      - name: Smoke test a real in-place replace (cli/next)
+        if: steps.publish.outputs.store_origin != ''
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          WEGO_BUILD_VERSION="$VERSION" \
+            bun run scripts/assert-self-update.ts \
+              ./dist/wego-linux-x64 https://api.wego.com/install next \
+              --expect "$VERSION" --force-replace
 
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new
@@ -1011,24 +1050,26 @@ jobs:
             });
             core.info(`Release ${tag} ready (SHA256SUMS.txt attached).`);
 
-  # SMOKE 5 - THE REPLACE PATH, ON macOS. The gap the two smokes above leave open
-  # between them, and the only one that needs a second runner to close.
+  # SMOKE 5 (macOS leg) - THE REPLACE PATH, ON THE OTHER PLATFORM THIS LANE GATES.
   #
-  # Both of those run linux-x64, and only one of them minds:
-  #   - SMOKE 3 drives a REAL byte-swap, but the PREDECESSOR's code does it. Old,
-  #     frozen, production-proven bytes; nothing this release changed is under test.
-  #   - SMOKE 4 does run THIS build's `update`, against a ring already serving
-  #     these bytes - so it returns on the up-to-date branch, above the replace.
-  #
-  # So the code that actually does the work on a consumer's machine - new,
-  # compiled per platform - has a branch no gate in this lane has ever executed:
+  # Its linux-x64 twin runs in the `release` job and carries the argument for the
+  # claim; this is the half of it that no Linux runner can make. The replace code
+  # is compiled per platform, and one line of it exists only on darwin:
   #
   #     if (os === "darwin") await deps.clearQuarantine(tmp);      src/update.ts
   #
-  # and with it everything the swap is made of as macOS runs it: fetch, gunzip,
-  # sha256, chmod, atomic rename over `process.execPath`. A darwin-only bug in
-  # there ships GREEN - which is the wego/cli#25 shape exactly. That release also
-  # passed every check in this lane; none of them ran the thing that was broken.
+  # and with it everything the swap is made of AS macOS RUNS IT: fetch, gunzip,
+  # sha256, chmod, atomic rename over `process.execPath` - the `xattr` binary
+  # being there or not, Gatekeeper's opinion of a freshly written file, the
+  # rename semantics. A darwin-only bug in any of that ships GREEN, which is the
+  # wego/cli#25 shape exactly: that release also passed every check in this lane,
+  # because none of them ran the thing that was broken.
+  #
+  # Note what a linux-x64 runner cannot substitute for here even in principle.
+  # SMOKE 3 at the NEXT release does eventually execute this build's replace code
+  # - one release late, which is the timing gap its linux twin closes - but the
+  # copy it executes is the LINUX build of it. The branch above is never reached
+  # by any release, early or late, on any existing gate.
   #
   # `--force-replace` is what makes this testable at all. The ring serves the same
   # bytes this job is holding, so only `--force` gets past the up-to-date branch
