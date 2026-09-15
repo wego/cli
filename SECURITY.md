@@ -1,7 +1,8 @@
 # Security policy
 
-<!-- TBD(#141): every TBD- token below is a placeholder and must be replaced
-     before this file is merged. See wego/foundations#141. -->
+<!-- TBD(#141): TBD-SECURITY-CONTACT below is the last placeholder in this
+     repository and must be replaced before this file is merged.
+     See wego/foundations#141. -->
 
 ## Reporting a vulnerability
 
@@ -15,9 +16,11 @@ Please include what you did, what you observed, and what you expected, along wit
 the CLI version (`wego version`), your operating system and architecture, and
 whether you were following `stable`, `next` or `edge`. A proof of concept helps.
 
-**What to expect:** we aim to acknowledge a report within `TBD-RESPONSE-WINDOW`
-and to keep you informed while we work on it. We will tell you when a fix is
-released, and we are glad to credit you unless you would rather we did not.
+**What to expect:** we aim to acknowledge a report within **three business
+days**, and to keep you informed while we work on it. Acknowledgement is not a
+fix: how long a fix takes depends on what you found, and we will tell you what
+we know as we know it. We will tell you when a fix is released, and we are glad
+to credit you unless you would rather we did not.
 
 Please give us reasonable time to fix an issue before disclosing it publicly.
 
