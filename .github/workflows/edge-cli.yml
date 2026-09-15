@@ -335,6 +335,35 @@ jobs:
           name: edge-signature
           path: dist
 
+      # THE REASSEMBLY IS AN ASSUMPTION, SO CHECK IT - before the first store write.
+      # The same step, in the same place, as the release lane's; see that file for
+      # the full argument. In short: before the signing split SHA256SUMS.txt was
+      # computed in the job that published, so "the binaries match the manifest" held
+      # by construction; now the two halves arrive as separate artifacts and the
+      # property rests on artifact integrity instead.
+      #
+      # `publish-edge-blob.ts` DOES catch a mismatch - `waitChannelConsistent` hashes
+      # every fetched object against the manifest - but only after the bytes are in
+      # the immutable `cli/<version>/` prefix. Here the same failure is a red run that
+      # wrote nothing.
+      #
+      # THE COST OF A LATE FAILURE IS LOWER ON THIS LANE THAN ON THE RELEASE ONE, and
+      # this step is here anyway. An edge version is keyed by the merge sha, so a
+      # half-written prefix is abandoned rather than burned - nobody has to bump
+      # anything. What is NOT cheap is the two lanes drifting: they already carried
+      # copied signing calls that diverged twice, once killing an edge run and once
+      # killing the first real release (see `.github/actions/sign-manifest`). The
+      # shapes match, so the checks match.
+      #
+      # `-c` covers both directions: a file the manifest LISTS but the reassembly did
+      # not deliver (the direction a too-narrow `dist/wego-*` glob would break), and
+      # bytes that do not match their recorded hash.
+      - name: Re-verify the reassembled binaries against the signed manifest
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS.txt
+
       # Publish cli/<version>/ (immutable) and advance cli/edge. This step holds
       # the identity gate the file header describes: the script verifies the
       # record it just wrote against `identitiesForRing("edge")` and refuses
