@@ -71,7 +71,7 @@ permissions:
 jobs:
   prepare:
     name: Gate and resolve CLI release
-    runs-on: github-runner-small
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
@@ -213,7 +213,7 @@ jobs:
   build:
     name: Build CLI
     needs: prepare
-    runs-on: github-runner-small
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     # NO `environment:` on this job, deliberately: it never touches the store and
     # must not be able to. The store token lives in the `production` environment,
@@ -290,7 +290,7 @@ jobs:
     concurrency:
       group: ring-next
       cancel-in-progress: false
-    runs-on: github-runner-small
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     # The store token and the baked public config live here. This is the ONLY job
     # in the lane that enters it, and the environment's deployment policy admits
