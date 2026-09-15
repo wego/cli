@@ -785,6 +785,60 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: sh scripts/verify-published.sh "$BASE" "$VERSION" native
 
+      # SMOKE 2.5 — THE INSTALL BASE, ASKED FIRST.
+      #
+      # POSITION IS THE POINT. This is the EARLIEST step in this lane that can ask
+      # its question at all, and it is placed ahead of SMOKE 3 and 4 deliberately:
+      # it is the only one whose failure means "this build strands people", so it
+      # must not wait behind two slower smokes that answer narrower questions.
+      #
+      # It cannot run before `Advance cli/next` above. A real binary reaches bytes
+      # only through a ring the deploy knows - `?dl=…&ring=<name>` resolves `edge`,
+      # `next` and `stable` and falls back to `stable` for anything else, so the
+      # immutable `cli/<tag>/` prefix published two steps earlier is not addressable
+      # by a predecessor at all. The first instant these bytes are reachable by a
+      # 1.1.0 binary is the instant `cli/next` names them, and that is here.
+      #
+      # IT TESTS `next` AND IT IS ABOUT `stable`. A promote is a server-side COPY
+      # of the frozen `cli/<tag>` blobs, and it refuses to run unless `cli/next`
+      # already serves the tag (`--require-serving next`), so the bytes this step
+      # drives a 1.1.0 binary onto ARE the bytes `cli/stable` will later be pointed
+      # at. `promote-cli.yml` re-asks the same question immediately before it moves
+      # that pointer; this asks it days earlier, while the answer is still free.
+      #
+      # WHY 1.1.0 IS THE ONE THAT MATTERS. SMOKE 3 drives the PREVIOUS release onto
+      # these bytes, and that predecessor moves forward with every release - so the
+      # distance it covers shrinks to one version while the install base stays put.
+      # Nobody is one version behind. The oldest machines still updating are 1.0.x
+      # and 1.1.0, and a 1.0.x machine's route runs THROUGH 1.1.0: the legacy bridge
+      # pin (wego/foundations#132) serves it the frozen `cli/cli-v1.1.0/` prefix
+      # first, and only its SECOND `update` reads the live pointer. So 1.1.0 is the
+      # hinge - if a 1.1.0 binary cannot verify and install what this release
+      # publishes, every install at or below it is stranded, 1.0.x included.
+      #
+      # THE PREDECESSOR IS PINNED, NOT DERIVED. SMOKE 3 takes whatever the channel
+      # held before; this takes the same immutable `cli/cli-v1.1.0/` artifact on
+      # every run, forever. That is the point: it is the only gate in this lane
+      # whose coverage does not erode as versions accumulate.
+      #
+      # 1.0.1 IS NOT DRIVEN HERE, and its absence is deliberate. Its baked trust set
+      # names wego-ai only, so it refuses anything `wego/cli` signs and cannot reach
+      # ring `next` at all (exit 6, correctly). Its route exists solely on `stable`,
+      # behind the pin - so `promote-cli.yml` owns it, where the pin is also checked
+      # before the pointer moves.
+      - name: Smoke test the 1.1.0 upgrade path (cli/next)
+        if: steps.publish.outputs.store_origin != ''
+        env:
+          ORIGIN: ${{ steps.publish.outputs.store_origin }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! sh scripts/upgrade-path.sh \
+                 "$ORIGIN/cli/cli-v1.1.0/wego-linux-x64" next "$VERSION" --max-hops 1; then
+            echo "::error::a 1.1.0 install cannot reach $VERSION on cli/next. Promoting this build would strand every install at or below 1.1.0 - and every 1.0.x machine too, since the legacy bridge pin lands it on 1.1.0 first. Exit 6 means a signed record 1.1.0 does not accept (check identitiesForRing and what this lane signed as); anything else is in the route, manifest, download or replace path."
+            exit 1
+          fi
+
       # Verify-then-execute. SMOKE 3 executes the predecessor as `wego update`, so its
       # bytes are checksum-verified fail-closed first: the capture step above only
       # downloads the binary and its SHA256SUMS.txt, and this step checks one against
@@ -887,55 +941,6 @@ jobs:
             bun run scripts/assert-self-update.ts \
               ./dist/wego-linux-x64 https://api.wego.com/install next \
               --expect "$VERSION" --expect-unchanged
-
-      # SMOKE 5 — THE ONLY GATE THAT CAN STOP A BUILD THE INSTALL BASE CANNOT
-      # RECEIVE, before `cli/stable` is pointed at it.
-      #
-      # IT TESTS `next` AND IT IS ABOUT `stable`. A promote is a server-side COPY
-      # of the frozen `cli/<tag>` blobs - `promote-cli.yml` asserts the two rings
-      # are byte-identical immediately after - so the bytes on `cli/next` right
-      # now ARE the bytes `cli/stable` is about to serve. Driving a 1.1.0 binary
-      # onto them here answers the stable question one step before the pointer
-      # moves, which is the last moment anything can.
-      #
-      # `promote-cli.yml` walks the real `stable` chains too, but only AFTER the
-      # pointer has advanced: that is verification and a rollback trigger, not a
-      # gate. This is the gate.
-      #
-      # SMOKE 3 drives the PREVIOUS release onto these bytes. That predecessor
-      # moves forward with every release, so the distance it covers shrinks to one
-      # version while the install base stays where it is. Nobody is one version
-      # behind. The oldest machines still updating are 1.0.x and 1.1.0, and a
-      # 1.0.x machine's route runs THROUGH 1.1.0: `apps/api`'s legacy bridge pin
-      # (wego/foundations#132) serves it the frozen `cli/cli-v1.1.0/` prefix
-      # first, and only its second `update` reads the live pointer. So 1.1.0 is
-      # the hinge - if a 1.1.0 binary cannot verify and install what this release
-      # publishes, every install at or below it is stranded, 1.0.x included.
-      #
-      # THE PREDECESSOR IS PINNED, NOT DERIVED. SMOKE 3 takes whatever the channel
-      # held before; this takes the same immutable `cli/cli-v1.1.0/` artifact on
-      # every run, forever. That is the point: it is the only gate here whose
-      # coverage does not erode as versions accumulate.
-      #
-      # 1.0.1 IS NOT DRIVEN HERE, and its absence is deliberate. Its baked trust
-      # set names wego-ai only, so it refuses anything `wego/cli` signs and cannot
-      # reach ring `next` at all (exit 6, correctly). Its route exists solely on
-      # `stable`, behind the pin - so `promote-cli.yml` walks it, at the moment
-      # the pointer it depends on actually moves.
-      #
-      # This is the LAST gate before a tag exists, and it can still stop one.
-      - name: Smoke test the 1.1.0 upgrade path (cli/next)
-        if: steps.publish.outputs.store_origin != ''
-        env:
-          ORIGIN: ${{ steps.publish.outputs.store_origin }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          if ! sh scripts/upgrade-path.sh \
-                 "$ORIGIN/cli/cli-v1.1.0/wego-linux-x64" next "$VERSION" --max-hops 1; then
-            echo "::error::a 1.1.0 install cannot reach $VERSION on cli/next. Promoting this build would strand every install at or below 1.1.0 - and every 1.0.x machine too, since the legacy bridge pin lands it on 1.1.0 first. Exit 6 means a signed record 1.1.0 does not accept (check identitiesForRing and what this lane signed as); anything else is in the route, manifest, download or replace path."
-            exit 1
-          fi
 
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new
