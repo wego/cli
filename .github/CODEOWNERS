@@ -10,3 +10,31 @@
 .github/CODEOWNERS   @sunny-wego @yeouchien-wego @chuyeowego
 src/release-signing/ @sunny-wego @yeouchien-wego @chuyeowego
 scripts/             @sunny-wego @yeouchien-wego @chuyeowego
+
+# The SET OF PACKAGES that runs inside those same jobs, and the config that decides
+# what gets released. Same lever as the scripts above, which is why it belongs at the
+# same bar - and it was the one hole in the list:
+#
+#   - `bun.lock` chooses the code that executes beside the signing identity and the
+#     store token. The release lane runs a frozen install and then a publish script
+#     that imports `@vercel/blob`; the package manager runs no lifecycle scripts, so
+#     a payload has to live in imported code, and imported code is exactly what this
+#     file selects.
+#   - `package.json`'s `dependencies` are COMPILED INTO THE SHIPPED BINARY by
+#     `bun build --compile` (src/api.ts imports zod), then hashed and signed. Nothing
+#     is forged in that path - the malicious bytes are genuinely the release - so no
+#     amount of job isolation reaches it. Review is the only control, which is why
+#     the reviewer has to be the same one who may change a release script.
+#   - the release-please files decide the version and the tag that `release-cli.yml`
+#     builds from.
+#
+# Before this, changing a script that runs in the privileged job needed a release
+# signer, while changing the set of packages that runs beside it needed one ordinary
+# reviewer. That was backwards.
+#
+# Leading slashes are load-bearing: CODEOWNERS is gitignore-style, so a bare
+# `package.json` would match one at any depth rather than the repository root.
+/package.json                  @sunny-wego @yeouchien-wego @chuyeowego
+/bun.lock                      @sunny-wego @yeouchien-wego @chuyeowego
+/release-please-config.json    @sunny-wego @yeouchien-wego @chuyeowego
+/.release-please-manifest.json @sunny-wego @yeouchien-wego @chuyeowego

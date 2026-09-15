@@ -1,7 +1,9 @@
 /**
  * Channel consistency barrier for the release publisher (`upload-release-blob.ts`).
  *
- * A moving channel (`cli/latest` / `cli/staging`) is advanced by copying ~11
+ * A moving channel (`cli/next` / `cli/stable`, and `cli/edge` through
+ * `publish-edge-blob.ts`; the flavor axis's `cli/latest` / `cli/staging` were
+ * retired by #74 rung 7) is advanced by copying ~11
  * blobs — the binaries AND their `SHA256SUMS.txt` manifest — onto MUTABLE
  * pathnames. That is a non-atomic multi-object update over a CDN with per-object
  * propagation, so for a brief window a reader can observe the fresh manifest next

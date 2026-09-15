@@ -89,7 +89,7 @@ function assertProductionHost(raw: string, name: string): void {
  *
  * One bundle, not two. The `wegostaging` flavor is gone (foundations#74 rung 7):
  * the backend is no longer welded into the artifact, so there is exactly one
- * `wego-*` binary, baked with the PROD endpoints, and `--target staging|local`
+ * `wego-*` binary, baked with the PROD endpoints, and `--target staging`
  * swaps the whole auth bundle at run time from `src/target.ts`'s source literals
  * (rung 2). The flavor CHANNEL-PATH cross-check went with it - a ring is a
  * recorded install-time choice now, not something baked. The flavor HOST check did
