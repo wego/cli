@@ -2,12 +2,11 @@ name: upgrade-paths-watch
 
 # THE INSTALL BASE, WATCHED ON A CLOCK RATHER THAN ON A COMMIT.
 #
-# `edge-cli.yml`'s `upgrade-paths` job asks whether a change in THIS repository
-# can be reached by an old install. It runs on a merge, because that is when the
-# answer can change.
+# `release-cli.yml` and `promote-cli.yml` walk these chains at the two moments a
+# CHANGE can break them: before a tag ships, and as `cli/stable` moves.
 #
-# This lane asks the other half, and it is the half no commit triggers: can the
-# people who are already out there still get here TODAY. The route a 1.0.x
+# This lane asks the half no commit triggers: can the people who are already out
+# there still get here TODAY, on a day nobody released anything. The route a 1.0.x
 # machine takes is mostly not ours -
 #
 #   - `apps/api` owns the legacy bridge pin (wego/foundations#132) that decides a
@@ -23,9 +22,9 @@ name: upgrade-paths-watch
 #
 # WHAT A FAILURE HERE MEANS: not that a release is bad, but that some fraction of
 # the install base can no longer update and does not know it. Treat it as an
-# incident on the deploy or the store, not as a CLI bug, and check
-# `edge-cli.yml`'s `upgrade-paths` job first - if that lane is green and this one
-# is red, the break is outside this repository.
+# incident on the deploy or the store, not as a CLI bug: if the last promote's
+# `Verify the install base can reach this promote` was green and this lane is now
+# red with no release in between, the break is outside this repository.
 on:
   schedule:
     # Daily, deliberately off the hour: GitHub queues scheduled runs hardest at

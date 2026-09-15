@@ -43,8 +43,8 @@
 # Examples — the two paths wego/cli cares about, as CI runs them:
 #
 #   BASE=https://<store>/cli
-#   # relay → whatever `edge` serves (the per-merge gate)
-#   sh scripts/upgrade-path.sh "$BASE/cli-v1.1.0/wego-linux-x64" edge 1.2.6-edge.abc1234
+#   # relay → the bytes `stable` is about to serve (the pre-promote gate)
+#   sh scripts/upgrade-path.sh "$BASE/cli-v1.1.0/wego-linux-x64" next 1.2.6
 #   # pre-relay → stable, via the frozen bridge (the install-base gate)
 #   sh scripts/upgrade-path.sh "$BASE/cli-v1.0.1/wego-linux-x64" stable 1.2.6 --via 1.1.0
 #

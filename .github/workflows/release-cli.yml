@@ -753,7 +753,19 @@ jobs:
               ./dist/wego-linux-x64 https://api.wego.com/install next \
               --expect "$VERSION" --expect-unchanged
 
-      # SMOKE 5 — THE OLDEST INSTALL THAT STILL UPDATES, not the newest one.
+      # SMOKE 5 — THE ONLY GATE THAT CAN STOP A BUILD THE INSTALL BASE CANNOT
+      # RECEIVE, before `cli/stable` is pointed at it.
+      #
+      # IT TESTS `next` AND IT IS ABOUT `stable`. A promote is a server-side COPY
+      # of the frozen `cli/<tag>` blobs - `promote-cli.yml` asserts the two rings
+      # are byte-identical immediately after - so the bytes on `cli/next` right
+      # now ARE the bytes `cli/stable` is about to serve. Driving a 1.1.0 binary
+      # onto them here answers the stable question one step before the pointer
+      # moves, which is the last moment anything can.
+      #
+      # `promote-cli.yml` walks the real `stable` chains too, but only AFTER the
+      # pointer has advanced: that is verification and a rollback trigger, not a
+      # gate. This is the gate.
       #
       # SMOKE 3 drives the PREVIOUS release onto these bytes. That predecessor
       # moves forward with every release, so the distance it covers shrinks to one
