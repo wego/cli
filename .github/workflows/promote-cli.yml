@@ -204,6 +204,7 @@ jobs:
             *)           tag="v$version";     lane="this repository's promote-cli.yml" ;;
           esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "how=ROLL BACK: run $lane with tag=$tag and allow_not_next=true (that flag is required - cli/next will be serving the new build, not this one)." >> "$GITHUB_OUTPUT"
           echo "rollback target: $tag via $lane"
 
@@ -348,6 +349,52 @@ jobs:
           fi
           echo "::error::the legacy bridge pin is NOT live: a Bun/ user agent asking for stable is answered with '${loc:-no location header}', which does not name /cli/cli-v1.1.0/. Moving cli/stable now would strand every 1.0.0 and 1.0.1 install that follows it, permanently and unrecoverably. Publish the bridge and set CLI_LEGACY_BRIDGE_RING + CLI_LEGACY_BRIDGE_TAG on the production apps/api deploy first (wego/foundations#132)."
           exit 1
+
+      # THE SAME CLAIM, ACTUALLY WALKED - still before the move.
+      #
+      # The probe above reads ONE HEADER. It proves the pin points somewhere, not
+      # that anything is there: it never downloads the frozen prefix, never checks
+      # the wego-ai-signed record beside it, and never runs a binary. A collected
+      # object or an expired certificate passes it and strands every 1.0.x install.
+      #
+      # HOP 1 IS FROZEN AT BOTH ENDS, which is what makes this hoistable. A 1.0.1
+      # binary asking ring `stable` is intercepted by the pin before `stable` is
+      # ever consulted, so where that pointer happens to be aimed is irrelevant to
+      # the hop - and a real walk of it does not need the promote to have happened.
+      # There is no reason to learn this after the move, and every reason not to.
+      #
+      # THE DESTINATION IS THE OUTGOING RELEASE, deliberately. The walk runs the
+      # WHOLE 1.0.x route - pin, frozen prefix, then the live pointer - against the
+      # ring as it stands right now, so it converges on what `stable` serves today
+      # (recorded at `Record the rollback target`). It therefore proves the route's
+      # MECHANICS are sound; that the route's second hop can carry the NEW bytes is
+      # what `Require the install base to be able to reach this tag` proves against
+      # `cli/next`. Between them every part is covered before the pointer moves, and
+      # only their COMPOSITION against the new pointer is left for after.
+      #
+      # Skipped when `stable` serves nothing - a first promote onto an empty ring
+      # has no route to walk and nothing to converge on.
+      - name: Walk the pre-relay route before moving anything
+        if: steps.outgoing.outputs.version != ''
+        env:
+          OUTGOING: ${{ steps.outgoing.outputs.version }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          loc=$(curl -sI 'https://api.wego.com/install?dl=SHA256SUMS.txt&ring=stable' \
+                | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+          origin=${loc%/cli/stable/SHA256SUMS.txt}
+          if [ -z "$origin" ] || [ "$origin" = "$loc" ]; then
+            echo "::error::could not read the store origin out of the install route's redirect: '$loc'. Refusing to move cli/stable on an unverified route."
+            exit 1
+          fi
+          if ! sh scripts/upgrade-path.sh \
+                 "$origin/cli/cli-v1.0.1/wego-linux-x64" stable "$OUTGOING" \
+                 --via 1.1.0 --max-hops 2; then
+            echo "::error::the pre-relay route is broken as it stands TODAY, against the release cli/stable already serves ($OUTGOING) - so this is not about $TAG. Either the bridge pin no longer delivers a usable frozen prefix, or the hop off 1.1.0 does not work. NOTHING HAS MOVED YET. Fix apps/api or restore cli/cli-v1.1.0 before promoting: moving the pointer now would add a second, independent failure on top of one that already strands every 1.0.x install."
+            exit 1
+          fi
+          echo "ok: the full 1.0.1 -> 1.1.0 -> stable route works against the outgoing release."
 
       # THE COMPLEMENT OF THE PROBE ABOVE, and the check whose absence shipped
       # v1.2.0 (wego/cli#25).
