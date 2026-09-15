@@ -266,20 +266,134 @@ jobs:
           WEGO_CLI_POSTHOG_PROJECT_KEY: ${{ vars.WEGO_CLI_POSTHOG_PROJECT_KEY }}
         run: bun run scripts/build-release.ts
 
+      # `VERSION` is written BEFORE the manifest, so it enters SHA256SUMS.txt with
+      # everything else and needs no publisher change: `upload-release-blob.ts`
+      # picks it up from `dist/`, copies it before the manifest commit point, and
+      # `waitChannelConsistent` + `verify-published.sh all` hash-verify it. It is
+      # the ONLY version string in the channel — `wego update --check` compares
+      # checksums and so can never name a release — and the proactive new-version
+      # notice (`src/version-notice.ts`) reads it. Same value the smoke step in
+      # `release` asserts `wego version` prints, which is what makes the notice go
+      # quiet immediately after a successful self-update.
+      #
+      # THIS RUNS HERE, beside the bytes it measures, rather than in the job that
+      # signs: hashing is not a privileged act, and computing the sums here means
+      # `sign` never needs the 60-95 MB binaries at all - it takes the manifest,
+      # signs it, and hands back the bundle.
+      - name: Checksums
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          cd dist
+          printf '%s\n' "$VERSION" > VERSION
+          sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      # TWO artifacts, not one, so `sign` can take the manifest without the
+      # binaries. `release` reassembles the full `dist/` from both plus the
+      # signature bundle.
       - name: Upload binaries
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cli-binaries
-          path: dist/*
+          path: dist/wego-*
           if-no-files-found: error
-          # A handoff between two jobs of one run, not a kept artifact: the
+          # A handoff between jobs of one run, not a kept artifact: the
           # immutable `cli/<tag>/` prefix the release job writes is the durable
           # copy, so this only has to outlive the run.
           retention-days: 1
 
+      - name: Upload manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-checksums
+          path: |
+            dist/VERSION
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  # THE ONLY JOB IN THIS LANE THAT CAN SIGN.
+  #
+  # It installs nothing. `sign-manifest` needs cosign and a `dist/` holding
+  # SHA256SUMS.txt, and nothing else - no Bun, no `node_modules`. So there is no
+  # third-party code in this job to abuse the OIDC token, which is the whole
+  # reason the job exists: `id-token: write` is granted per JOB, and GitHub sets
+  # `ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN` for EVERY step of a job that holds
+  # it - not only the step that runs cosign. While the release job both signed and
+  # ran `upload-release-blob.ts`, the 31 packages `@vercel/blob` brings in (among
+  # them `execa`, `cross-spawn` and `@vercel/oidc`) were one import away from
+  # minting a certificate naming this workflow, which is the name clients pin. That
+  # the SDK ran in a LATER step than cosign bought nothing: the token is obtainable
+  # for the life of the job.
+  #
+  # THE IDENTITY DOES NOT CHANGE by moving the signing step into another job. The
+  # Fulcio SAN is the WORKFLOW ref -
+  #   https://github.com/wego/cli/.github/workflows/release-cli.yml@refs/tags/vX.Y.Z
+  # - not the job, so `identitiesForRing`, the installer and `wego update` keep
+  # verifying exactly as before. A composite action (`sign-manifest`) runs inline in
+  # the caller and does not change it either. A REUSABLE WORKFLOW WOULD: moving this
+  # into a `workflow_call` file would re-point the SAN at that file and every
+  # install would fail-closed on its next update. Do not.
+  sign:
+    name: Sign the release manifest
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # NO `environment:` - this job must not be able to read the store token. The
+    # pairing it exists to prevent is "can sign" plus "can write to the ring".
+    permissions:
+      contents: read
+      # `id-token: write` is what makes keyless signing possible: cosign exchanges
+      # this job's OIDC token for a short-lived Fulcio certificate naming THIS
+      # workflow on THIS ref, and that name is what the installer and `wego update`
+      # pin (foundations#74 rung 9). There is no signing key anywhere - nothing to
+      # store, rotate or leak - and nothing outside this workflow can obtain a
+      # certificate a client will accept.
+      id-token: write
+    steps:
+      # Shallow: this checkout exists only to provide
+      # `./.github/actions/sign-manifest`. Nothing here reads git history.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Download the manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-checksums
+          path: dist
+
+      # Sign the MANIFEST, not each asset (foundations#74 rung 9). The manifest
+      # already names every file by sha256, so one record covers the whole release
+      # and cannot disagree with itself the way N records could; the installer and
+      # `wego update` check the record, then check each file against the manifest.
+      #
+      # Keyless, via this job's OIDC token: cosign gets a ~10-minute Fulcio
+      # certificate whose SAN names this workflow on this ref, and records the
+      # signature in Sigstore's public transparency log. Clients pin that name plus
+      # GitHub as the issuer, so store write access alone cannot produce a record
+      # they accept.
+      #
+      # The bundle is carried to `release` as an artifact and
+      # `upload-release-blob.ts` publishes it to the SEPARATE `cli-sig/<tag>`
+      # prefix - never beside the manifest it signs, which would fall to the same
+      # store write it exists to detect.
+      # ONE signing definition, shared with the other publishing lane
+      # (foundations#74 rung 9). The copies drifted twice - see the action's header.
+      - uses: ./.github/actions/sign-manifest
+
+      - name: Upload the signature
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-signature
+          path: dist/SHA256SUMS.txt.sigstore.json
+          if-no-files-found: error
+          retention-days: 1
+
   release:
     name: Publish CLI binaries to cli/next
-    needs: [prepare, build]
+    needs: [prepare, build, sign]
     # The ONLY job that advances a ring, so the only one that needs a slot. ONE
     # group, because every release writes the SAME pointer (`cli/next`): a split
     # would let two releases interleave on it and leave the ring holding whichever
@@ -298,15 +412,17 @@ jobs:
     # the token that selects a store.
     environment:
       name: production
-    # `id-token: write` is what makes keyless signing possible: cosign exchanges this
-    # job's OIDC token for a short-lived Fulcio certificate naming THIS workflow on
-    # THIS ref, and that name is what the installer and `wego update` pin
-    # (foundations#74 rung 9). There is no signing key anywhere - nothing to store,
-    # rotate or leak - and nothing outside this workflow can obtain a certificate a
-    # client will accept.
+    # NO `id-token: write`, deliberately: signing happens in the `sign` job above,
+    # which holds no store token. With the permission absent GitHub sets no OIDC
+    # request variables for this job at all, so the `@vercel/blob` import chain that
+    # runs here has nothing to exchange for a certificate. It can still write bytes
+    # to the store - but a record clients accept is out of reach, and swapping a
+    # binary fails the manifest, which names every file by sha256.
+    #
+    # contents:write is for the Release step, which reuses release-please's GitHub
+    # Release and attaches SHA256SUMS.txt to it.
     permissions:
       contents: write
-      id-token: write
     env:
       # Smoke steps run the keyed prod binary; without this they post CI events as product data.
       WEGO_CLI_TELEMETRY: "0"
@@ -319,46 +435,30 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
 
+      # Reassemble `dist/` exactly as it stood before the split: the `wego-*`
+      # binaries from `build`, the manifest and VERSION from `build`, and the
+      # signature bundle from `sign`. `upload-release-blob.ts` reads the directory
+      # and publishes the manifest, the binaries and VERSION to `cli/<tag>/`, and
+      # the bundle to the SEPARATE `cli-sig/<tag>` prefix - never beside the
+      # manifest it signs, which would fall to the same store write it exists to
+      # detect.
       - name: Download built binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: cli-binaries
           path: dist
 
-      # `VERSION` is written BEFORE the manifest, so it enters SHA256SUMS.txt with
-      # everything else and needs no publisher change: `upload-release-blob.ts`
-      # picks it up from `dist/`, copies it before the manifest commit point, and
-      # `waitChannelConsistent` + `verify-published.sh all` hash-verify it. It is
-      # the ONLY version string in the channel — `wego update --check` compares
-      # checksums and so can never name a release — and the proactive new-version
-      # notice (`src/version-notice.ts`) reads it. Same value the smoke step below
-      # asserts `wego version` prints, which is what makes the notice go quiet
-      # immediately after a successful self-update.
-      - name: Checksums
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          cd dist
-          printf '%s\n' "$VERSION" > VERSION
-          sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Download the manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-checksums
+          path: dist
 
-      # Sign the MANIFEST, not each asset (foundations#74 rung 9). The manifest
-      # already names every file by sha256, so one record covers the whole release
-      # and cannot disagree with itself the way N records could; the installer and
-      # `wego update` check the record, then check each file against the manifest.
-      #
-      # Keyless, via this job's OIDC token: cosign gets a ~10-minute Fulcio
-      # certificate whose SAN names this workflow on this ref, and records the
-      # signature in Sigstore's public transparency log. Clients pin that name plus
-      # GitHub as the issuer, so store write access alone cannot produce a record
-      # they accept.
-      #
-      # The bundle is written into dist/ and `upload-release-blob.ts` publishes it to
-      # the SEPARATE `cli-sig/<tag>` prefix - never beside the manifest it signs,
-      # which would fall to the same store write it exists to detect.
-      # ONE signing definition, shared with the other publishing lane
-      # (foundations#74 rung 9). The copies drifted twice - see the action's header.
-      - uses: ./.github/actions/sign-manifest
+      - name: Download the signature
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-signature
+          path: dist
 
       # SMOKE 1 — the built binaries actually run and carry the right baked
       # version + complete baked public config (linux-x64 runs natively on the
