@@ -180,6 +180,15 @@ The environment variables the CLI reads at run time:
 | `WEGO_CLI_NO_UPDATE_NOTICE` | Silences the "a newer version exists" notice. |
 | `WEGO_API_URL` | Points the CLI at another API — including one on your own machine. |
 
+`WEGO_TARGET` used to take a third value, `local`. It is gone: set `WEGO_API_URL`
+instead, which reaches an API on your own machine from the default `prod` target.
+**If you have `WEGO_TARGET=local` exported, unset it before you upgrade** — an
+unknown target is refused at startup, so every command, `wego update` included,
+would exit 2 until you do. The error names the values it accepts, and `unset
+WEGO_TARGET` is the whole fix. Only an exported variable reaches a released
+binary; a `.env.local` is read from beside the source, so a compiled `wego`
+never sees one.
+
 Running from source needs the public endpoint and client configuration as well;
 `.env.local.example` documents every value and is the complete list.
 
