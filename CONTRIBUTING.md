@@ -1,0 +1,115 @@
+# Contributing to the `wego` CLI
+
+Thanks for taking the time. This document covers what this repository is for,
+how to build and test it, and what happens to a pull request after you open it.
+
+<!-- TBD(#141): the TBD- tokens below are placeholders and must be replaced
+     before this file is merged. See wego/foundations#141. -->
+
+## What belongs here
+
+This repository is the `wego` command: a public OAuth + PKCE client that logs a
+user in against `auth.wego.com` and drives the Wego API as that user. It holds no
+secret of its own.
+
+Good contributions: bug fixes, clearer errors and help text, output and
+formatting fixes, new flags on existing commands, portability fixes, tests.
+
+Things to raise as an issue first, before writing code: new commands, changes to
+the JSON envelope or to exit codes, anything touching the login flow or
+credential storage, and anything touching the release or signing lanes. These
+have consequences outside this repository, and we would rather discuss them than
+turn down a finished branch.
+
+The Wego API itself is not in this repository. If the fix belongs server-side,
+say so in an issue and we will route it.
+
+## Getting set up
+
+You need [Bun](https://bun.sh). The version is pinned by the `packageManager`
+field in `package.json`. Do not use `npm`, `yarn` or `npx`; use `bunx` for
+one-offs.
+
+```bash
+bun install
+bun run dev -- places "singapore"     # run from source
+```
+
+## Before you open a pull request
+
+```bash
+bun run lint         # Biome
+bun run format       # Biome, writes
+bun run typecheck    # tsc --noEmit
+bun test             # unit tests
+```
+
+All four must be clean. `ci-cli` runs the same checks and is a required check on
+`main`.
+
+One note on running tests locally: a few tests assert that an unreadable file
+fails closed, which cannot hold when the test runs as **root**, because root
+bypasses file permission checks. If you are in a container that runs as root you
+will see those fail locally while CI is green. Run as an unprivileged user to get
+a true result.
+
+## Commit messages
+
+This repository uses [Conventional Commits](https://www.conventionalcommits.org).
+They are not decoration: release-please reads them to compute the next version
+and to write the changelog.
+
+```
+fix(update): keep the ring when the manifest is unreadable
+feat(hotels): add --sort for room rates
+docs: explain how a promote picks its bytes
+```
+
+`fix:` produces a patch release, `feat:` a minor one, and a `!` or a
+`BREAKING CHANGE:` footer a major one. `docs:`, `chore:`, `test:` and `refactor:`
+produce no release.
+
+**Your pull request title matters more than your commit messages.** Pull requests
+are squashed, and the squash takes its subject from the title, so the title is
+what release-please actually reads.
+
+## Sign your commits off (DCO)
+
+Every commit must carry a `Signed-off-by` line certifying the
+[Developer Certificate of Origin](https://developercertificate.org):
+
+```bash
+git commit -s -m "fix(places): handle an empty result set"
+```
+
+The DCO check is required on `main`. If you forget, `git rebase --signoff` over
+your branch and force-push it.
+
+## What happens next
+
+`main` requires a review from a code owner, so every change is reviewed before it
+merges. CI must be green.
+
+**We aim to respond to a new issue or pull request within `TBD-RESPONSE-WINDOW`,
+through `TBD-ROTATION`.** If nothing has happened after that, it is fair to say so
+on the thread.
+
+Merging does not publish anything. A release is a separate, deliberate act, and
+reaching users is another one after that: `docs/release.md` describes both.
+
+## Security
+
+Do not report a suspected vulnerability in a public issue. `SECURITY.md` has the
+private route.
+
+## Licensing
+
+This project is licensed under Apache-2.0; see `LICENSE`. By contributing, you
+agree that your contribution is licensed under the same terms, which is what the
+DCO sign-off above certifies.
+
+There is deliberately no `NOTICE` file. Apache-2.0 only requires propagating a
+`NOTICE` that a licensed dependency actually ships, and nothing bundled into the
+released binary carries one: the single runtime dependency is `zod`, under MIT.
+The two `NOTICE` files present in a development checkout belong to the TypeScript
+compiler packages, which are build-time only and never shipped.

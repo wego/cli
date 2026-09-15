@@ -1,0 +1,11 @@
+# Routes people somewhere useful before they open a blank issue.
+# TBD(#141): confirm these destinations before merging, and add the support
+# contact once one is named.
+blank_issues_enabled: true
+contact_links:
+  - name: Using the CLI, or the Wego API
+    url: https://docs.wego.com/cli
+    about: Command reference, quickstart and the HTTP contract. Start here for how-to questions.
+  - name: Report a security vulnerability
+    url: https://github.com/wego/cli/security/policy
+    about: Please report privately. Do not open a public issue for a suspected vulnerability.
