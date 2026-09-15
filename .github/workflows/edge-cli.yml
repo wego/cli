@@ -292,6 +292,12 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Where the pointer this run advanced actually lives. `upgrade-paths` below
+    # needs it to address the IMMUTABLE predecessor prefixes, and reading it from
+    # the publish rather than hardcoding a host is what keeps this lane
+    # host-agnostic like the rest of the release tooling.
+    outputs:
+      store_origin: ${{ steps.publish.outputs.store_origin }}
     # The store token lives here, and now ONLY here. This job cannot sign: with no
     # `id-token: write` GitHub sets no OIDC request variables for it at all, so a
     # compromised dependency in the publish path has nothing to exchange. It can
@@ -347,9 +353,122 @@ jobs:
       # (missing token) fails loudly rather than reporting a green edge run that
       # moved no pointer.
       - name: Publish edge and advance cli/edge
+        id: publish
         env:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           REQUIRE_PUBLISH: "true"
           RELEASE_COMMIT: ${{ github.sha }}
           VERSION: ${{ needs.build.outputs.version }}
         run: bun run scripts/publish-edge-blob.ts "$VERSION"
+
+  # THE INSTALL BASE'S QUESTION, ASKED ONCE PER MERGE.
+  #
+  # Every other gate in this repository asks whether the PREVIOUS release can
+  # reach this build. Nobody is on the previous release. The oldest installs
+  # still updating are 1.0.x and 1.1.0, and their journey is not one hop:
+  #
+  #   1.0.1  -> `apps/api`'s legacy bridge pin (wego/foundations#132) serves any
+  #             ring-`stable` `?dl=` whose agent starts with `Bun/` from the FROZEN
+  #             `cli/cli-v1.1.0/` prefix -> lands on 1.1.0 -> and only THEN reads
+  #             the live pointer. Two hops, and the first is wego-ai's signature
+  #             to verify, not this repository's.
+  #   1.1.0  -> the relay release: it trusts `wego/cli`'s identities, so it reads
+  #             the live pointer directly. One hop.
+  #
+  # So 1.0.1's fate is 1.1.0's fate plus a frozen prefix neither this repository
+  # nor any change in it can move. The ONE question a change here can answer is
+  # therefore: can a 1.1.0 binary VERIFY AND INSTALL the bytes this commit built?
+  # That is what runs below, against the ring this lane just advanced.
+  #
+  # WHY HERE AND NOT ON THE PULL REQUEST. The answer needs a real sigstore record
+  # a 2024-vintage binary accepts, and the identities it accepts are workflow refs
+  # (`edge-cli.yml@refs/heads/main`, `release-cli.yml@refs/tags/v*`). A pull
+  # request mints `@refs/pull/N/merge`, which every shipped binary refuses by
+  # design - correctly, and not something to weaken for a test. `cli/edge` is the
+  # earliest point where signed bytes for THIS code exist, so this is the earliest
+  # honest gate. It reports one merge after the change, not one release after it.
+  #
+  # NOT a required check, and deliberately: it runs after the pointer has already
+  # moved, so it is a detector, not a preventer. What it prevents is the NEXT
+  # release - a failure here is the signal to stop before a tag.
+  upgrade-paths:
+    name: Upgrade paths reach this build
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # No `environment:`, no store token: everything below is a public object or a
+    # public route, fetched exactly as a user's machine fetches it. A gate that
+    # held a credential could reach bytes a consumer cannot.
+    permissions:
+      contents: read
+    env:
+      WEGO_CLI_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      # The predecessor is an IMMUTABLE published artifact, addressed by its own
+      # frozen prefix rather than by a pointer. That is what makes a re-run
+      # meaningful: the start binary is the same genuine 1.1.0 every time, so it
+      # can never drift forward to meet the destination and turn this green
+      # without exercising anything - the greenwash `update-smoke.sh` guards with
+      # `--require-replace` and this script refuses outright.
+      #
+      # linux-x64 is this runner's platform. The macOS-only quarantine clear is
+      # the sole step of the real update path not covered here; `release-cli.yml`
+      # carries the same limitation.
+      - name: 1.1.0 (relay) -> this edge build
+        env:
+          ORIGIN: ${{ needs.publish.outputs.store_origin }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          sh scripts/upgrade-path.sh \
+            "$ORIGIN/cli/cli-v1.1.0/wego-linux-x64" edge "$VERSION" --max-hops 1
+
+      # THE FROZEN HOP, checked as a CONTRACT rather than re-walked.
+      #
+      # 1.0.1 cannot verify anything `wego/cli` signs - its baked trust set names
+      # wego-ai only - so it cannot be pointed at `edge` at all, and driving it to
+      # `stable` here would measure the last RELEASE, not this commit. What is
+      # worth asserting on every merge is that its route still exists: the pin
+      # still claims a `Bun/` agent, and the frozen prefix still serves the
+      # manifest and the wego-ai-signed record that agent will be handed.
+      #
+      # Nothing in this repository can break these. They are here because if they
+      # ever DO break - an `apps/api` deploy, a store lifecycle rule collecting an
+      # old prefix - every 1.0.x install stops updating silently, and this lane
+      # runs often enough to notice within a day.
+      - name: The 1.0.x bridge hop still exists
+        env:
+          ORIGIN: ${{ needs.publish.outputs.store_origin }}
+          # The agent a real 1.0.x machine sends, and the only input the pin
+          # reads. Passed to `curl -A` as data, never interpolated into a shell
+          # word.
+          LEGACY_AGENT: Bun/1.1.29
+          INSTALL_URL: https://api.wego.com/install
+        run: |
+          set -euo pipefail
+          loc=$(curl -sI -A "$LEGACY_AGENT" \
+                  "$INSTALL_URL?dl=SHA256SUMS.txt&ring=stable" \
+                | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+          case "$loc" in
+            */cli/cli-v1.1.0/SHA256SUMS.txt)
+              echo "ok: the pin still routes a pre-relay agent to the frozen bridge - $loc" ;;
+            *)
+              echo "::error::a pre-relay agent on ring stable is served '$loc', not the frozen cli/cli-v1.1.0 prefix. Every 1.0.x install would now follow the live pointer, whose record it cannot verify - it could no longer update at all."
+              exit 1 ;;
+          esac
+
+          # And the prefix it points at must still hold BOTH halves: the manifest
+          # and the wego-ai-signed record. A pointer at a collected prefix is a
+          # 404 to every 1.0.x machine, which fails closed and stops updating.
+          for f in SHA256SUMS.txt VERSION wego-linux-x64.gz; do
+            curl -fsS -o /dev/null "$ORIGIN/cli/cli-v1.1.0/$f" \
+              || { echo "::error::the frozen bridge prefix is missing $f - every 1.0.x install fails closed here."; exit 1; }
+          done
+          curl -fsS -o /dev/null "$ORIGIN/cli-sig/cli-v1.1.0/SHA256SUMS.txt.sigstore.json" \
+            || { echo "::error::the frozen bridge's signed record is gone - 1.0.x installs refuse the manifest and stop updating."; exit 1; }
+          echo "ok: the frozen bridge still serves a complete, signed 1.1.0."

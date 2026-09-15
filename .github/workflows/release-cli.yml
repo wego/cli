@@ -753,6 +753,43 @@ jobs:
               ./dist/wego-linux-x64 https://api.wego.com/install next \
               --expect "$VERSION" --expect-unchanged
 
+      # SMOKE 5 — THE OLDEST INSTALL THAT STILL UPDATES, not the newest one.
+      #
+      # SMOKE 3 drives the PREVIOUS release onto these bytes. That predecessor
+      # moves forward with every release, so the distance it covers shrinks to one
+      # version while the install base stays where it is. Nobody is one version
+      # behind. The oldest machines still updating are 1.0.x and 1.1.0, and a
+      # 1.0.x machine's route runs THROUGH 1.1.0: `apps/api`'s legacy bridge pin
+      # (wego/foundations#132) serves it the frozen `cli/cli-v1.1.0/` prefix
+      # first, and only its second `update` reads the live pointer. So 1.1.0 is
+      # the hinge - if a 1.1.0 binary cannot verify and install what this release
+      # publishes, every install at or below it is stranded, 1.0.x included.
+      #
+      # THE PREDECESSOR IS PINNED, NOT DERIVED. SMOKE 3 takes whatever the channel
+      # held before; this takes the same immutable `cli/cli-v1.1.0/` artifact on
+      # every run, forever. That is the point: it is the only gate here whose
+      # coverage does not erode as versions accumulate.
+      #
+      # 1.0.1 IS NOT DRIVEN HERE, and its absence is deliberate. Its baked trust
+      # set names wego-ai only, so it refuses anything `wego/cli` signs and cannot
+      # reach ring `next` at all (exit 6, correctly). Its route exists solely on
+      # `stable`, behind the pin - so `promote-cli.yml` walks it, at the moment
+      # the pointer it depends on actually moves.
+      #
+      # This is the LAST gate before a tag exists, and it can still stop one.
+      - name: Smoke test the 1.1.0 upgrade path (cli/next)
+        if: steps.publish.outputs.store_origin != ''
+        env:
+          ORIGIN: ${{ steps.publish.outputs.store_origin }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! sh scripts/upgrade-path.sh \
+                 "$ORIGIN/cli/cli-v1.1.0/wego-linux-x64" next "$VERSION" --max-hops 1; then
+            echo "::error::a 1.1.0 install cannot reach $VERSION on cli/next. Promoting this build would strand every install at or below 1.1.0 - and every 1.0.x machine too, since the legacy bridge pin lands it on 1.1.0 first. Exit 6 means a signed record 1.1.0 does not accept (check identitiesForRing and what this lane signed as); anything else is in the route, manifest, download or replace path."
+            exit 1
+          fi
+
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new
       # binary's `skill install --owned-only` after it swaps. In wego-ai this job

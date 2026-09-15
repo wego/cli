@@ -547,6 +547,55 @@ jobs:
           fi
           echo "ok: a binary from cli/stable asks stable and is told it is current."
 
+      # THE INSTALL BASE'S ARRIVAL, on the pointer that has just moved.
+      #
+      # Every gate above reasons about ONE hop: the outgoing stable, the new
+      # binary, the byte identity of two rings. The oldest installs do not take
+      # one hop. A pre-relay 1.0.x machine asking ring `stable` is claimed by
+      # `apps/api`'s legacy bridge pin (wego/foundations#132), served the FROZEN
+      # `cli/cli-v1.1.0/` prefix, lands on 1.1.0, and only THEN reads the live
+      # pointer this step just advanced. Nothing before now has walked that.
+      #
+      # Both predecessors are IMMUTABLE published artifacts addressed by their own
+      # frozen prefixes, so a re-run always starts from the same genuine old
+      # binary - it can never drift forward to meet the destination and pass
+      # having exercised nothing.
+      #
+      # `--via 1.1.0` pins the ROUTE, not just the arrival. A 1.0.1 that reached
+      # the new version by some other path would converge and pass silently, and
+      # the path is the thing under test: if the pin ever stops claiming it, this
+      # is where we find out.
+      #
+      # POST-MOVE, like the "leaving" test above and for the same reason - the
+      # destination does not exist until the pointer moves. It cannot block the
+      # promote; it tells you to ROLL BACK, and the rollback is the same one the
+      # step above names.
+      - name: Verify the install base can reach this promote
+        if: steps.promote.outputs.store_origin != ''
+        env:
+          ORIGIN: ${{ steps.promote.outputs.store_origin }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+
+          # 1.1.0 - the relay release. One hop: it trusts `wego/cli`'s signing
+          # identities, so it reads the live pointer directly.
+          if ! sh scripts/upgrade-path.sh \
+                 "$ORIGIN/cli/cli-v1.1.0/wego-linux-x64" stable "$version" --max-hops 1; then
+            echo "::error::a 1.1.0 install cannot reach $TAG on cli/stable. Every install at or below 1.1.0 - including every 1.0.x machine, which lands on 1.1.0 first - is now stranded on the pointer this promote just moved. Roll back with wego-ai's promote-cli.yml (tag=cli-v1.1.0, allow_not_next=true)."
+            exit 1
+          fi
+
+          # 1.0.1 - pre-relay. Two hops, through the frozen bridge.
+          if ! sh scripts/upgrade-path.sh \
+                 "$ORIGIN/cli/cli-v1.0.1/wego-linux-x64" stable "$version" \
+                 --via 1.1.0 --max-hops 2; then
+            echo "::error::a 1.0.1 install cannot reach $TAG on cli/stable in two hops via the frozen bridge. Either the legacy bridge pin no longer claims a pre-relay agent, or the second hop off 1.1.0 is broken. Roll back with wego-ai's promote-cli.yml (tag=cli-v1.1.0, allow_not_next=true)."
+            exit 1
+          fi
+          echo "ok: both 1.0.1 and 1.1.0 installs converge on $version."
+
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new
       # binary's `skill install --owned-only` after it swaps. In wego-ai this job
