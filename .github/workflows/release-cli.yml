@@ -481,6 +481,33 @@ jobs:
           name: cli-signature
           path: dist
 
+      # THE REASSEMBLY IS NOW AN ASSUMPTION, SO CHECK IT — before the first store
+      # write, which is what makes this worth three lines.
+      #
+      # Before the signing split, SHA256SUMS.txt was computed in THIS job over the
+      # exact files it was about to publish, so "the binaries match the manifest"
+      # held by construction and could not be stated wrongly. Now the sums are
+      # computed in `build` and the two halves travel as separate artifacts, so the
+      # property rests on artifact integrity instead - weaker, and worth one
+      # verification rather than a comment claiming it is fine.
+      #
+      # Without this the first thing to notice a disagreement is
+      # `verify-published.sh all`, which runs AFTER `--freeze` has written the
+      # immutable `cli/<tag>/` prefix and its COMMIT sidecar. At that point the
+      # version number is spent: the sidecar refuses a re-publish from a different
+      # commit, so a fix that needs a new commit has to bump. Asked HERE, the same
+      # failure costs a red run and nothing else - no prefix, no pointer, no burned
+      # version. Same argument, and the same placement, as the `manifestCoversAll`
+      # check `upload-release-blob.ts` runs against dist/ before uploading.
+      #
+      # `-c` also fails on a file the manifest LISTS but the reassembly did not
+      # deliver, which is the direction a too-narrow upload glob would break.
+      - name: Re-verify the reassembled binaries against the signed manifest
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS.txt
+
       # SMOKE 1 — the built binaries actually run and carry the right baked
       # version + complete baked public config (linux-x64 runs natively on the
       # runner). `logout` loads config without making a network request, so it
