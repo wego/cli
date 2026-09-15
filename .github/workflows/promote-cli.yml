@@ -159,6 +159,54 @@ jobs:
           esac
           echo "ok: $TAG is a plain release version."
 
+      # THE ROLLBACK TARGET, READ BEFORE IT IS OVERWRITTEN.
+      #
+      # Every failure message below this point tells an operator how to undo the
+      # move, and the right answer is ALWAYS "put back what was there" - which is
+      # knowable only now, because the move is what destroys it.
+      #
+      # THIS USED TO BE A HARDCODED `cli-v1.1.0` and that was a fossil. It was
+      # correct exactly once: at the relay cutover, when 1.1.0 WAS what `stable`
+      # served. Left as a literal it quietly became advice to downgrade the entire
+      # install base across every release since, for no reason - and to do it
+      # through the OTHER repository's lane.
+      #
+      # 1.1.0 IS NOT A UNIVERSAL FLOOR, which is the reasoning that made the
+      # literal look safe. A pre-relay 1.0.x machine never reads this pointer at
+      # all: the legacy bridge pin serves it the frozen `cli/cli-v1.1.0/` prefix
+      # whatever `stable` names. So the population a rollback reaches is 1.1.0 and
+      # newer, every member of which can verify any `wego/cli` release - and the
+      # least disruptive target for them is simply the one they were already on.
+      #
+      # WHICH LANE OWNS THE TAG follows from the version, because the tag GRAMMAR
+      # changed at the relay: wego-ai published `cli-vX.Y.Z` up to 1.1.0, wego/cli
+      # publishes `vX.Y.Z` from 1.2.0 on. This repository's promote would refuse a
+      # `cli-v` tag twice over - `validate-release-tag.ts` rejects the shape, and
+      # the release-run check queries THIS repository - so a message naming the
+      # wrong lane costs an operator the one thing they do not have.
+      - name: Record the rollback target (what cli/stable serves today)
+        id: outgoing
+        run: |
+          set -euo pipefail
+          version=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' 2>/dev/null || true)
+          version=$(printf '%s' "$version" | tr -d '\r\n')
+          if [ -z "$version" ]; then
+            # First promote onto an empty ring, or the store is unreachable. Neither
+            # is a reason to stop - but every rollback line below must then say so
+            # rather than name a tag that does not exist.
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "how=NO ROLLBACK TARGET: cli/stable serves nothing today, so there is no previous build to put back." >> "$GITHUB_OUTPUT"
+            echo "::warning::cli/stable currently serves no VERSION - rollback guidance in this run will say so."
+            exit 0
+          fi
+          case "$version" in
+            1.0.*|1.1.*) tag="cli-v$version"; lane="wego-ai's promote-cli.yml" ;;
+            *)           tag="v$version";     lane="this repository's promote-cli.yml" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "how=ROLL BACK: run $lane with tag=$tag and allow_not_next=true (that flag is required - cli/next will be serving the new build, not this one)." >> "$GITHUB_OUTPUT"
+          echo "rollback target: $tag via $lane"
+
       # A tag can exist - and `cli/<tag>/` can even be half-written - without the
       # release lane ever having FINISHED. Promoting that would put bytes no release
       # run ever verified in front of every install, which is the whole install base.
@@ -571,6 +619,7 @@ jobs:
         if: steps.promote.outputs.store_origin != ''
         env:
           TAG: ${{ inputs.tag }}
+          ROLLBACK: ${{ steps.outgoing.outputs.how }}
         run: |
           set -euo pipefail
           url='https://api.wego.com/install'
@@ -589,7 +638,7 @@ jobs:
           echo "$out"
 
           if [ "$code" -ne 0 ]; then
-            echo "::error::a binary taken from cli/stable cannot update itself (exit $code). cli/stable now serves $TAG and every install following it is affected. Roll back with wego-ai's promote-cli.yml (tag=cli-v1.1.0, allow_not_next=true) and see wego/cli#25."
+            echo "::error::a binary taken from cli/stable cannot update itself (exit $code). cli/stable now serves $TAG and every install following it is affected. $ROLLBACK See wego/cli#25. Note that a rollback cannot reach a machine that already took these bytes AND cannot update - it has to be reinstalled."
             exit 1
           fi
           if ! printf '%s' "$out" | grep -qi 'up to date'; then
@@ -620,13 +669,15 @@ jobs:
       #
       # A failure here means the pre-move gate was satisfied and the post-move
       # reality is not - so the fault is in the move itself or in the pin, not in
-      # the build. ROLL BACK: wego-ai's promote-cli.yml, tag=cli-v1.1.0,
-      # allow_not_next=true.
+      # the build. The rollback line comes from `Record the rollback target`,
+      # which read what `stable` served BEFORE this run overwrote it; see that
+      # step for why the target is the previous release and not a fixed version.
       - name: Verify the install base can reach this promote
         if: steps.promote.outputs.store_origin != ''
         env:
           ORIGIN: ${{ steps.promote.outputs.store_origin }}
           TAG: ${{ inputs.tag }}
+          ROLLBACK: ${{ steps.outgoing.outputs.how }}
         run: |
           set -euo pipefail
           version="${TAG#v}"
@@ -635,15 +686,20 @@ jobs:
           # identities, so it reads the live pointer directly.
           if ! sh scripts/upgrade-path.sh \
                  "$ORIGIN/cli/cli-v1.1.0/wego-linux-x64" stable "$version" --max-hops 1; then
-            echo "::error::a 1.1.0 install cannot reach $TAG on cli/stable. Every install at or below 1.1.0 - including every 1.0.x machine, which lands on 1.1.0 first - is now stranded on the pointer this promote just moved. Roll back with wego-ai's promote-cli.yml (tag=cli-v1.1.0, allow_not_next=true)."
+            echo "::error::a 1.1.0 install cannot reach $TAG on cli/stable. Every install at or below 1.1.0 - including every 1.0.x machine, which lands on 1.1.0 first - is now stranded on the pointer this promote just moved. $ROLLBACK"
             exit 1
           fi
 
           # 1.0.1 - pre-relay. Two hops, through the frozen bridge.
+          #
+          # A rollback does NOT rescue this one. A 1.0.x machine never reads this
+          # pointer - the pin serves it the frozen prefix whatever `stable` names -
+          # so if this fails, the fault is the pin or the frozen prefix, and putting
+          # the old release back changes nothing for the machines affected.
           if ! sh scripts/upgrade-path.sh \
                  "$ORIGIN/cli/cli-v1.0.1/wego-linux-x64" stable "$version" \
                  --via 1.1.0 --max-hops 2; then
-            echo "::error::a 1.0.1 install cannot reach $TAG on cli/stable in two hops via the frozen bridge. Either the legacy bridge pin no longer claims a pre-relay agent, or the second hop off 1.1.0 is broken. Roll back with wego-ai's promote-cli.yml (tag=cli-v1.1.0, allow_not_next=true)."
+            echo "::error::a 1.0.1 install cannot reach $TAG on cli/stable in two hops via the frozen bridge. Either the legacy bridge pin no longer claims a pre-relay agent, or the second hop off 1.1.0 is broken. A ROLLBACK WILL NOT FIX THIS: a 1.0.x machine is pinned to cli/cli-v1.1.0 and never reads this pointer, so repoint apps/api or restore the frozen prefix instead. (If the second hop is what broke, $ROLLBACK)"
             exit 1
           fi
           echo "ok: both 1.0.1 and 1.1.0 installs converge on $version."
