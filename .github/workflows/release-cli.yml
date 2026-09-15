@@ -695,9 +695,9 @@ jobs:
           RING: next
         # No install-URL override: the smoke reads WHERE it was installed from out of
         # the predecessor's own reinstall hint, which is what wego-ai always did.
-        # Phase 1 overrode that with a loopback resolver, because a rehearsal had to
-        # resolve `/install` into the rehearsal store rather than production; with
-        # the lane publishing to the real store there is nothing left to redirect.
+        # An earlier phase overrode that with a loopback resolver so `/install` could
+        # be pointed at a non-production store rather than production; with the lane
+        # publishing to the real store there is nothing left to redirect.
         #
         # The exec bit is already restored by the verify step above (and update-smoke.sh
         # chmods its own working copy regardless), so no chmod is needed here.
@@ -721,8 +721,8 @@ jobs:
       # tag exists to clean up.
       #
       # The install URL is FIXED, not read from `SMOKE_INSTALL_URL`. That
-      # variable was the Phase 1 rehearsal switch and its last consumers go with
-      # the resolver in this same change; honouring it here would leave this gate
+      # variable was the Phase 1 override switch and its last consumers went with
+      # the resolver; honouring it here would leave this gate
       # pointable at a loopback shim, where it would pass having proved nothing
       # about the real route - the exact class of failure it exists to catch.
       - name: Smoke test self-update from the new binary (cli/next)

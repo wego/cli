@@ -12,7 +12,7 @@
  * segment. That is exactly the shape of thing a human transcribes wrong and a
  * reviewer reads past.
  *
- * So they are never typed. This script downloads the two records the rehearsal
+ * So they are never typed. This script downloads the two records the
  * lanes actually published, reads the SAN out of each leaf certificate with the
  * SAME parser the binary uses to verify one (`parseCertificate`), and emits the
  * rules. If a rule in `identity.ts` disagrees with what a lane really signs, this
