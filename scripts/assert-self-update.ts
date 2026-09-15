@@ -2,7 +2,7 @@
  * THE GATE: a released binary must be able to update itself.
  *
  * Usage:
- *   bun run scripts/assert-self-update.ts <binary> <installUrl> <ring> [--expect <version>] [--expect-unchanged]
+ *   bun run scripts/assert-self-update.ts <binary> <installUrl> <ring> [--expect <version>] [--expect-unchanged] [--force-replace]
  *
  * wego/cli v1.2.0 shipped a binary that could not `wego update` at all. Its
  * update path set no user agent, so Bun's default `Bun/<version>` went out -
@@ -22,9 +22,22 @@
  * composition, the replace step and exit codes - including the next failure,
  * which will not look like the last one.
  *
+ * `--force-replace` IS THE macOS LEG, and the reason it exists. Without `--force`
+ * the gate's binary and the ring it follows hold the same bytes, so `update`
+ * reports "already up to date" and returns before `downloadAndReplace` — the
+ * fetch, the checksum, the chmod, the quarantine clear and the atomic rename all
+ * go unrun. That is fine on the arriving direction (SMOKE 3 drives a real swap,
+ * with the PREDECESSOR's code doing it), but the replace code that ships in THIS
+ * binary is compiled per platform and has a branch Linux never reaches:
+ * `if (os === "darwin") await deps.clearQuarantine(tmp)`. `--force` makes the
+ * same-bytes case do the whole replace anyway, so a macOS runner exercises that
+ * branch for real; the bytes landing identical is then itself an assertion (the
+ * ring is serving what this run built).
+ *
  * WHAT IT DOES NOT COVER, so nobody reads more into a green run than it earns:
- *   - Other platforms. CI executes linux-x64; the macOS and Windows binaries are
- *     built and never run. Same gap the 3c soak waiver names.
+ *   - Other platforms. CI executes linux-x64 and darwin-arm64 (the latter through
+ *     `--force-replace` in the release lane); darwin-x64, linux-arm64 and Windows
+ *     are built and never run. Narrower than the 3c soak waiver's gap, not gone.
  *   - A user's pre-existing install state: odd config, permissions, a
  *     half-written binary.
  *   - A regression that only appears on the NEXT release rather than this one.
@@ -80,17 +93,47 @@ export function reportedUnchanged(stdout: string): boolean {
   return /already up to date|up to date/i.test(stdout);
 }
 
+/**
+ * True when the run reports it actually swapped the binary — `downloadAndReplace`
+ * ran to completion.
+ *
+ * The claim `--force-replace` makes. Asserted on the MESSAGE and not on the exit
+ * code because "already up to date" also exits 0: a `--force` that failed to
+ * reach the replace path would otherwise pass while proving exactly what this
+ * leg exists to stop being unproven.
+ */
+export function reportedReplaced(stdout: string): boolean {
+  return /\bUpdated\b[^\n]*\bfrom ring\b/i.test(stdout);
+}
+
+/** Lowercase hex sha256 of a file, for the before/after comparison below. */
+async function sha256(path: string): Promise<string> {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(await Bun.file(path).bytes());
+  return hasher.digest("hex");
+}
+
 async function main(): Promise<void> {
   const [binary, installUrl, ring, ...rest] = process.argv.slice(2);
   if (!binary || !installUrl || !ring) {
     console.error(
-      "usage: assert-self-update.ts <binary> <installUrl> <ring> [--expect <version>] [--expect-unchanged]",
+      "usage: assert-self-update.ts <binary> <installUrl> <ring> [--expect <version>] [--expect-unchanged] [--force-replace]",
     );
     process.exit(1);
   }
   const expectAt = rest.indexOf("--expect");
   const expect = expectAt >= 0 ? rest[expectAt + 1] : undefined;
   const expectUnchanged = rest.includes("--expect-unchanged");
+  const forceReplace = rest.includes("--force-replace");
+  // Opposite claims about the same run: one asserts `update` stopped before the
+  // replace, the other that it went all the way through it. A caller passing both
+  // has one of them wrong, and a silent precedence rule would decide which.
+  if (forceReplace && expectUnchanged) {
+    console.error(
+      "::error::--force-replace and --expect-unchanged are mutually exclusive: the first requires a real byte-swap, the second requires that none happened.",
+    );
+    process.exit(1);
+  }
 
   const dir = await mkdtemp(join(tmpdir(), "wego-selfupdate-"));
   const home = join(dir, "home");
@@ -115,9 +158,19 @@ async function main(): Promise<void> {
   };
 
   console.log(
-    `self-update gate: ${binary} following ring ${ring} at ${installUrl}`,
+    `self-update gate: ${binary} following ring ${ring} at ${installUrl}${
+      forceReplace
+        ? " (--force: the replace path runs even on identical bytes)"
+        : ""
+    }`,
   );
-  const run = Bun.spawnSync([bin, "update", "-y"], { env });
+  // Read before the swap so the post-swap comparison below has something to be
+  // about; skipped otherwise, since hashing ~64 MB earns nothing without it.
+  const before = forceReplace ? await sha256(bin) : "";
+  const run = Bun.spawnSync(
+    forceReplace ? [bin, "update", "-y", "--force"] : [bin, "update", "-y"],
+    { env },
+  );
   const stdout = run.stdout.toString();
   const stderr = run.stderr.toString();
   if (stdout.trim()) console.log(stdout.trim());
@@ -136,6 +189,26 @@ async function main(): Promise<void> {
       `::error::A binary built from this revision cannot update itself. ${verdict.reason}`,
     );
     process.exit(1);
+  }
+
+  if (forceReplace) {
+    if (!reportedReplaced(stdout)) {
+      console.error(
+        `::error::--force-replace asked ${binary} to replace itself from ring ${ring} and it reported no swap. The replace path — fetch, checksum, chmod, quarantine clear, atomic rename — did not run, so this leg proved nothing.`,
+      );
+      process.exit(1);
+    }
+    // The swap landed; now say WHAT landed. The ring was published from the same
+    // dist/ this binary came out of, so identical bytes is the only correct
+    // outcome — anything else means the ring is not serving this build.
+    const after = await sha256(bin);
+    if (after !== before) {
+      console.error(
+        `::error::after replacing itself from ring ${ring} the binary's bytes changed (${before} -> ${after}). The ring is not serving the artifact this run built.`,
+      );
+      process.exit(1);
+    }
+    console.log(`replaced in place; bytes unchanged (sha256 ${after}).`);
   }
 
   if (expectUnchanged && !reportedUnchanged(stdout)) {

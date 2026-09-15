@@ -849,9 +849,12 @@ jobs:
       # failed release here is a NEW VERSION, never a rerun. See the capture step.
       # Skipped on a channel's first release (no predecessor), when that predecessor
       # published no objects (`usable != 1`), or when it predates the baked update
-      # channel (the script SKIPs, exit 0). Predecessor is linux-x64
-      # (this runner); the macOS-only quarantine-clear is the sole path not exercised
-      # here.
+      # channel (the script SKIPs, exit 0). Predecessor is linux-x64 (this runner),
+      # and that is harmless HERE: the code doing the swap is the predecessor's —
+      # old, frozen, proven by everyone already running it — so nothing this release
+      # changed about `update` is under test in this step either way. The direction
+      # where the platform DOES matter is the outbound one, and it is SMOKE 5's
+      # (`replace-macos`, below).
       - name: Smoke test real self-update (cli/next)
         if: steps.publish.outputs.store_origin != '' && steps.prev_channel.outputs.usable == '1'
         env:
@@ -883,6 +886,12 @@ jobs:
       # `cli/next` now serves exactly these bytes, so the correct outcome is
       # "already up to date" - asserted, so a run that silently replaced itself
       # with something else is a failure rather than a pass.
+      #
+      # WHICH MEANS THIS STOPS SHORT OF THE REPLACE. `update` returns on the
+      # up-to-date branch, above `downloadAndReplace`, so the fetch, checksum,
+      # chmod, quarantine clear and atomic rename in THIS build's code are not
+      # executed here. Reaching them takes `--force`, and reaching the darwin-only
+      # one among them takes a macOS runner: SMOKE 5 (`replace-macos`, below).
       #
       # This CANNOT see the legacy bridge pin: the pin is `stable`-only, and
       # this lane only ever touches `next`. The promote lane carries the check
@@ -1001,6 +1010,106 @@ jobs:
               data: fs.readFileSync("dist/SHA256SUMS.txt"),
             });
             core.info(`Release ${tag} ready (SHA256SUMS.txt attached).`);
+
+  # SMOKE 5 - THE REPLACE PATH, ON macOS. The gap the two smokes above leave open
+  # between them, and the only one that needs a second runner to close.
+  #
+  # Both of those run linux-x64, and only one of them minds:
+  #   - SMOKE 3 drives a REAL byte-swap, but the PREDECESSOR's code does it. Old,
+  #     frozen, production-proven bytes; nothing this release changed is under test.
+  #   - SMOKE 4 does run THIS build's `update`, against a ring already serving
+  #     these bytes - so it returns on the up-to-date branch, above the replace.
+  #
+  # So the code that actually does the work on a consumer's machine - new,
+  # compiled per platform - has a branch no gate in this lane has ever executed:
+  #
+  #     if (os === "darwin") await deps.clearQuarantine(tmp);      src/update.ts
+  #
+  # and with it everything the swap is made of as macOS runs it: fetch, gunzip,
+  # sha256, chmod, atomic rename over `process.execPath`. A darwin-only bug in
+  # there ships GREEN - which is the wego/cli#25 shape exactly. That release also
+  # passed every check in this lane; none of them ran the thing that was broken.
+  #
+  # `--force-replace` is what makes this testable at all. The ring serves the same
+  # bytes this job is holding, so only `--force` gets past the up-to-date branch
+  # and through the whole replace; the bytes landing IDENTICAL afterwards is then
+  # itself an assertion - the ring is serving the artifact this run built. See
+  # `assert-self-update.ts` for the claim in full.
+  #
+  # AFTER THE POINTER MOVES, like SMOKE 3 and 4, and for the same reason: it
+  # updates from `cli/next`, so the ring has to be advanced first. A red run here
+  # therefore means "macOS consumers may not be able to update off this build",
+  # and the remedy is the lane's standing one - a NEW VERSION, never a rerun.
+  #
+  # `macos-latest` is Apple silicon, so the asset is `wego-darwin-arm64`. The
+  # darwin-x64, linux-arm64 and Windows binaries are still built and never run;
+  # this narrows the untested set, it does not empty it.
+  #
+  # A SEPARATE JOB rather than a step, because the publisher is ubuntu-only - and
+  # a cheap separation to keep: this job holds NEITHER capability the lane is
+  # careful about. No `environment`, so no store token; no `id-token`, so nothing
+  # to exchange for a certificate. It downloads the artifact, checks it against
+  # the signed manifest before executing it (the lane's verify-then-execute rule),
+  # and runs it against the public route any user's `wego update` takes.
+  replace-macos:
+    name: Prove the replace path on macOS
+    needs: [prepare, release]
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # Runs the keyed prod binary; without this the run posts CI events as product data.
+      WEGO_CLI_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-bun
+
+      # The same two halves the publisher reassembles: the binaries from `build`,
+      # the manifest and VERSION from `build`'s second artifact. The signature
+      # bundle is NOT needed here - this job verifies bytes against the manifest,
+      # and the manifest's own signature was checked before publication.
+      - name: Download built binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-binaries
+          path: dist
+
+      - name: Download the manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-checksums
+          path: dist
+
+      # VERIFY-THEN-EXECUTE, the same rule the predecessor smoke follows: this job
+      # is about to run a 64 MB binary that arrived over an artifact hop, so it is
+      # checked against the manifest first. `shasum -a 256 -c`, not `sha256sum` -
+      # the macOS runner image has no coreutils, and the formats are identical.
+      - name: Verify the built binaries against the signed manifest
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 -c SHA256SUMS.txt
+
+      # The install URL is FIXED here for the same reason it is in SMOKE 4: a gate
+      # pointed at a shim would pass having proved nothing about the real route.
+      - name: Smoke test a real in-place replace on macOS (cli/next)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          # WEGO_BUILD_VERSION for the same reason as SMOKE 4: a dev-versioned
+          # binary makes `update` return EXIT.OK having done nothing, and a gate
+          # handed one would go green having tested nothing. The script refuses
+          # that case outright; this keeps it from arising.
+          WEGO_BUILD_VERSION="$VERSION" \
+            bun run scripts/assert-self-update.ts \
+              ./dist/wego-darwin-arm64 https://api.wego.com/install next \
+              --expect "$VERSION" --force-replace
 
   # NO POST-RELEASE SMOKE JOB HERE (#74 rung 7).
   #
