@@ -71,8 +71,16 @@ on:
 # contents:write lives on `release` instead, in its own block: the Release step
 # reuses release-please's GitHub Release and attaches SHA256SUMS.txt to it. No tag is
 # created here — both entrypoints arrive with one (#74 rungs 6 and 7). A job-level
-# `permissions:` REPLACES this block rather than merging with it, so `release` and its
-# `id-token: write` are untouched by the floor set here.
+# `permissions:` REPLACES this block rather than merging with it, so neither
+# `release`'s `contents: write` nor `sign`'s `id-token: write` is narrowed by the
+# floor set here.
+#
+# AND NO `id-token` HERE, which matters as much as the rest of the floor. A
+# workflow-level grant reaches EVERY job in the file, and GitHub sets
+# `ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN` for every step of a job that holds it —
+# so declaring it here would hand the signing identity to `prepare` and `build`,
+# both of which execute third-party dependency code. It is declared on `sign`
+# alone, which is the entire reason that job exists.
 #
 # No pull-requests scope — now in the permissions and not just in the prose. The
 # Release step no longer filters the notes by changed paths (every pull request in
