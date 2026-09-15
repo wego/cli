@@ -311,9 +311,9 @@ export function resolveConfigScope(
   argv: readonly string[] = process.argv,
 ): string {
   const { target } = resolveCliTarget(env, argv);
-  const bundle = targetEndpointOverrides(target, read(env, "WEGO_API_URL"));
-  // Non-prod always carries an authorize URL from the bundle; `prod` returns
-  // before that argument is read.
+  const bundle = targetEndpointOverrides(target);
+  // Non-prod always carries an authorize URL from the bundle; `prod` imposes
+  // nothing, and `targetConfigScope` short-circuits on it before reading one.
   return targetConfigScope(installScope(), target, bundle.authorizeUrl ?? "");
 }
 
@@ -331,7 +331,7 @@ export function loadCliConfig(
   // ambient `WEGO_*` vars: a `--target staging` that a loaded `.env.local` could
   // silently cancel would not be a switch at all. `prod` imposes nothing, so the
   // default path stays byte-for-byte what it was before this axis existed.
-  const bundle = targetEndpointOverrides(target, read(env, "WEGO_API_URL"));
+  const bundle = targetEndpointOverrides(target);
   return {
     authorizeUrl:
       bundle.authorizeUrl ??
@@ -386,6 +386,21 @@ export function loadCliConfig(
 /** Loopback hosts that may be reached over plaintext `http` (local dev). */
 const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
+/**
+ * Whether a hostname names this machine, and so may be reached over plaintext
+ * `http`.
+ *
+ * The `.localhost` suffix is in, not as a courtesy: portless serves the local
+ * `apps/api` at `api.localhost` and a linked worktree at a branch-prefixed name
+ * under the same suffix, so a rule that knew only the three literals would
+ * reject every developer's actual setup. RFC 6761 reserves the whole suffix for
+ * loopback, so nothing routable can claim it — this widens the plaintext
+ * exception to loopback, and only loopback.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  return LOOPBACK_HOSTS.includes(hostname) || hostname.endsWith(".localhost");
+}
+
 /** Loopback settings, validated as a unit. `redirectPort` uses `z.custom` (not
  *  `z.number().int()...`) so a `NaN` from a non-numeric `WEGO_CLI_REDIRECT_PORT`
  *  yields the named message rather than zod's generic "expected number". */
@@ -429,11 +444,11 @@ function secureUrlSchema(name: string) {
       return;
     }
     const isLocalHttp =
-      url.protocol === "http:" && LOOPBACK_HOSTS.includes(url.hostname);
+      url.protocol === "http:" && isLoopbackHost(url.hostname);
     if (url.protocol !== "https:" && !isLocalHttp) {
       ctx.addIssue({
         code: "custom",
-        message: `${name} must be HTTPS (http allowed only for localhost); got "${url.protocol}//${url.hostname}".`,
+        message: `${name} must be HTTPS (http allowed only for loopback); got "${url.protocol}//${url.hostname}".`,
       });
     }
   });

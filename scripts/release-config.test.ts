@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readReleaseEnvSpec } from "./release-config";
 
 // ONE bundle, not two (foundations#74 rung 7). The `wegostaging` flavor is gone:
-// every release build bakes the PROD endpoints, and `--target staging|local` swaps
+// every release build bakes the PROD endpoints, and `--target staging` swaps
 // the whole auth bundle at run time from `src/target.ts`. So there is no longer a
 // build-time flavor label a bundle could contradict, and the two guards that
 // enforced that label (flavor⟷host, and the channel path's flavor) went with it.

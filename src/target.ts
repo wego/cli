@@ -16,7 +16,7 @@ import { join } from "node:path";
  * identity (rung 7 retires it); the target is a run-time choice on top of it.
  */
 
-export const TARGETS = ["prod", "staging", "local"] as const;
+export const TARGETS = ["prod", "staging"] as const;
 
 export type Target = (typeof TARGETS)[number];
 
@@ -69,37 +69,6 @@ const STAGING_ENDPOINTS = {
   tokenUrl: `${STAGING_AUTH_BASE}/token`,
   apiUrl: "https://api.wegostaging.com",
 } as const;
-
-/** Where a plain `bun dev` serves `apps/api` (its `.env.local.example` PORT).
- *  Only a fallback: `local` reads `WEGO_API_URL` first, because a portless
- *  worktree URL is machine-specific and cannot be a literal. */
-export const LOCAL_API_URL_FALLBACK = "http://localhost:3001";
-
-/**
- * Whether a URL names a host on this machine — so `local` can accept the one
- * value it genuinely cannot hardcode without accepting a value that would make
- * it a lie.
- *
- * `*.localhost` is in, not as a courtesy: portless serves the local `apps/api`
- * at `https://api.localhost`, and a linked worktree at a branch-prefixed name
- * under the same suffix, so a rule that only knew `localhost` would reject every
- * developer's actual setup.
- */
-export function isLocalApiUrl(raw: string): boolean {
-  let host: string;
-  try {
-    host = new URL(raw).hostname;
-  } catch {
-    return false;
-  }
-  return (
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host === "[::1]" ||
-    host.endsWith(".localhost")
-  );
-}
 
 export function isTarget(value: unknown): value is Target {
   return (
@@ -213,45 +182,21 @@ export function isProdTarget(target: Target): boolean {
  * - `staging` imposes all three endpoints, and beats the ambient `WEGO_*` vars.
  *   A named target is more specific than a `.env.local` a shell happens to load,
  *   and if it were not, `--target staging` would be a no-op for every developer.
- * - `local` imposes the staging *auth* pair and takes its API URL from
- *   `WEGO_API_URL` when that names a host on this machine (portless names it per
- *   worktree, so it cannot be a literal), else the plain `bun dev` port. Staging
- *   auth is not a compromise: the local `apps/api` verifies staging tokens, which
- *   is what `.env.local.example` already does.
- *
- *   A `WEGO_API_URL` pointing anywhere else is **refused**, not adopted and not
- *   quietly ignored. Adopting it made `--target local` report `local` while
- *   talking to `api.wego.com`, which is the exact confusion this axis exists to
- *   end; ignoring it would instead run against a backend the user did not name.
- *   Only saying so is safe.
+ * To point at an API on this machine, set `WEGO_API_URL` on the default `prod`
+ * target: the override path accepts a loopback `http` URL (see `config.ts`), so
+ * a target of its own buys nothing.
  *
  * `clientId` is never swapped — the seeded public PKCE client_id is the same
  * literal in staging and prod (see `apps/api/.env.local.example` AUTH_AUDIENCE).
  */
 export function targetEndpointOverrides(
   target: Target,
-  apiUrlEnvValue: string | undefined,
 ): Partial<Omit<TargetBundle, "clientId">> {
   switch (target) {
     case "prod":
       return {};
     case "staging":
       return { ...STAGING_ENDPOINTS };
-    case "local": {
-      const named = apiUrlEnvValue?.trim();
-      if (named && !isLocalApiUrl(named)) {
-        throw new Error(
-          `WEGO_API_URL is ${named}, which is not a host on this machine, so it cannot serve --target local. ` +
-            "Point it at localhost (or a portless *.localhost name), unset it to use " +
-            `${LOCAL_API_URL_FALLBACK}, or name the target that URL belongs to.`,
-        );
-      }
-      return {
-        authorizeUrl: STAGING_ENDPOINTS.authorizeUrl,
-        tokenUrl: STAGING_ENDPOINTS.tokenUrl,
-        apiUrl: named || LOCAL_API_URL_FALLBACK,
-      };
-    }
   }
 }
 
@@ -268,9 +213,9 @@ export function hostOf(url: string): string {
  * 401 on — each other's tokens.
  *
  * Keyed by the *auth* host, not the API host, because that is what a token
- * belongs to. `staging` and `local` therefore share one store, which is correct
- * and deliberate: a local `apps/api` verifies staging tokens, so one login
- * serves both.
+ * belongs to: an install pointed at a local `apps/api` with `WEGO_API_URL` goes
+ * on using the store of whichever target issued its credentials, which is what a
+ * local API verifying staging tokens needs.
  *
  * `prod` keeps the historical bare `<flavor>/` leaf. That is the same rule, not
  * an exception — the prod auth host is simply aliased to the path it has always

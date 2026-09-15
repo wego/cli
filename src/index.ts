@@ -938,8 +938,8 @@ if (import.meta.main) {
   // `loadSourceEnvLocal`, so a `WEGO_TARGET` in `.env.local` counts.
   try {
     // `resolveConfigScope`, not `resolveCliTarget`: it resolves the target AND
-    // the endpoint bundle, so a `--target local` contradicted by a non-local
-    // `WEGO_API_URL` is caught here too rather than inside `buildRealDeps`.
+    // the endpoint bundle, so a bundle that throws is caught here rather than
+    // inside `buildRealDeps`.
     resolveConfigScope();
   } catch (err) {
     console.error(formatCliError(err, programName()));

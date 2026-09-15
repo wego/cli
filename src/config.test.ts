@@ -238,6 +238,28 @@ describe("assertSecureUrl", () => {
       assertSecureUrl("http://api.wego.com", "WEGO_API_URL"),
     ).toThrow(/WEGO_API_URL must be HTTPS/);
   });
+
+  it("allows the reserved .localhost suffix over http, and only it", () => {
+    // Portless serves the local `apps/api` at `api.localhost`, and a linked
+    // worktree at a branch-prefixed name under the same suffix. Since the
+    // `local` target went, `WEGO_API_URL` is the only way to name either, so a
+    // rule that knew only the three literals would reject every developer's
+    // setup. RFC 6761 reserves the suffix for loopback; nothing routable has it.
+    expect(() =>
+      assertSecureUrl("http://api.localhost", "WEGO_API_URL"),
+    ).not.toThrow();
+    expect(() =>
+      assertSecureUrl("http://rung2-api.localhost:3001", "WEGO_API_URL"),
+    ).not.toThrow();
+    // A routable host that merely *contains* the word is not the suffix, and a
+    // remote host is still refused: the access token travels to the API.
+    expect(() =>
+      assertSecureUrl("http://localhost.evil.com", "WEGO_API_URL"),
+    ).toThrow(/WEGO_API_URL must be HTTPS/);
+    expect(() =>
+      assertSecureUrl("http://notlocalhost", "WEGO_API_URL"),
+    ).toThrow(/WEGO_API_URL must be HTTPS/);
+  });
 });
 
 describe("requireClientId", () => {
