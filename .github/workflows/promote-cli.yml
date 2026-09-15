@@ -642,6 +642,49 @@ jobs:
           fi
           echo "ok: cli/$TAG carries every expected platform, raw and gzipped."
 
+      # THE ANTI-BRICK GATE, RE-ASKED AT THE STABLE DECISION.
+      #
+      # `release-cli.yml` proved this binary can really replace itself before it
+      # published anything. The bytes have not changed since - the tag prefix is
+      # immutable - but the WORLD has: `apps/api` may have deployed, a signing
+      # certificate may have aged out, an object may have been collected. The
+      # release gate proved the build; this proves the build AND today's route,
+      # at the last moment before every install is pointed at it.
+      #
+      # `cli/stable` still serves the outgoing release, so pointing this tag's
+      # binary at it exercises the full download-decompress-verify-replace path
+      # for real, exactly as the release lane did. A build that cannot leave must
+      # never become `stable`: those machines cannot be rescued by a rollback,
+      # because a binary that cannot update cannot take one.
+      - name: Require this tag's binary to be able to update itself for real
+        env:
+          TAG: ${{ inputs.tag }}
+          OUTGOING: ${{ steps.outgoing.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [ -z "$OUTGOING" ]; then
+            echo "::error::cli/stable serves no VERSION, so this binary's replace path cannot be exercised against it. Refusing to point every install at a build whose ability to leave is unproven here."
+            exit 1
+          fi
+          if [ "$OUTGOING" = "$version" ]; then
+            echo "::error::cli/stable already serves $version - this tag is already promoted, so no byte swap can be exercised and this gate would prove nothing."
+            exit 1
+          fi
+          loc=$(curl -sI 'https://api.wego.com/install?dl=SHA256SUMS.txt&ring=next' \
+                | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+          origin=${loc%/cli/next/SHA256SUMS.txt}
+          if [ -z "$origin" ] || [ "$origin" = "$loc" ]; then
+            echo "::error::could not read the store origin out of the install route's redirect for ring next: '$loc'."
+            exit 1
+          fi
+          if ! sh scripts/upgrade-path.sh \
+                 "$origin/cli/$TAG/wego-linux-x64" stable "$OUTGOING" --max-hops 1; then
+            echo "::error::$TAG's binary CANNOT UPDATE ITSELF against the live route. Pointing cli/stable at it would brick every machine that takes it, and a rollback would not reach them - a binary that cannot update cannot take one. NOTHING HAS MOVED YET. This passed in the release lane, so what changed is the route or the store, not the build: check apps/api and the signing certificates. See wego/cli#25."
+            exit 1
+          fi
+          echo "ok: $TAG's binary performs a real self-replace against today's route - it can leave."
+
       - name: Require the install base to be able to reach this tag
         env:
           TAG: ${{ inputs.tag }}

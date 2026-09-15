@@ -637,8 +637,72 @@ jobs:
       # names the commit whoever created it chose, and both entrypoints arrive with it
       # already created. The immutable prefix protects itself regardless of who writes
       # it - `putImmutableAssets` puts with `allowOverwrite: false`, and the
-      # `cli/<tag>/COMMIT` sidecar refuses a resume from a different commit
-      # (`upload-release-blob.ts`).
+      # THE ANTI-BRICK GATE: this binary must be able to LEAVE, proven by making
+      # it actually leave. Nothing has been published and no pointer has moved.
+      #
+      # THE FAILURE IT EXISTS FOR IS THE WORST ONE THIS PROJECT HAS. A build that
+      # cannot `wego update` bricks every machine that takes it, and a rollback
+      # does not rescue them: they already hold the broken binary, and a binary
+      # that cannot update cannot take the rollback either. Reinstall by hand is
+      # the only exit. v1.2.0 shipped exactly this (wego/cli#25).
+      #
+      # SMOKE 4 BELOW ALREADY ASKS THE QUESTION AND ACCEPTS A WEAKER ANSWER. It
+      # runs this binary against `cli/next`, which by then serves these very bytes,
+      # so the correct outcome is "already up to date" - and that is precisely
+      # where `update` STOPS. The hashes match, so it never downloads, never
+      # gunzips, never verifies a payload, never renames anything over itself. The
+      # request path is covered; the REPLACE path ships unexercised. v1.2.0's bug
+      # happened to be in the request, which is why that check was enough once and
+      # is not enough in general.
+      #
+      # SO THIS ONE MAKES IT DO THE WHOLE THING. Pointed at `cli/stable` - which
+      # still serves the OUTGOING release and which this lane never touches - the
+      # new binary must fetch, decompress, checksum and atomically replace itself
+      # in place. Downgrading is not a strange thing to ask of it: `update`
+      # compares CHECKSUMS, not versions, so this is byte-for-byte the code path a
+      # user's upgrade takes.
+      #
+      # IT NEEDS NOTHING PUBLISHED, which is why it sits here rather than after
+      # the publish: the binary is in `dist/` and `cli/stable` is already live. A
+      # failure costs a re-run and nobody outside this job has seen the build.
+      #
+      # COVERS linux-x64 ONLY, and for THIS direction that limit bites: the code
+      # doing the work is the NEW code, freshly compiled per platform, and macOS
+      # has a branch nothing here executes (the quarantine clear). See the release
+      # notes/README before widening - a macos-latest leg would close it.
+      - name: Require this build to be able to update itself for real
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          bin=./dist/wego-linux-x64
+          chmod +x "$bin"
+
+          # A dev-versioned binary makes `update` return OK without acting, so a
+          # gate handed one would go green having tested nothing. Assert the build
+          # baked its version rather than hoping it did.
+          got=$("$bin" version)
+          if [ "$got" != "$VERSION" ]; then
+            echo "::error::./dist/wego-linux-x64 reports '$got', not '$VERSION'. It was built without WEGO_BUILD_VERSION baked, so 'wego update' would exit OK without doing anything and this gate would prove nothing."
+            exit 1
+          fi
+
+          outgoing=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' | tr -d '\r\n')
+          if [ -z "$outgoing" ]; then
+            echo "::error::cli/stable serves no VERSION, so there is nothing for this build to update ONTO and its replace path cannot be exercised. Refusing to publish a build whose ability to leave is unproven."
+            exit 1
+          fi
+          if [ "$outgoing" = "$VERSION" ]; then
+            echo "::error::cli/stable already serves $VERSION, so pointing this build at it would exercise no byte swap. Re-releasing a version that is already stable leaves the replace path untested - cut a new version instead."
+            exit 1
+          fi
+
+          echo "making the new $VERSION binary install stable's $outgoing over itself..."
+          if ! sh scripts/upgrade-path.sh "$bin" stable "$outgoing" --max-hops 1; then
+            echo "::error::the $VERSION binary CANNOT UPDATE ITSELF. Publishing it would brick every machine that takes it - and a rollback would not reach them, because a binary that cannot update cannot take one either. This is wego/cli#25. Nothing has been published; fix the update path and re-tag. Exit 6 means a signed record this build refuses (check USER_AGENT and identitiesForRing); anything else is in the download, decompress, checksum or replace path."
+            exit 1
+          fi
+          echo "ok: the $VERSION binary performs a real self-replace - it can leave."
 
       - name: Publish immutable artifact (cli/<tag>)
         id: publish
