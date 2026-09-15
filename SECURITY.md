@@ -1,12 +1,8 @@
 # Security policy
 
-<!-- TBD(#141): TBD-SECURITY-CONTACT below is the last placeholder in this
-     repository and must be replaced before this file is merged.
-     See wego/foundations#141. -->
-
 ## Reporting a vulnerability
 
-**Email `TBD-SECURITY-CONTACT`. That is the only channel we monitor for
+**Email `security@wego.com`. That is the only channel we monitor for
 security reports.**
 
 Do not open a public issue for a suspected vulnerability, and do not raise one
@@ -48,8 +44,9 @@ which version you are on.
 
 **Out of scope**
 
-- The Wego API and website. Report those through Wego's main security contact
-  rather than here.
+- The Wego API and website. This policy covers the CLI and its release pipeline;
+  reports about the wider Wego platform are triaged by Wego's security team
+  rather than by this repository's maintainers.
 - Findings that require an attacker to already control the user's machine or
   their account.
 - Missing hardening with no demonstrated impact.
