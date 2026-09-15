@@ -5,9 +5,6 @@ code, then the rest when you are ready to open something. This document covers
 how we take contributions, what this repository is for, how to build and test
 it, and what happens to a pull request after you open it.
 
-<!-- TBD(#141): the TBD- tokens below are placeholders and must be replaced
-     before this file is merged. See wego/foundations#141. -->
-
 ## Open an issue first. Always.
 
 **Please do not send a pull request we have not discussed.** Open an issue,
@@ -123,9 +120,14 @@ what release-please actually reads.
 `main` requires a review from a code owner, so every change is reviewed before it
 merges. CI must be green.
 
-**We aim to respond to a new issue or pull request within `TBD-RESPONSE-WINDOW`,
-through `TBD-ROTATION`.** If nothing has happened after that, it is fair to say so
-on the thread.
+**We will do our best to respond, but we cannot promise when.** This repository
+is maintained by a team with its own roadmap and on-call load, and issues and
+pull requests are picked up as those priorities allow rather than in the order
+they arrive. Some threads are answered the same day and some sit for a while.
+
+A quiet thread is not a rejection and not a decision. If something has gone
+unanswered and you are still interested, adding a comment to say so is welcome
+and often enough to surface it.
 
 Merging does not publish anything. A release is a separate, deliberate act, and
 reaching users is another one after that: `docs/release.md` describes both.
