@@ -6,11 +6,12 @@
 
 ## Reporting a vulnerability
 
-Report privately. **Do not open a public issue for a suspected vulnerability.**
+**Email `TBD-SECURITY-CONTACT`. That is the only channel we monitor for
+security reports.**
 
-- Preferred: GitHub private vulnerability reporting, under this repository's
-  **Security** tab.
-- By mail: `TBD-SECURITY-CONTACT`
+Do not open a public issue for a suspected vulnerability, and do not raise one
+through a pull request or a discussion. If you have already done so, mail us
+rather than adding detail to the public thread.
 
 Please include what you did, what you observed, and what you expected, along with
 the CLI version (`wego version`), your operating system and architecture, and
