@@ -1,7 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { programName } from "./program-name";
 import { INSTALL_RECORD_FILE } from "./ring-follow";
 import {
   type ResolvedTarget,
@@ -56,8 +55,8 @@ const DEFAULTS = {
 };
 
 /**
- * Build-time baked configuration for the published single-file binaries
- * (`wegostaging` → staging, `wego` → prod; see `scripts/build-release.ts`).
+ * Build-time baked configuration for the published single-file binary
+ * (see `scripts/build-release.ts`).
  *
  * These are read through **static** `process.env.WEGO_BUILD_*` member accesses so
  * `bun build --compile --env 'WEGO_BUILD_*'` inlines the literals set at build
@@ -76,12 +75,6 @@ interface BuildDefaults {
   tokenUrl?: string;
   clientId?: string;
   apiBaseUrl?: string;
-  /** The baked build flavor (`wego` | `wegostaging`) — the RELEASE identity: the
-   *  published asset's name prefix, and what user-facing text calls this tool. It
-   *  no longer scopes the config dir; `installScope()` (the command name) does,
-   *  so a renamed second install isolates itself. `undefined` from source (falls
-   *  back to `"wego"`); same static-read/inline mechanism as the other fields. */
-  flavor?: string;
 }
 
 const BUILD: BuildDefaults = {
@@ -89,7 +82,6 @@ const BUILD: BuildDefaults = {
   tokenUrl: process.env.WEGO_BUILD_TOKEN_URL,
   clientId: process.env.WEGO_BUILD_CLIENT_ID,
   apiBaseUrl: process.env.WEGO_BUILD_API_URL,
-  flavor: process.env.WEGO_BUILD_FLAVOR,
 };
 
 /** The config root: `$XDG_CONFIG_HOME` when set, else `~/.config`. */
@@ -98,38 +90,26 @@ function configRoot(env: NodeJS.ProcessEnv): string {
 }
 
 /**
- * **The command name is the install's identity.** Every per-install file lives
- * under `<root>/<the name this binary was invoked as>/`, so a second install
- * isolates itself by being named differently and by nothing else: `wego-next`
- * reads and writes `~/.config/wego-next/`, `wego` keeps `~/.config/wego/`.
+ * **The config scope is the constant `wego`.** Every per-install file lives under
+ * `~/.config/wego/`, on every install, from source and from a binary alike.
  *
- * It used to be the baked FLAVOR, which made renaming a binary cosmetic: three
- * differently-named prod binaries all shared one `~/.config/wego/install.json`,
- * the last install written won the ring record, and every other one's `update`
- * then fetched from a ring nobody chose - checksum-clean and invisible, because
- * `update` compares checksums rather than versions. The only way out was to give
- * each install its own `XDG_CONFIG_HOME` and a wrapper script to re-supply it at
- * run time, i.e. two coupled knobs where the user had said the thing they meant
- * once, by naming the command.
+ * It was twice a variable and is now neither. First it was the baked build
+ * label, so a `wegostaging` build wrote `~/.config/wegostaging/`; then, when that
+ * label stopped deciding it, the name the binary was invoked as, so a copy named
+ * `wego-next` wrote `~/.config/wego-next/`. Both axes are retired: there is one
+ * build, published under one name, and the second-install case the name rule
+ * served is served by `XDG_CONFIG_HOME`, which is the standard answer and needs
+ * no rule of ours.
  *
- * Deriving it from the name instead makes the isolating act and the invoking act
- * the same act. It is also what every message about an install already says:
- * `programName()` is what the update notice prints, so the command the notice
- * names is the command that owns the config it is talking about.
- *
- * From source (`bun run src/index.ts`) `programName()` answers `wego`, which is
- * the historical source path - unchanged.
- *
- * A SYMLINK does not create a second identity: `process.execPath` resolves to the
- * real file (verified on Bun 1.3), so `ln -s wego wego-next` still scopes to
- * `wego`. Copy or install a second binary; do not link one.
+ * A constant is not a smaller version of that rule, it is a different guarantee:
+ * renaming or copying the binary can no longer move a user's credentials, ring
+ * record or settings out from under them, because nothing about the invocation
+ * is read when the path is built.
  */
-export function installScope(execPath: string = process.execPath): string {
-  return programName(execPath);
-}
+const CONFIG_SCOPE = "wego";
 
-/** One rule for every `<root>/<scope>/` path. `scope` is the install identity
- *  above, plus an auth-host leaf on a non-prod target (`targetConfigScope`). */
+/** One rule for every `<root>/<scope>/` path. `scope` is `CONFIG_SCOPE` above,
+ *  plus an auth-host leaf on a non-prod target (`targetConfigScope`). */
 function installConfigPath(
   fileName: string,
   env: NodeJS.ProcessEnv,
@@ -138,32 +118,11 @@ function installConfigPath(
   return join(configRoot(env), scope, fileName);
 }
 
-/**
- * Where a PRE-RENAME install of this binary kept its files: the same root, keyed
- * by the baked flavor instead of the command name. `undefined` when the two agree
- * (every default install: the command is named after the flavor), which is why
- * this is a transition aid and not a second lookup path.
- *
- * Nothing reads state through it. It exists so the two places that FAIL over a
- * moved file - the ring-record refusal, and the telemetry opt-out - can name the
- * directory the user has to move, instead of leaving them to guess why a working
- * install suddenly reports itself unconfigured.
- */
-export function legacyScopeDir(
-  env: NodeJS.ProcessEnv = process.env,
-  build: BuildDefaults = BUILD,
-  execPath: string = process.execPath,
-): string | undefined {
-  const flavor = flavorOf(build);
-  if (flavor === installScope(execPath)) return undefined;
-  return join(configRoot(env), flavor);
-}
-
 /** Issued tokens, under this install's own scope, so a second install's login
  *  cannot clobber — or 401 — the first one's session. */
 export function defaultCredentialsPath(
   env = process.env,
-  scope = installScope(),
+  scope = CONFIG_SCOPE,
 ): string {
   return installConfigPath("credentials.json", env, scope);
 }
@@ -172,20 +131,19 @@ export function defaultCredentialsPath(
  *  when we last asked. Not movable by `WEGO_CREDENTIALS_PATH`, which names a FILE. */
 export function defaultUpdateCheckPath(
   env = process.env,
-  scope = installScope(),
+  scope = CONFIG_SCOPE,
 ): string {
   return installConfigPath(".update-check", env, scope);
 }
 
 /** Which release ring this install came from (`ring-follow.ts`), written by the
- *  INSTALLER and followed by `wego update`. Scoped like the rest — the installer
- *  writes it under the name it installs the command as, which is the same rule
- *  `installScope()` reads it back by — and deliberately not in
- *  `credentials.json`: the ring survives a `logout`, and `update` must be able to
+ *  INSTALLER and followed by `wego update`. Scoped like the rest, under the one
+ *  constant scope both the installer and this binary build their paths from —
+ *  and deliberately not in `credentials.json`: the ring survives a `logout`, and `update` must be able to
  *  read it while logged out. */
 export function defaultInstallRecordPath(
   env = process.env,
-  scope = installScope(),
+  scope = CONFIG_SCOPE,
 ): string {
   return installConfigPath(INSTALL_RECORD_FILE, env, scope);
 }
@@ -194,7 +152,7 @@ export function defaultInstallRecordPath(
  *  which `logout` deletes — the machine id must survive that. */
 export function defaultTelemetryPath(
   env = process.env,
-  scope = installScope(),
+  scope = CONFIG_SCOPE,
 ): string {
   return installConfigPath("telemetry.json", env, scope);
 }
@@ -203,7 +161,7 @@ export function defaultTelemetryPath(
  *  fails closed when unreadable: a session write must not flip the opt-out. */
 export function defaultSessionPath(
   env = process.env,
-  scope = installScope(),
+  scope = CONFIG_SCOPE,
 ): string {
   return installConfigPath("session.json", env, scope);
 }
@@ -212,7 +170,7 @@ export function defaultSessionPath(
  *  `credentials.json`, which `logout` deletes — a preference must survive it. */
 export function defaultSettingsPath(
   env = process.env,
-  scope = installScope(),
+  scope = CONFIG_SCOPE,
 ): string {
   return installConfigPath("settings.json", env, scope);
 }
@@ -223,7 +181,7 @@ export function defaultSettingsPath(
  *  moved by `WEGO_CREDENTIALS_PATH`, which names a credentials *file*. */
 export function defaultAuthFailurePath(
   env = process.env,
-  scope = installScope(),
+  scope = CONFIG_SCOPE,
 ): string {
   return installConfigPath("last-auth-failure.json", env, scope);
 }
@@ -274,14 +232,6 @@ function read(env: NodeJS.ProcessEnv, key: CliEnvVar): string | undefined {
   return env[key];
 }
 
-/** The baked flavor, normalized. `?.trim() || "wego"`, not `?? "wego"`: an
- *  empty/whitespace baked flavor (e.g. `WEGO_BUILD_FLAVOR=`) survives `??`, and
- *  an empty release name would make `legacyScopeDir` point at the config root
- *  itself rather than at a directory inside it. */
-function flavorOf(build: BuildDefaults): string {
-  return build.flavor?.trim() || "wego";
-}
-
 /** The resolved target, from the two places every caller must agree on: the
  *  `--target` flag, then `WEGO_TARGET`, then prod. Throws on a value that is not
  *  a target — a typo must never fall through to prod. */
@@ -314,7 +264,7 @@ export function resolveConfigScope(
   const bundle = targetEndpointOverrides(target);
   // Non-prod always carries an authorize URL from the bundle; `prod` imposes
   // nothing, and `targetConfigScope` short-circuits on it before reading one.
-  return targetConfigScope(installScope(), target, bundle.authorizeUrl ?? "");
+  return targetConfigScope(CONFIG_SCOPE, target, bundle.authorizeUrl ?? "");
 }
 
 export function loadCliConfig(
@@ -376,7 +326,7 @@ export function loadCliConfig(
       read(env, "WEGO_CREDENTIALS_PATH") ||
       defaultCredentialsPath(
         env,
-        targetConfigScope(installScope(), target, bundle.authorizeUrl ?? ""),
+        targetConfigScope(CONFIG_SCOPE, target, bundle.authorizeUrl ?? ""),
       ),
     target,
     targetSource: source,

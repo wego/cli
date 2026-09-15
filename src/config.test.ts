@@ -4,16 +4,13 @@ import {
   assertSecureUrl,
   defaultCredentialsPath,
   defaultInstallRecordPath,
-  installScope,
-  legacyScopeDir,
   loadCliConfig,
   requireClientId,
 } from "./config";
 
 /** Run `body` as though the binary on disk were named `name`. `process.execPath`
- *  is what `installScope` reads (a compiled Bun binary's `argv[1]` is the useless
- *  `/$bunfs/...`), and it is assignable, so this drives the real wiring rather
- *  than a parallel copy of the rule. */
+ *  is the only thing that ever varied the config scope, and it is assignable, so
+ *  this drives the real wiring rather than a parallel copy of the rule. */
 function asCommand<T>(name: string, body: () => T): T {
   const real = process.execPath;
   process.execPath = `/home/u/.local/bin/${name}`;
@@ -134,56 +131,47 @@ describe("loadCliConfig", () => {
   });
 
   it("scopes the default credentials dir by an explicitly passed scope", () => {
-    // The scope is a parameter so `index.ts` can pass the target-aware one for the
-    // credentials while passing the bare install scope for the rest; these two are
-    // the historical `wego` / `wegostaging` leaves, unchanged.
+    // The scope is still a parameter so `index.ts` can pass the target-aware one
+    // for the credentials while passing the bare `wego` for the rest. Only the
+    // DEFAULT stopped varying.
     expect(defaultCredentialsPath({ XDG_CONFIG_HOME: "/x/cfg" }, "wego")).toBe(
       "/x/cfg/wego/credentials.json",
     );
     expect(
-      defaultCredentialsPath({ XDG_CONFIG_HOME: "/x/cfg" }, "wegostaging"),
-    ).toBe("/x/cfg/wegostaging/credentials.json");
+      defaultCredentialsPath(
+        { XDG_CONFIG_HOME: "/x/cfg" },
+        "wego/auth.wegostaging.com",
+      ),
+    ).toBe("/x/cfg/wego/auth.wegostaging.com/credentials.json");
   });
 
-  it("loadCliConfig scopes the default credentials path by the COMMAND NAME, not the baked flavor", () => {
-    // The install's identity is the name it is invoked as: a second, renamed
-    // install of the same release keeps its own store, and the baked flavor - the
-    // release identity - does not decide where anyone's tokens live.
+  it("loadCliConfig does not let the command name move the credentials path", () => {
+    // Nothing about the invocation decides where anyone's tokens live. Under the
+    // name-keyed rule this first case answered `/x/cfg/wego-next/...`, which is
+    // how a copied binary came up logged out.
     const c = asCommand("wego-next", () =>
-      loadCliConfig(env({ XDG_CONFIG_HOME: "/x/cfg" }), {
-        flavor: "wego",
-      }),
+      loadCliConfig(env({ XDG_CONFIG_HOME: "/x/cfg" }), {}),
     );
-    expect(c.credentialsPath).toBe("/x/cfg/wego-next/credentials.json");
-    // Same binary, invoked under the default name: the historical path, unchanged.
+    expect(c.credentialsPath).toBe("/x/cfg/wego/credentials.json");
     expect(
       asCommand("wego", () =>
-        loadCliConfig(env({ XDG_CONFIG_HOME: "/x/cfg" }), { flavor: "wego" }),
+        loadCliConfig(env({ XDG_CONFIG_HOME: "/x/cfg" }), {}),
       ).credentialsPath,
     ).toBe("/x/cfg/wego/credentials.json");
   });
 
-  it("loadCliConfig defaults to the wego dir when no flavor is baked", () => {
+  it("loadCliConfig puts credentials under the wego dir", () => {
     const c = loadCliConfig(env({ XDG_CONFIG_HOME: "/x/cfg" }), {});
     expect(c.credentialsPath).toBe("/x/cfg/wego/credentials.json");
   });
 
-  it("treats an empty/whitespace baked flavor as absent (source-path contract)", () => {
-    // `WEGO_BUILD_FLAVOR=` survives `??`; it must NOT collapse the leaf to
-    // `~/.config/credentials.json`. Empty and whitespace both fall back to wego.
-    for (const flavor of ["", "   "]) {
-      const c = loadCliConfig(env({ XDG_CONFIG_HOME: "/x/cfg" }), { flavor });
-      expect(c.credentialsPath).toBe("/x/cfg/wego/credentials.json");
-    }
-  });
-
-  it("WEGO_CREDENTIALS_PATH still wins over the flavor default", () => {
+  it("WEGO_CREDENTIALS_PATH still wins over the default", () => {
     const c = loadCliConfig(
       env({
         XDG_CONFIG_HOME: "/x/cfg",
         WEGO_CREDENTIALS_PATH: "/tmp/creds.json",
       }),
-      { flavor: "wegostaging" },
+      {},
     );
     expect(c.credentialsPath).toBe("/tmp/creds.json");
   });
@@ -276,23 +264,18 @@ describe("requireClientId", () => {
   });
 });
 
-describe("installScope", () => {
-  it("is the name the binary was invoked as", () => {
-    expect(installScope("/home/u/.local/bin/wego-next")).toBe("wego-next");
-    expect(installScope("/home/u/.local/bin/wego")).toBe("wego");
-  });
-
-  it("strips a Windows .exe suffix so one install is one scope on every platform", () => {
-    // Path SEPARATORS are the host's (`node:path` basename resolves to win32 on
-    // Windows), so this asserts only the suffix rule, which is platform-free.
-    expect(installScope("/home/u/wego-edge.exe")).toBe("wego-edge");
-  });
-
-  it("answers `wego` from source, keeping the historical source path", () => {
-    // `bun run src/index.ts` reports the runtime as the exec path; a source run
-    // must not invent a `bun` config dir.
-    expect(installScope("/usr/local/bin/bun")).toBe("wego");
-    expect(installScope("/usr/local/bin/node")).toBe("wego");
+describe("the config scope", () => {
+  it("is `wego` whatever the binary on disk is called", () => {
+    // The whole point of the constant. Under the old name-keyed rule these two
+    // resolved to `/x/cfg/wego-next/...` and `/x/cfg/wego-edge/...`, so a copied
+    // binary silently owned a different login, ring record and opt-out.
+    for (const name of ["wego", "wego-next", "wego-edge", "mywego"]) {
+      expect(
+        asCommand(name, () =>
+          defaultCredentialsPath({ XDG_CONFIG_HOME: "/x/cfg" }),
+        ),
+      ).toBe("/x/cfg/wego/credentials.json");
+    }
   });
 
   it("gives every per-install file the same scope", () => {
@@ -302,45 +285,24 @@ describe("installScope", () => {
     const creds = asCommand("wego-edge", () =>
       defaultCredentialsPath({ XDG_CONFIG_HOME: "/x/cfg" }),
     );
-    expect(record).toBe("/x/cfg/wego-edge/install.json");
-    expect(creds).toBe("/x/cfg/wego-edge/credentials.json");
-  });
-});
-
-describe("legacyScopeDir", () => {
-  it("is undefined for an install whose command name matches its release", () => {
-    // Every default install: nothing moved, so there is nothing to point at.
-    expect(
-      asCommand("wego", () =>
-        legacyScopeDir({ XDG_CONFIG_HOME: "/x/cfg" }, { flavor: "wego" }),
-      ),
-    ).toBeUndefined();
-    expect(
-      asCommand("wegostaging", () =>
-        legacyScopeDir(
-          { XDG_CONFIG_HOME: "/x/cfg" },
-          { flavor: "wegostaging" },
-        ),
-      ),
-    ).toBeUndefined();
+    expect(record).toBe("/x/cfg/wego/install.json");
+    expect(creds).toBe("/x/cfg/wego/credentials.json");
   });
 
-  it("names the flavor-keyed dir in the same root for a renamed install", () => {
+  it("is unaffected by a Windows .exe suffix", () => {
     expect(
-      asCommand("wego-next", () =>
-        legacyScopeDir({ XDG_CONFIG_HOME: "/x/cfg" }, { flavor: "wego" }),
+      asCommand("wego.exe", () =>
+        defaultCredentialsPath({ XDG_CONFIG_HOME: "/x/cfg" }),
       ),
-    ).toBe("/x/cfg/wego");
+    ).toBe("/x/cfg/wego/credentials.json");
   });
 
-  it("never points at the config root itself when no flavor is baked", () => {
-    // An empty `WEGO_BUILD_FLAVOR` normalizes to `wego`, so the hint stays a
-    // directory INSIDE the root rather than the root (which holds every other
-    // tool's config).
-    expect(
-      asCommand("wego-next", () =>
-        legacyScopeDir({ XDG_CONFIG_HOME: "/x/cfg" }, { flavor: "  " }),
-      ),
-    ).toBe("/x/cfg/wego");
+  it("stays inside the config root, never the root itself", () => {
+    // The old empty-flavor guard, kept as the property it was protecting: a
+    // scope that collapsed to "" would put credentials.json next to every other
+    // tool's config.
+    expect(defaultCredentialsPath({ XDG_CONFIG_HOME: "/x/cfg" })).toBe(
+      "/x/cfg/wego/credentials.json",
+    );
   });
 });

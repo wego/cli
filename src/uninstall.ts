@@ -3,13 +3,7 @@ import { EXIT, exitCodeForError } from "./error-report";
 import { programName } from "./program-name";
 import { usage, usageErrorLabel } from "./usage";
 
-// The build flavor (`wego` | `wegostaging`), read the SAME static way `index.ts`
-// reads it (`bun build --env`-inlined; `"wego"` from source). It is the leaf of
-// the default user-scope skill dir this command removes, so the usage names the
-// right dir per flavor.
-const FLAVOR = process.env.WEGO_BUILD_FLAVOR?.trim() || "wego";
-
-// The invoked command name, so `wegostaging uninstall --help` names wegostaging.
+// The invoked command name, so a renamed install's `--help` names itself.
 const PROG = programName();
 
 /**
@@ -40,8 +34,6 @@ export interface UninstallDeps {
    *  true there is no installed binary to remove and `execPath` is the Bun/Node
    *  runtime, so the command refuses. */
   fromSource: boolean;
-  /** `wego` | `wegostaging`, for the messages. */
-  flavor: string;
   /** `process.platform`. */
   platform: NodeJS.Platform;
   /** Absolute path of the running binary (`process.execPath`). */
@@ -96,7 +88,7 @@ export const UNINSTALL_USAGE = usage({
   flags: [
     ["-y", "Skip the confirm."],
     ["--keep-credentials", "Keep the login."],
-    ["--keep-skill", `Keep the agent skill in ~/.claude/skills/${FLAVOR}.`],
+    ["--keep-skill", "Keep the agent skill in ~/.claude/skills/wego."],
   ],
   note: `A project-scope or --dir skill install is not touched. Remove it with ${PROG} skill uninstall --scope project or --dir PATH.`,
 });
@@ -152,7 +144,7 @@ async function removeBinary(deps: UninstallDeps): Promise<number> {
     );
     return exitCodeForError(err);
   }
-  deps.log(`Removed ${deps.flavor} (${deps.execPath}).`);
+  deps.log(`Removed wego (${deps.execPath}).`);
   return EXIT.OK;
 }
 
@@ -166,8 +158,8 @@ async function confirmUninstall(
   // is a manual follow-up there, not something this command removes.
   const targets = [
     deps.platform === "win32"
-      ? `manually delete the ${deps.flavor} binary at ${deps.execPath} after this command`
-      : `the ${deps.flavor} binary at ${deps.execPath}`,
+      ? `manually delete the wego binary at ${deps.execPath} after this command`
+      : `the wego binary at ${deps.execPath}`,
     `local state at ${deps.updateCheckPath}`,
     `the release-ring record at ${deps.installRecordPath}`,
     `the analytics session at ${deps.sessionPath}`,
@@ -186,7 +178,7 @@ async function confirmUninstall(
     `local telemetry state at ${deps.telemetryStatePath} (an explicit telemetry opt-out is kept)`,
   );
   return deps.confirm(
-    `Uninstall ${deps.flavor}? This removes:\n  - ${targets.join("\n  - ")}\nProceed?`,
+    `Uninstall wego? This removes:\n  - ${targets.join("\n  - ")}\nProceed?`,
   );
 }
 

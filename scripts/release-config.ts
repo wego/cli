@@ -1,5 +1,4 @@
 export interface ReleaseEnvSpec {
-  bin: "wego";
   authorizeUrl: string;
   tokenUrl: string;
   apiUrl: string;
@@ -109,7 +108,6 @@ export function readReleaseEnvSpec(source: NodeJS.ProcessEnv): ReleaseEnvSpec {
   //
   const posthogKey = source.WEGO_CLI_POSTHOG_PROJECT_KEY?.trim() || undefined;
   const spec: ReleaseEnvSpec = {
-    bin: "wego",
     authorizeUrl: requiredEnv(source, "WEGO_AUTH_AUTHORIZE_URL"),
     tokenUrl: requiredEnv(source, "WEGO_AUTH_TOKEN_URL"),
     apiUrl: requiredEnv(source, "WEGO_API_URL"),

@@ -154,7 +154,6 @@ function makeDeps(
     fromSource: false,
     installRecordPath: "/home/u/.config/wego/install.json",
     readInstallRecord: async () => ({ ring: RING, installUrl: BASE }),
-    flavor: "wego",
     installUrl: "https://api.wego.com/install",
     platform: "linux",
     arch: "x64",

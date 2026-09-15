@@ -24,7 +24,7 @@ import { usage, usageErrorLabel } from "./usage";
  *
  * The CLI ships as a self-contained single-file binary published to a public
  * Vercel Blob store under a ring pointer (`cli/edge`, `cli/next`, `cli/stable`),
- * named `<flavor>-<os>-<arch>`, with a per-ring `SHA256SUMS.txt`. This command
+ * named `wego-<os>-<arch>`, with a per-ring `SHA256SUMS.txt`. This command
  * mirrors the `curl … | bash` installer (`apps/api` `renderInstallScript`) in
  * TypeScript: platform-detect → fetch the checksums → compare against the running
  * binary → download → verify fail-closed → atomically swap `process.execPath`.
@@ -66,12 +66,6 @@ export interface UpdateDeps extends UpdateIo {
   /** Where that record lives, named in the refusal so the user can see what is
    *  missing. */
   installRecordPath: string;
-  /** Where this install's files lived before the config scope became the command
-   *  name (`config.ts` `legacyScopeDir`); `undefined` for every install whose name
-   *  still matches its release. Only ever printed, in the no-record refusal. */
-  legacyScopeDir?: string;
-  /** The asset-name prefix / build flavor: `wego` | `wegostaging`. */
-  flavor: string;
   /** `<apiBase>/install` for the reinstall hint; undefined when unbaked. */
   installUrl?: string;
   /** `process.platform`. */
@@ -239,7 +233,8 @@ function classifyReplaceError(
   }
   if (errno === "ENOSPC") {
     return {
-      message: `not enough disk space to download the new ${deps.flavor} binary. Free up space and retry.`,
+      message:
+        "not enough disk space to download the new wego binary. Free up space and retry.",
       code: EXIT.ERROR,
     };
   }
@@ -342,7 +337,7 @@ async function downloadAndReplace(
     /* Swap already succeeded; the skill refreshes on the next update. */
   }
   deps.log(
-    `Updated ${deps.flavor} from ring ${ring} → ${deps.execPath}. Run \`${deps.flavor} version\` to confirm.`,
+    `Updated wego from ring ${ring} → ${deps.execPath}. Run \`wego version\` to confirm.`,
   );
   return EXIT.OK;
 }
@@ -375,7 +370,6 @@ async function preflight(deps: UpdateDeps): Promise<Preflight> {
     record: await deps.readInstallRecord(),
     recordPath: deps.installRecordPath,
     reinstallHint: reinstallHint(deps),
-    movedFrom: deps.legacyScopeDir,
   });
   if (!followed.ok) {
     deps.error(followed.message);
@@ -395,7 +389,7 @@ async function preflight(deps: UpdateDeps): Promise<Preflight> {
   // A running .exe can't be overwritten in place on Windows the way POSIX allows;
   // point the user at the manual download, as the installer already does.
   if (deps.platform === "win32") {
-    const winAsset = `${deps.flavor}-windows-x64.exe`;
+    const winAsset = "wego-windows-x64.exe";
     deps.log(
       `Self-update isn't supported on Windows. Download ${ringAssetUrl(base, winAsset, ring)} and replace ${deps.execPath}.`,
     );
@@ -411,7 +405,7 @@ async function preflight(deps: UpdateDeps): Promise<Preflight> {
   return {
     base,
     ring,
-    asset: `${deps.flavor}-${target.os}-${target.arch}`,
+    asset: `wego-${target.os}-${target.arch}`,
     os: target.os,
   };
 }
@@ -598,7 +592,7 @@ async function runUpdate(
   }
   if (!opts.yes) {
     const ok = await deps.confirm(
-      `Update ${deps.flavor} from ring ${ring} now? This replaces ${deps.execPath}.`,
+      `Update wego from ring ${ring} now? This replaces ${deps.execPath}.`,
     );
     if (!ok) {
       deps.log("Skipped.");

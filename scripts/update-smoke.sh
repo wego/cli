@@ -107,13 +107,14 @@ export XDG_CONFIG_HOME
 # the caller's file — `update` rewrites it in place, and the copy is what proves
 # the swap happened).
 #
-# The copy is named `wego`, in a directory of its own, and the NAME is load-bearing:
-# a CLI scopes its config by the name it is invoked as (`src/config.ts`
-# `installScope`), so a copy called `old-binary` would look for its ring record in
-# `$XDG_CONFIG_HOME/old-binary/` and the record arranged below would be invisible to
-# it. `wego` is also what both rules resolve to — the name-keyed one and the
-# flavor-keyed one a predecessor built before that change uses — so this script keeps
-# working against a predecessor from either side of it.
+# The copy is named `wego`, in a directory of its own, and the NAME is load-bearing
+# for the PREDECESSOR. The binary under test scopes its config to the constant
+# `wego` and no longer cares what it is called, but every predecessor up to 1.2.7
+# scoped by the name it was invoked as, so a copy called `old-binary` would look for
+# its ring record in `$XDG_CONFIG_HOME/old-binary/` and the record arranged below
+# would be invisible to it. `wego` is what all three rules resolve to — the constant,
+# the name-keyed one, and the flavor-keyed one an older predecessor uses — so this
+# script keeps working against a predecessor from any side of either change.
 mkdir -p "$tmp/bin"
 OLD="$tmp/bin/wego"
 case "$SRC" in

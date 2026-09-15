@@ -163,10 +163,16 @@ wego config set site SG
 wego config list          # prints the settings file path
 ```
 
-State lives under `~/.config/<command>/` — `$XDG_CONFIG_HOME` is honoured, and the
-`<command>` segment is the name the binary was invoked as, so two installs never
-share a login. `credentials.json` holds the tokens, `settings.json` the
+State lives under `~/.config/wego/` — one directory, whatever the binary on disk
+is called; `$XDG_CONFIG_HOME` is honoured, and it is how you give a second install
+a store of its own. `credentials.json` holds the tokens, `settings.json` the
 preferences, `telemetry.json` the reporting choice.
+
+> **Upgrading from 1.2.7 or earlier with a renamed binary?** Those versions keyed
+> the directory to the command name, so an install invoked as `wego-next` kept its
+> state in `~/.config/wego-next/`. This release reads `~/.config/wego/` instead.
+> Move the directory across to keep your login, preferences and telemetry choice,
+> or run `wego login` again. A default install, named `wego`, is unaffected.
 
 The environment variables the CLI reads at run time:
 

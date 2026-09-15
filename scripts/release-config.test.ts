@@ -20,19 +20,11 @@ const RELEASE_ENV: NodeJS.ProcessEnv = {
 describe("readReleaseEnvSpec", () => {
   it("validates the complete public release bundle", () => {
     expect(readReleaseEnvSpec(RELEASE_ENV)).toMatchObject({
-      bin: "wego",
       authorizeUrl: "https://auth.wego.com/user-auth/v2/users/oauth/authorize",
       tokenUrl: "https://auth.wego.com/user-auth/v2/users/oauth/token",
       apiUrl: "https://api.wego.com",
       clientId: "production-public-client",
     });
-  });
-
-  it("names the one binary, whatever the backend is at run time", () => {
-    // The asset basename is the release identity now, not a backend claim - so it
-    // is `wego` unconditionally. A second value here would be the flavor axis
-    // coming back through the builder.
-    expect(readReleaseEnvSpec(RELEASE_ENV).bin).toBe("wego");
   });
 
   it("rejects a malformed endpoint before the build starts", () => {
