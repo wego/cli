@@ -48,7 +48,7 @@ permissions:
 jobs:
   release-please:
     name: Maintain the release PR
-    runs-on: github-runner-small
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     # The App credentials live in an environment bound to `main`, never at
     # repository scope: a repository-scope secret is readable by the workflow file
@@ -112,10 +112,12 @@ jobs:
       # PRs outstanding - aborting"), so the repository silently stops releasing
       # altogether. That wedge stayed invisible for three runs.
       #
-      # `actions/github-script`, not `gh`: `github-runner-small` is self-hosted and
-      # carries no GitHub CLI (wego/foundations#129 again). `pulls.list` rather than
-      # the search API because search is eventually consistent and this runs
-      # seconds after the label is written.
+      # `actions/github-script`, not `gh`: originally because the old self-hosted
+      # `github-runner-small` image carried no GitHub CLI (wego/foundations#129
+      # again). `ubuntu-latest` ships `gh`, so that is no longer binding - the shape
+      # stays for consistency with the other two lanes. `pulls.list` rather than the
+      # search API because search is eventually consistent and this runs seconds
+      # after the label is written.
       - name: Refuse to exit green on a release that did not happen
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
