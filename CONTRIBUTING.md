@@ -1,10 +1,35 @@
 # Contributing to the `wego` CLI
 
-Thanks for taking the time. This document covers what this repository is for,
-how to build and test it, and what happens to a pull request after you open it.
+Thanks for taking the time. Please read the next section before you write any
+code, then the rest when you are ready to open something. This document covers
+how we take contributions, what this repository is for, how to build and test
+it, and what happens to a pull request after you open it.
 
 <!-- TBD(#141): the TBD- tokens below are placeholders and must be replaced
      before this file is merged. See wego/foundations#141. -->
+
+## Open an issue first. Always.
+
+**Please do not send a pull request we have not discussed.** Open an issue,
+describe what you want to change and why, and wait for a maintainer to respond
+before you write the code.
+
+This is not a formality, and it is not about code quality. The `wego` CLI is
+built to a roadmap that is not public, and it has obligations that are not
+visible from the source: it is the runtime behind a published agent skill, its
+output shape and exit codes are a contract other software depends on, and its
+release pipeline is held to guarantees about what an installed binary can be
+made to do. A change can be well written, well tested and still conflict with
+something we have already committed to.
+
+So please take this seriously: **a contribution may be declined because it
+conflicts with our roadmap, even when there is nothing wrong with it.** We would
+much rather tell you that in a five-line issue reply than after you have spent a
+weekend on a branch. If we say no, it is not a judgement on the work.
+
+An issue also lets us tell you the thing you could not have known: that a fix is
+already in flight, that the real problem is server-side, or that the behaviour
+you are seeing is deliberate.
 
 ## What belongs here
 
@@ -12,14 +37,14 @@ This repository is the `wego` command: a public OAuth + PKCE client that logs a
 user in against `auth.wego.com` and drives the Wego API as that user. It holds no
 secret of its own.
 
-Good contributions: bug fixes, clearer errors and help text, output and
-formatting fixes, new flags on existing commands, portability fixes, tests.
+Most likely to be accepted: bug fixes, clearer errors and help text, output and
+formatting fixes, portability fixes, and tests. Still open an issue first, but
+these rarely conflict with anything.
 
-Things to raise as an issue first, before writing code: new commands, changes to
-the JSON envelope or to exit codes, anything touching the login flow or
-credential storage, and anything touching the release or signing lanes. These
-have consequences outside this repository, and we would rather discuss them than
-turn down a finished branch.
+Needs a real discussion, and is most likely to be declined: new commands, new
+flags, changes to the JSON envelope or to exit codes, anything touching the login
+flow or credential storage, and anything touching the release or signing lanes.
+These have consequences outside this repository.
 
 The Wego API itself is not in this repository. If the fix belongs server-side,
 say so in an issue and we will route it.
