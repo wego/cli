@@ -5,8 +5,10 @@
 #
 #   verify-published.sh <base-url> <expected-version> <all|native>
 #
-#   all     checksum EVERY asset listed in SHA256SUMS.txt. Use before advancing
-#           cli/latest: `bun build --compile` is non-reproducible, so a partial
+#   all     checksum EVERY asset listed in SHA256SUMS.txt. Use before advancing a
+#           ring (cli/next in the release lane, cli/stable in the promote lane;
+#           `cli/latest` was retired with the flavor axis, #74 rung 7):
+#           `bun build --compile` is non-reproducible, so a partial
 #           --freeze upload that is re-run keeps the first build's SHA256SUMS.txt
 #           while rebuilding the missing assets' bytes — checking only the one
 #           runner-native binary would miss a mismatch on any other asset.

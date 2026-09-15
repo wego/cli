@@ -6,8 +6,11 @@ name: Release (cli)
 # TWO WAYS TO RELEASE. This workflow RESOLVES NO VERSION — release-please owns that
 # axis (#74 rung 6, release-please-config.json):
 #   1. Merge the release PR (the ordinary release, and the first of the two human
-#      actions in it). release-please computes the version from the merged commits,
-#      writes the changelog, cuts `vX.Y.Z`, then CALLS this workflow with that tag.
+#      actions in it). release-please computes the version from the merged commits
+#      and PUSHES `vX.Y.Z`; that push is what starts this workflow. It does not
+#      call it - there is no `workflow_call` here (see THE ONE WAY IN below) - and
+#      it writes no changelog: `release-please-config.json` sets
+#      `skip-changelog: true` and this repository has no CHANGELOG.md.
 #   2. Tag push (advanced/recovery): `git push origin vX.Y.Z` (tag must be on
 #      main). The tag IS the version, so nothing is typed here either.
 #
