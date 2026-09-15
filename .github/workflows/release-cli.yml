@@ -564,11 +564,18 @@ jobs:
       # require are not coming back, because this reads it ONCE, before the advance,
       # in the same job that does the advancing.
       #
-      # Rerun safety, which the immutable prefix used to provide: a rerun that gets
-      # this far has already advanced the pointer, so it captures the release it is
-      # re-releasing and the smoke becomes a same-version self-update. That is a
-      # weaker test, not a wrong one, and it is confined to reruns of an already
-      # published release.
+      # Rerun safety, which the immutable prefix used to provide, IS GONE, and the
+      # consequence is sharper than "weaker": a rerun that gets this far has already
+      # advanced the pointer, so it captures the release it is re-releasing, and
+      # SMOKE 3 below FAILS rather than degrading to a same-version check -
+      # `--require-replace` will not pass a test that proved nothing.
+      #
+      # That is the right outcome, and it is the rule the rest of the lane already
+      # enforces: the remedy for a failed release is a NEW VERSION, not a rerun.
+      # `upload-release-blob.ts`'s COMMIT sidecar refuses a cross-commit resume in
+      # the same words - "bump the version instead of re-releasing this tag".
+      # Observed on v1.2.6 (run 34940104462, attempt 2), whose first attempt had
+      # already advanced `cli/next`.
       #
       # `VERSION` is read alongside the bytes so the summary can NAME the release
       # being updated from. A skipped hop-2 test and a passing one must not look
@@ -687,10 +694,21 @@ jobs:
       # release smokes `wego` against cli/next, so no release ships an unexercised
       # self-update, and what `stable` later receives is these same verified bytes.
       #
-      # --require-replace is ALWAYS on: the predecessor comes from an IMMUTABLE
-      # `cli/<prev-tag>/` prefix, so every attempt reads the same genuine older bytes
-      # rather than the pointer this job just advanced, and a real byte-swap must
-      # occur — a broken self-update can never be shipped by re-running the job.
+      # --require-replace is ALWAYS on: a real byte-swap must occur, so a run that
+      # measured nothing can never report a working self-update.
+      #
+      # THE PREDECESSOR IS THE `cli/next` POINTER, not an immutable `cli/<prev-tag>/`
+      # prefix. The capture step above reads the ring ONCE, before the advance, and
+      # carries the fidelity argument for doing so. This comment claimed the
+      # immutable prefix, and promised that "every attempt reads the same genuine
+      # older bytes rather than the pointer this job just advanced", for a while
+      # after the source had moved to the ring. It was the stale half of a
+      # contradiction with the capture step, and it is why the rerun failure below
+      # read as a bug rather than as the designed outcome.
+      #
+      # ON A RERUN past `Advance cli/next` the captured predecessor IS this release,
+      # no real swap is possible, and this step fails. Correct: the remedy for a
+      # failed release here is a NEW VERSION, never a rerun. See the capture step.
       # Skipped on a channel's first release (no predecessor), when that predecessor
       # published no objects (`usable != 1`), or when it predates the baked update
       # channel (the script SKIPs, exit 0). Predecessor is linux-x64
