@@ -57,8 +57,28 @@ one-offs.
 
 ```bash
 bun install
+cp .env.local.example .env.local      # public OAuth config, no secrets in it
 bun run dev -- places "singapore"     # run from source
 ```
+
+Without `.env.local` the CLI refuses any command that talks to the API and names
+the variable it wanted. That is deliberate, not a bug.
+
+### Running `wego` from source
+
+The repository ships an `.envrc`. With [direnv](https://direnv.net) installed,
+`direnv allow` once and `wego` inside the repository resolves to `.bin/wego`, a
+symlink to `src/index.ts`, executed directly with no compile step. It also
+exports `.env.local` into your shell, so `wego` works from any subdirectory
+instead of only the repository root. direnv restores your previous `PATH`
+verbatim when you leave, and each worktree gets its own source.
+
+**This matters more than it looks.** Without it, typing `wego` runs whatever is
+installed on your machine, which for most people is the released production
+binary. You can then "test" a change and watch nothing happen, because you never
+ran your own code. If you would rather not use direnv, either go through
+`bun run dev --` every time, or `bun link` once. Either way, check `which wego`
+before you trust a result.
 
 ## Before you open a pull request
 
