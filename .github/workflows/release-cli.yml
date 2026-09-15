@@ -59,14 +59,27 @@ on:
 # with no trace. Scope the group to the job, so anything that never reaches the
 # protected resource never enters the queue for it.
 
-# contents:write — the Release step reuses release-please's GitHub Release and
-# attaches SHA256SUMS.txt to it. No tag is created here: both entrypoints arrive
-# with one (#74 rungs 6 and 7).
-# No pull-requests scope: the Release step no longer filters the notes by changed
-# paths (every pull request here is a CLI one), so it makes no `listFiles` call.
+# LEAST-PRIVILEGE FLOOR for the jobs that do NOT declare their own scopes.
+# `contents: read` is everything `prepare` and `build` need: they check out, install,
+# lint, typecheck, test, build, and hand the binaries to `release` through the
+# artifact service — which authenticates with the runner's own runtime token, not
+# this one, so `upload-artifact` and `actions/cache` need no scope here at all.
+# Neither job writes a byte back to the repository, and both execute third-party
+# dependency code, so the `contents: write` they used to inherit bought nothing and
+# widened what a compromised package in the lockfile could reach for.
+#
+# contents:write lives on `release` instead, in its own block: the Release step
+# reuses release-please's GitHub Release and attaches SHA256SUMS.txt to it. No tag is
+# created here — both entrypoints arrive with one (#74 rungs 6 and 7). A job-level
+# `permissions:` REPLACES this block rather than merging with it, so `release` and its
+# `id-token: write` are untouched by the floor set here.
+#
+# No pull-requests scope — now in the permissions and not just in the prose. The
+# Release step no longer filters the notes by changed paths (every pull request in
+# this repository is a CLI one), so it makes no `listFiles` call, and the grant that
+# outlived that filter is gone with it.
 permissions:
-  contents: write
-  pull-requests: read
+  contents: read
 
 jobs:
   prepare:
