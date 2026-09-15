@@ -98,18 +98,6 @@ produce no release.
 are squashed, and the squash takes its subject from the title, so the title is
 what release-please actually reads.
 
-## Sign your commits off (DCO)
-
-Every commit must carry a `Signed-off-by` line certifying the
-[Developer Certificate of Origin](https://developercertificate.org):
-
-```bash
-git commit -s -m "fix(places): handle an empty result set"
-```
-
-The DCO check is required on `main`. If you forget, `git rebase --signoff` over
-your branch and force-push it.
-
 ## What happens next
 
 `main` requires a review from a code owner, so every change is reviewed before it
@@ -129,9 +117,10 @@ private route.
 
 ## Licensing
 
-This project is licensed under Apache-2.0; see `LICENSE`. By contributing, you
-agree that your contribution is licensed under the same terms, which is what the
-DCO sign-off above certifies.
+This project is licensed under Apache-2.0; see `LICENSE`. Section 5 of that
+license already covers contributions: anything you intentionally submit for
+inclusion is licensed under the same terms unless you say otherwise in writing.
+There is no contributor licence agreement to sign and no sign-off to remember.
 
 There is deliberately no `NOTICE` file. Apache-2.0 only requires propagating a
 `NOTICE` that a licensed dependency actually ships, and nothing bundled into the
