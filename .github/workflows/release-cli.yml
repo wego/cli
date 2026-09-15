@@ -31,7 +31,7 @@ name: Release (cli)
 # what everyone later receives.
 #
 # ONE BINARY, no prerelease line (#74 rung 7). A single `wego-*` build carries the
-# prod endpoints, and `--target prod|staging|local` picks the backend at RUN time
+# prod endpoints, and `--target prod|staging` picks the backend at RUN time
 # (`src/target.ts`, rung 2). The staging API HOST stays — it is the cheap backend,
 # not a build flavour.
 #
@@ -245,7 +245,7 @@ jobs:
     # a ring even if something in it went wrong.
     #
     # ONE build, not a matrix. The binary bakes the PRODUCTION endpoints and
-    # `--target staging|local` swaps the whole bundle at run time, so there is
+    # `--target staging` swaps the whole bundle at run time, so there is
     # nothing a second environment could supply that a run-time flag does not.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
