@@ -430,6 +430,14 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Read by `replace-macos`, which runs SMOKE 3 against the darwin predecessor
+    # captured below. `usable` is the SAME gate the linux SMOKE 3 reads, and sharing
+    # it is the point: an empty ring (first release) or an incomplete one means there
+    # is nothing to arrive FROM, and both platforms must skip together rather than
+    # one of them inventing a predecessor out of the release being published.
+    outputs:
+      prev_usable: ${{ steps.prev_channel.outputs.usable }}
+      prev_version: ${{ steps.prev_channel.outputs.prev_version }}
     # The store token and the baked public config live here. This is the ONLY job
     # in the lane that enters it, and the environment's deployment policy admits
     # only `main` and `v*` - so nothing but a release or a promote can read
@@ -708,12 +716,10 @@ jobs:
       # SMOKE 3 below FAILS rather than degrading to a same-version check -
       # `--require-replace` will not pass a test that proved nothing.
       #
-      # That is the right outcome, and it is the rule the rest of the lane already
-      # enforces: the remedy for a failed release is a NEW VERSION, not a rerun.
-      # `upload-release-blob.ts`'s COMMIT sidecar refuses a cross-commit resume in
-      # the same words - "bump the version instead of re-releasing this tag".
-      # Observed on v1.2.6 (run 34940104462, attempt 2), whose first attempt had
-      # already advanced `cli/next`.
+      # That is the right outcome, not a regression: it is the one-way model stated
+      # in full at `Advance cli/next` below, which also carries what a rerun does
+      # from each failure position. Observed on v1.2.6 (run 34940104462, attempt 2),
+      # whose first attempt had already advanced `cli/next`.
       #
       # `VERSION` is read alongside the bytes so the summary can NAME the release
       # being updated from. A skipped hop-2 test and a passing one must not look
@@ -724,6 +730,15 @@ jobs:
         env:
           BASE: ${{ steps.publish.outputs.store_origin }}/cli/next
           ASSET: wego-linux-x64
+          # SMOKE 3's darwin twin runs on `replace-macos`, which starts after this
+          # job and therefore after `Advance cli/next` — by which point the ring
+          # serves THIS release and the predecessor is unreachable. The pre-advance
+          # window exists only here, so the darwin predecessor is captured here too
+          # and handed over as an artifact. It is NOT read from the immutable
+          # `cli/<prev-tag>/` prefix for the reason the block above gives: the tag
+          # and store namespaces disagree across the wego-ai handover, and a
+          # composed prefix that never existed 404s into a SILENT skip.
+          ASSET_MAC: wego-darwin-arm64
         run: |
           set -eu
           dir="${RUNNER_TEMP}/prev-channel"
@@ -738,13 +753,14 @@ jobs:
           # Any OTHER status stays fatal: a 403 or a 500 says the store is
           # misbehaving, which is not something to shrug at.
           usable=1
-          for obj in "$ASSET" SHA256SUMS.txt VERSION; do
+          missing=""
+          for obj in "$ASSET" "$ASSET_MAC" SHA256SUMS.txt VERSION; do
             code=$(curl -sSL --connect-timeout 15 --max-time 600 \
                      -w '%{http_code}' -o "$dir/$obj" "$BASE/$obj") \
               || { echo "::error::transport failure fetching $BASE/$obj (curl exit $?)." >&2; exit 1; }
             case "$code" in
               200) ;;
-              404) usable=0; break ;;
+              404) usable=0; missing="$obj"; break ;;
               *) echo "::error::unexpected HTTP $code for $BASE/$obj." >&2; exit 1 ;;
             esac
           done
@@ -752,8 +768,13 @@ jobs:
             # Drop the partial directory so nothing downstream can mistake a 404
             # body for a captured binary.
             rm -rf "$dir"
-            echo "::notice::cli/next is empty (404) - SMOKE 3 skipped. This release is unaffected."
-            echo "SMOKE 3 skipped: cli/next is empty, nothing to update from." >> "$GITHUB_STEP_SUMMARY"
+            # NAMES the object that 404'd. With four probes rather than one, "empty
+            # ring" and "ring missing just the darwin asset" are different findings
+            # and must not print the same line: the first is the ordinary first-release
+            # case, the second would mean a release published an incomplete set, which
+            # `verify-published.sh all` should have refused before the pointer moved.
+            echo "::notice::cli/next is not serving a complete release ($missing returned 404) - SMOKE 3 skipped on BOTH platforms. This release is unaffected."
+            echo "SMOKE 3 skipped: cli/next has no $missing, nothing to update from." >> "$GITHUB_STEP_SUMMARY"
           else
             prev_version=$(tr -d '\r\n' < "$dir/VERSION")
             echo "predecessor $prev_version from cli/next" >> "$GITHUB_STEP_SUMMARY"
@@ -761,6 +782,38 @@ jobs:
             echo "prev_version=$prev_version" >> "$GITHUB_OUTPUT"
           fi
           echo "usable=$usable" >> "$GITHUB_OUTPUT"
+
+      # HAND THE DARWIN PREDECESSOR TO `replace-macos`. The bytes above live in this
+      # runner's RUNNER_TEMP, which no other runner can see, and the URL they came
+      # from stops serving them at the very next step. An artifact is the only way
+      # across.
+      #
+      # BEFORE THE ADVANCE IS A CHOICE HERE, NOT A NECESSITY. The capture above has
+      # no other window - the pointer moves and the bytes stop being served. This
+      # step has no such constraint: it ships bytes that are already local, and would
+      # work anywhere after the capture. It sits here because this is the position
+      # with the best RECOVERY: ABOVE the commit point, where a failure leaves
+      # `cli/next` untouched and a plain rerun goes green - the `cli/<tag>/COMMIT`
+      # sidecar permits a same-commit resume. One step LATER is the other side of
+      # that line, and the failure table at `Advance cli/next` says what that costs:
+      # a whole new version, for a transient upload blip. Do not move this down.
+      #
+      # THE DARWIN ASSET ONLY. The linux predecessor never leaves this job - it is
+      # consumed by the SMOKE 3 step below, a few steps down - so shipping it here
+      # would double the transfer to buy nothing. SHA256SUMS.txt and VERSION come
+      # along because the consumer re-verifies fail-closed before executing and names
+      # the version it updated FROM; both are a few hundred bytes.
+      - name: Hand the darwin predecessor to the macOS leg
+        if: steps.publish.outputs.store_origin != '' && steps.prev_channel.outputs.usable == '1'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-predecessor
+          path: |
+            ${{ runner.temp }}/prev-channel/wego-darwin-arm64
+            ${{ runner.temp }}/prev-channel/SHA256SUMS.txt
+            ${{ runner.temp }}/prev-channel/VERSION
+          if-no-files-found: error
+          retention-days: 1
 
       # Advance `cli/next` by server-side copying the verified cli/<tag> bytes (#74
       # rung 7). `cli/stable` and `cli/edge` are never touched here: stable is a human
@@ -776,6 +829,80 @@ jobs:
       # verified fail-closed by SMOKE-2 on cli/<tag> and re-verified on the pointer
       # below. A Smoke-3 failure therefore means "consumers on the previous build
       # cannot self-update", which un-advancing the pointer would not fix.
+      #
+      # ────────────────────────────────────────────────────────────────────────
+      # THIS STEP IS THE COMMIT POINT OF A RELEASE. The lane is ONE-WAY, and this
+      # is where that becomes true. Stated once, here; every other step that has to
+      # act on it points back rather than re-arguing it.
+      #
+      # THE CONSTRAINT UNDERNEATH: a published CLI binary cannot be recalled. Once
+      # a machine has updated, nothing this lane does reaches it again. So
+      # un-advancing a pointer is not a remedy - it is theatre, and it cannot help
+      # the installs that already moved. The only thing that reaches an installed
+      # machine is NEW BYTES IT WILL MOVE ONTO. Every design choice below follows
+      # from that one fact.
+      #
+      #   BYTES     immutable and append-only. `cli/<tag>/` is written with
+      #             `allowOverwrite: false` (first writer wins) behind a `COMMIT`
+      #             sidecar that refuses a resume from a different commit. A tag's
+      #             content can never be rewritten - which is WHY the remedy is
+      #             always a new version number.
+      #   POINTERS  only ever ASSIGNED onto some tag's frozen bytes. There is no
+      #             revert operation anywhere in the system; advance and promote
+      #             are the same server-side copy.
+      #   VERSIONS  monotonic and one-shot. release-please derives them from the
+      #             commits and pushes the tag, and a `v*` tag push is this lane's
+      #             only entry point.
+      #
+      # SO "ROLLBACK" IS NOT AN UNDO. `promote-cli.yml` moves `cli/stable` onto an
+      # OLDER tag's frozen bytes, and installs follow because `update` compares
+      # CHECKSUMS, not versions - which is what makes a downgrade mechanically
+      # identical to an upgrade. The ring's `VERSION` then advertises the older
+      # release, which is correct: that IS what stable serves. That lane owns the
+      # rollback story in full; this one only ever moves forward.
+      #
+      # AND `cli/next` HAS NO BACKWARD PATH AT ALL. No workflow can move it onto an
+      # older tag - `promote-cli.yml` only ever targets `--to stable`. The tooling
+      # would accept `--promote <older> --to next`; nothing exposes it. Reading:
+      # `next` is a candidate ring whose fix is simply the next candidate, arriving
+      # on the ordinary cadence, while `stable` is what everyone receives and so
+      # gets an emergency lever. (That last sentence is a reading of the shape, not
+      # a rule written down anywhere - treat it as such.)
+      # ────────────────────────────────────────────────────────────────────────
+      #
+      # IF THIS STEP ITSELF FAILS, the state it leaves depends on how far it got,
+      # because the advance is a NON-ATOMIC multi-object copy with a designed
+      # commit point (`upload-release-blob.ts`): every binary first, then the
+      # signed record, then SHA256SUMS.txt - THE commit point - then a consistency
+      # wait, then VERSION last. Every copy is `allowOverwrite: true`, so
+      # re-advancing is idempotent.
+      #
+      #   died BEFORE any copy        `cli/next` untouched, consumers unaffected.
+      #   (token, gate refusal)       A rerun captures the correct predecessor and
+      #                               goes fully green. THE ONLY CLEAN RERUN.
+      #
+      #   died MID-COPY, before       `cli/next` serves new binaries under the OLD
+      #   the manifest                manifest. Fail-closed by design - a verifying
+      #                               consumer cross-checks the two and REFUSES -
+      #                               so nothing installs wrong, but `update` is
+      #                               BROKEN for next-ring consumers until it
+      #                               completes. A rerun re-runs this step and
+      #                               HEALS the ring, then fails at "Verify
+      #                               predecessor checksum" because the capture
+      #                               above read the mixed state. The red rerun is
+      #                               NOT wasted: it repaired the only thing with
+      #                               consumer impact before it failed.
+      #
+      #   died AFTER the commit       Ring correct and serving this release; only
+      #   point (during VERSION)      VERSION advertises the old one, which reaches
+      #                               the version notice but not `update` (it
+      #                               compares checksums). A rerun dies at SMOKE 3.
+      #
+      # THE RECIPE: rerun ONCE regardless. Green means it was the first case and
+      # you are done. Red means the ring is now consistent and the remedy is the
+      # standing one - a new version. A second rerun cannot help: `cli/next` now
+      # serves this release, so the capture takes it as its own predecessor and
+      # `--require-replace` correctly refuses a test that would prove nothing.
       - name: Advance cli/next
         if: steps.publish.outputs.store_origin != ''
         env:
@@ -845,13 +972,17 @@ jobs:
       # read as a bug rather than as the designed outcome.
       #
       # ON A RERUN past `Advance cli/next` the captured predecessor IS this release,
-      # no real swap is possible, and this step fails. Correct: the remedy for a
-      # failed release here is a NEW VERSION, never a rerun. See the capture step.
+      # no real swap is possible, and this step fails. Correct, and not a rerun
+      # bug: see `Advance cli/next` above for why the lane only moves forward, and
+      # for what a rerun does from each failure position.
       # Skipped on a channel's first release (no predecessor), when that predecessor
       # published no objects (`usable != 1`), or when it predates the baked update
-      # channel (the script SKIPs, exit 0). Predecessor is linux-x64
-      # (this runner); the macOS-only quarantine-clear is the sole path not exercised
-      # here.
+      # channel (the script SKIPs, exit 0). Predecessor is linux-x64 (this runner),
+      # and that is harmless HERE: the code doing the swap is the predecessor's —
+      # old, frozen, proven by everyone already running it — so nothing this release
+      # changed about `update` is under test in this step either way. The direction
+      # where the platform DOES matter is the outbound one, and it is SMOKE 5's
+      # (`replace-macos`, below).
       - name: Smoke test real self-update (cli/next)
         if: steps.publish.outputs.store_origin != '' && steps.prev_channel.outputs.usable == '1'
         env:
@@ -884,6 +1015,15 @@ jobs:
       # "already up to date" - asserted, so a run that silently replaced itself
       # with something else is a failure rather than a pass.
       #
+      # WHICH MEANS THIS STOPS SHORT OF THE REPLACE. `update` returns on the
+      # up-to-date branch, above `downloadAndReplace`, so the fetch, checksum,
+      # chmod and atomic rename in THIS build's code are not executed here.
+      # Reaching them takes `--force`: SMOKE 5, immediately below, which is why
+      # these are two steps and not one. Both claims are wanted, and only one of
+      # them can be made per run: this step proves `update`'s own COMPARISON
+      # concluded "already current" against the ring, which a forced run skips by
+      # construction.
+      #
       # This CANNOT see the legacy bridge pin: the pin is `stable`-only, and
       # this lane only ever touches `next`. The promote lane carries the check
       # that does. This one proves the update path functions at all, before a
@@ -908,6 +1048,42 @@ jobs:
             bun run scripts/assert-self-update.ts \
               ./dist/wego-linux-x64 https://api.wego.com/install next \
               --expect "$VERSION" --expect-unchanged
+
+      # SMOKE 5 (linux-x64) - THE REPLACE PATH IN THIS BUILD, ACTUALLY EXECUTED.
+      #
+      # The gap this closes is TIMING, and it is not macOS-specific. Until now no
+      # release ever ran the `downloadAndReplace` it was shipping:
+      #
+      #   release vN    SMOKE 3: v(N-1) replaces itself -> runs v(N-1)'s code
+      #                 SMOKE 4: vN reports up to date  -> runs nothing
+      #   release vN+1  SMOKE 3: vN replaces itself     -> runs vN's code, at last
+      #
+      # So the replace half of every build shipped one full release ahead of its
+      # first execution, and whoever got there first - a consumer on `cli/next`,
+      # or the NEXT release's SMOKE 3 - found the bug after publication. That is
+      # the standing caveat in `assert-self-update.ts`'s header ("a regression
+      # that only appears on the NEXT release rather than this one"), and it costs
+      # ~20 seconds on a runner that already holds the binary to stop paying it.
+      #
+      # `--force` is what makes it possible: the ring serves exactly these bytes,
+      # so only a forced run gets past the up-to-date branch and through the fetch,
+      # the checksum, the chmod and the atomic rename. The bytes landing IDENTICAL
+      # afterwards is then itself an assertion - the ring is serving the artifact
+      # this run built.
+      #
+      # The macOS leg (`replace-macos`) makes the SAME claim on the other platform
+      # this lane gates, and only a macOS runner can: `clearQuarantine` is compiled
+      # in per platform and this step can never reach it.
+      - name: Smoke test a real in-place replace (cli/next)
+        if: steps.publish.outputs.store_origin != ''
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          WEGO_BUILD_VERSION="$VERSION" \
+            bun run scripts/assert-self-update.ts \
+              ./dist/wego-linux-x64 https://api.wego.com/install next \
+              --expect "$VERSION" --force-replace
 
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new
@@ -1001,6 +1177,210 @@ jobs:
               data: fs.readFileSync("dist/SHA256SUMS.txt"),
             });
             core.info(`Release ${tag} ready (SHA256SUMS.txt attached).`);
+
+  # SMOKES 3, 4 AND 5 (macOS leg) - THE DARWIN COLUMN, AT PARITY WITH LINUX-X64.
+  #
+  # Every claim the `release` job makes on linux-x64, made here on darwin-arm64: a
+  # machine can ARRIVE at this release (3), it can LEAVE it (4), and the replace code
+  # THIS BUILD SHIPS actually runs (5).
+  #
+  # PARITY LIVES IN ONE JOB, NOT THREE, and the measured reason is worth recording
+  # because it is the opposite of the intuition. On v1.2.7 (run 34945217938) SMOKE 3
+  # took 2 SECONDS and SMOKE 4 took 1. The whole release lane is ~3 minutes. What
+  # costs on macOS is the runner boot, the checkout, the Bun install and the artifact
+  # transfer - fixed overhead, paid in full the moment this job exists at all, and
+  # paid once however many legs hang off it. So splitting the legs across jobs to run
+  # them "in parallel" would spend a minute of boot to save two seconds, and the
+  # marginal cost of going from one darwin claim to three is the predecessor download
+  # plus about three seconds. Add legs here; do not add jobs.
+  #
+  # SMOKE 5 is the leg no Linux runner can substitute for, and it is why the job was
+  # created at all. The replace code
+  # is compiled per platform, and one line of it exists only on darwin:
+  #
+  #     if (os === "darwin") await deps.clearQuarantine(tmp);      src/update.ts
+  #
+  # and with it everything the swap is made of AS macOS RUNS IT: fetch, gunzip,
+  # sha256, chmod, atomic rename over `process.execPath` - the `xattr` binary
+  # being there or not, Gatekeeper's opinion of a freshly written file, the
+  # rename semantics. A darwin-only bug in any of that ships GREEN, which is the
+  # wego/cli#25 shape exactly: that release also passed every check in this lane,
+  # because none of them ran the thing that was broken.
+  #
+  # Note what a linux-x64 runner cannot substitute for here even in principle.
+  # SMOKE 3 at the NEXT release does eventually execute this build's replace code
+  # - one release late, which is the timing gap its linux twin closes - but the
+  # copy it executes is the LINUX build of it. The branch above is never reached
+  # by any release, early or late, on any existing gate.
+  #
+  # `--force-replace` is what makes this testable at all. The ring serves the same
+  # bytes this job is holding, so only `--force` gets past the up-to-date branch
+  # and through the whole replace; the bytes landing IDENTICAL afterwards is then
+  # itself an assertion - the ring is serving the artifact this run built. See
+  # `assert-self-update.ts` for the claim in full.
+  #
+  # AFTER THE POINTER MOVES, like SMOKE 3 and 4, and for the same reason: it
+  # updates from `cli/next`, so the ring has to be advanced first. A red run here
+  # therefore means "macOS consumers may not be able to update off this build",
+  # and the remedy is the lane's standing one (`Advance cli/next`): a new version.
+  # Note this job is a LEAF - it writes nothing, so re-running it alone is always
+  # safe and is what flips a run red only by this leg back to success, which is
+  # what `promote-cli.yml`'s successful-run gate reads.
+  #
+  # `macos-latest` is Apple silicon, so the asset is `wego-darwin-arm64`. The
+  # darwin-x64, linux-arm64 and Windows binaries are still built and never run;
+  # this narrows the untested set, it does not empty it.
+  #
+  # A SEPARATE JOB rather than a step, because the publisher is ubuntu-only - and
+  # a cheap separation to keep: this job holds NEITHER capability the lane is
+  # careful about. No `environment`, so no store token; no `id-token`, so nothing
+  # to exchange for a certificate. It downloads the artifact, checks it against
+  # the signed manifest before executing it (the lane's verify-then-execute rule),
+  # and runs it against the public route any user's `wego update` takes.
+  replace-macos:
+    name: Prove the replace path on macOS
+    needs: [prepare, release]
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # Runs the keyed prod binary; without this the run posts CI events as product data.
+      WEGO_CLI_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-bun
+
+      # The same two halves the publisher reassembles: the binaries from `build`,
+      # the manifest and VERSION from `build`'s second artifact. The signature
+      # bundle is NOT needed here - this job verifies bytes against the manifest,
+      # and the manifest's own signature was checked before publication.
+      - name: Download built binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-binaries
+          path: dist
+
+      - name: Download the manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-checksums
+          path: dist
+
+      # VERIFY-THEN-EXECUTE, the same rule the predecessor smoke follows: this job
+      # is about to run a 64 MB binary that arrived over an artifact hop, so it is
+      # checked against the manifest first. `shasum -a 256 -c`, not `sha256sum` -
+      # the macOS runner image has no coreutils, and the formats are identical.
+      - name: Verify the built binaries against the signed manifest
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 -c SHA256SUMS.txt
+
+      # SMOKE 3 (macOS leg) - A MACHINE CAN ARRIVE AT THIS RELEASE, ON DARWIN.
+      #
+      # The predecessor could not be fetched here. It lives at `cli/next` only until
+      # the `release` job advances that pointer, and this job starts after that job
+      # ENDS - so by the time anything here could curl it, the ring serves this very
+      # release and there is no predecessor left to update from. The capture happens
+      # in the one pre-advance window that exists, on the publisher, and crosses over
+      # as an artifact.
+      #
+      # Gated on the SAME `usable` flag as the linux leg, deliberately: first release,
+      # or a ring not serving a complete set, and BOTH legs skip together. A darwin
+      # leg that quietly invented a predecessor where linux skipped would be worse
+      # than no leg.
+      #
+      # What this proves is narrower than SMOKE 5 and worth stating so nobody reads
+      # more into a green run: the code doing the work here is the PREDECESSOR's -
+      # old, frozen, already in production. A failure means macOS consumers on the
+      # previous build cannot reach this one, which is a real thing to learn and not
+      # something this release introduced.
+      - name: Download the darwin predecessor
+        if: needs.release.outputs.prev_usable == '1'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-predecessor
+          path: ${{ runner.temp }}/prev-channel
+
+      # Verify-then-execute, the rule this lane applies to every binary it runs. The
+      # artifact hop is integrity-checked by GitHub, but the manifest check is what
+      # the rule is actually about and it costs milliseconds on 64 MB.
+      #
+      # `shasum -a 256`, not `sha256sum`: the linux twin of this step can assume
+      # coreutils and this one cannot. Same manifest, same format, same awk.
+      - name: Verify the darwin predecessor checksum
+        if: needs.release.outputs.prev_usable == '1'
+        env:
+          DIR: ${{ runner.temp }}/prev-channel
+          ASSET: wego-darwin-arm64
+        run: |
+          set -eu
+          bin="$DIR/$ASSET"
+          sums="$DIR/SHA256SUMS.txt"
+          [ -f "$sums" ] || { echo "predecessor SHA256SUMS.txt missing — cannot verify before execution, failing." >&2; exit 1; }
+          exp="$(awk -v f="$ASSET" '$2==f {print $1}' "$sums")"
+          [ -n "$exp" ] || { echo "predecessor $ASSET not listed in SHA256SUMS.txt — failing." >&2; exit 1; }
+          act="$(shasum -a 256 "$bin" | awk '{print $1}')"
+          [ "$exp" = "$act" ] || { echo "predecessor checksum mismatch (expected $exp, got $act) — failing before execution." >&2; exit 1; }
+          # The artifact hop does not carry the exec bit.
+          chmod +x "$bin"
+          echo "Predecessor verified fail-closed against SHA256SUMS.txt: $("$bin" version)"
+
+      - name: Smoke test real self-update on macOS (cli/next)
+        if: needs.release.outputs.prev_usable == '1'
+        env:
+          OLD_BINARY: ${{ runner.temp }}/prev-channel/wego-darwin-arm64
+          VERSION: ${{ needs.prepare.outputs.version }}
+          # Same reason the linux leg names it: a predecessor new enough to require
+          # an install record refuses to guess a ring, and this smoke hand-places a
+          # binary rather than installing it.
+          RING: next
+        # `update-smoke.sh` is already macOS-clean - it prefers `sha256sum` and falls
+        # back to `shasum -a 256`, and its own header names `wego-darwin-arm64` on
+        # Apple silicon as a supported invocation. No porting was needed.
+        run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING"
+
+      # SMOKE 4 (macOS leg) - AND A MACHINE CAN LEAVE IT.
+      #
+      # NOT redundant with SMOKE 5 below, and the distinction is the whole reason
+      # both steps exist on linux too. A forced run skips `update`'s own comparison
+      # BY CONSTRUCTION: it is told to replace regardless. Only an unforced run
+      # proves the comparison concluded "already current" against the ring. A darwin
+      # version-parse bug that left every up-to-date binary believing it was behind -
+      # re-downloading itself on every invocation - passes SMOKE 5 and fails here.
+      #
+      # `cli/next` serves exactly these bytes by now, so "already up to date" is the
+      # correct outcome and anything else is a failure rather than a pass.
+      - name: Smoke test self-update from the new binary on macOS (cli/next)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          WEGO_BUILD_VERSION="$VERSION" \
+            bun run scripts/assert-self-update.ts \
+              ./dist/wego-darwin-arm64 https://api.wego.com/install next \
+              --expect "$VERSION" --expect-unchanged
+
+      # The install URL is FIXED here for the same reason it is in SMOKE 4: a gate
+      # pointed at a shim would pass having proved nothing about the real route.
+      - name: Smoke test a real in-place replace on macOS (cli/next)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          # WEGO_BUILD_VERSION for the same reason as SMOKE 4: a dev-versioned
+          # binary makes `update` return EXIT.OK having done nothing, and a gate
+          # handed one would go green having tested nothing. The script refuses
+          # that case outright; this keeps it from arising.
+          WEGO_BUILD_VERSION="$VERSION" \
+            bun run scripts/assert-self-update.ts \
+              ./dist/wego-darwin-arm64 https://api.wego.com/install next \
+              --expect "$VERSION" --force-replace
 
   # NO POST-RELEASE SMOKE JOB HERE (#74 rung 7).
   #
