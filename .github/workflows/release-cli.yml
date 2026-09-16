@@ -716,12 +716,10 @@ jobs:
       # SMOKE 3 below FAILS rather than degrading to a same-version check -
       # `--require-replace` will not pass a test that proved nothing.
       #
-      # That is the right outcome, and it is the rule the rest of the lane already
-      # enforces: the remedy for a failed release is a NEW VERSION, not a rerun.
-      # `upload-release-blob.ts`'s COMMIT sidecar refuses a cross-commit resume in
-      # the same words - "bump the version instead of re-releasing this tag".
-      # Observed on v1.2.6 (run 34940104462, attempt 2), whose first attempt had
-      # already advanced `cli/next`.
+      # That is the right outcome, not a regression: it is the one-way model stated
+      # in full at `Advance cli/next` below, which also carries what a rerun does
+      # from each failure position. Observed on v1.2.6 (run 34940104462, attempt 2),
+      # whose first attempt had already advanced `cli/next`.
       #
       # `VERSION` is read alongside the bytes so the summary can NAME the release
       # being updated from. A skipped hop-2 test and a passing one must not look
@@ -794,13 +792,11 @@ jobs:
       # no other window - the pointer moves and the bytes stop being served. This
       # step has no such constraint: it ships bytes that are already local, and would
       # work anywhere after the capture. It sits here because this is the position
-      # with the best RECOVERY. An artifact-service failure stops the release with
-      # `cli/next` untouched and consumers still on the previous version, and a plain
-      # rerun recovers - the `cli/<tag>/COMMIT` sidecar permits a same-commit resume.
-      # One step LATER the same blip would land the release but leave the run red,
-      # and the lane's rerun rule then applies: a rerun past the advance captures
-      # THIS release as its own predecessor and fails SMOKE 3, so the remedy would be
-      # a whole new version for a transient upload error. Do not move this down.
+      # with the best RECOVERY: ABOVE the commit point, where a failure leaves
+      # `cli/next` untouched and a plain rerun goes green - the `cli/<tag>/COMMIT`
+      # sidecar permits a same-commit resume. One step LATER is the other side of
+      # that line, and the failure table at `Advance cli/next` says what that costs:
+      # a whole new version, for a transient upload blip. Do not move this down.
       #
       # THE DARWIN ASSET ONLY. The linux predecessor never leaves this job - it is
       # consumed by the SMOKE 3 step below, a few steps down - so shipping it here
@@ -833,6 +829,80 @@ jobs:
       # verified fail-closed by SMOKE-2 on cli/<tag> and re-verified on the pointer
       # below. A Smoke-3 failure therefore means "consumers on the previous build
       # cannot self-update", which un-advancing the pointer would not fix.
+      #
+      # ────────────────────────────────────────────────────────────────────────
+      # THIS STEP IS THE COMMIT POINT OF A RELEASE. The lane is ONE-WAY, and this
+      # is where that becomes true. Stated once, here; every other step that has to
+      # act on it points back rather than re-arguing it.
+      #
+      # THE CONSTRAINT UNDERNEATH: a published CLI binary cannot be recalled. Once
+      # a machine has updated, nothing this lane does reaches it again. So
+      # un-advancing a pointer is not a remedy - it is theatre, and it cannot help
+      # the installs that already moved. The only thing that reaches an installed
+      # machine is NEW BYTES IT WILL MOVE ONTO. Every design choice below follows
+      # from that one fact.
+      #
+      #   BYTES     immutable and append-only. `cli/<tag>/` is written with
+      #             `allowOverwrite: false` (first writer wins) behind a `COMMIT`
+      #             sidecar that refuses a resume from a different commit. A tag's
+      #             content can never be rewritten - which is WHY the remedy is
+      #             always a new version number.
+      #   POINTERS  only ever ASSIGNED onto some tag's frozen bytes. There is no
+      #             revert operation anywhere in the system; advance and promote
+      #             are the same server-side copy.
+      #   VERSIONS  monotonic and one-shot. release-please derives them from the
+      #             commits and pushes the tag, and a `v*` tag push is this lane's
+      #             only entry point.
+      #
+      # SO "ROLLBACK" IS NOT AN UNDO. `promote-cli.yml` moves `cli/stable` onto an
+      # OLDER tag's frozen bytes, and installs follow because `update` compares
+      # CHECKSUMS, not versions - which is what makes a downgrade mechanically
+      # identical to an upgrade. The ring's `VERSION` then advertises the older
+      # release, which is correct: that IS what stable serves. That lane owns the
+      # rollback story in full; this one only ever moves forward.
+      #
+      # AND `cli/next` HAS NO BACKWARD PATH AT ALL. No workflow can move it onto an
+      # older tag - `promote-cli.yml` only ever targets `--to stable`. The tooling
+      # would accept `--promote <older> --to next`; nothing exposes it. Reading:
+      # `next` is a candidate ring whose fix is simply the next candidate, arriving
+      # on the ordinary cadence, while `stable` is what everyone receives and so
+      # gets an emergency lever. (That last sentence is a reading of the shape, not
+      # a rule written down anywhere - treat it as such.)
+      # ────────────────────────────────────────────────────────────────────────
+      #
+      # IF THIS STEP ITSELF FAILS, the state it leaves depends on how far it got,
+      # because the advance is a NON-ATOMIC multi-object copy with a designed
+      # commit point (`upload-release-blob.ts`): every binary first, then the
+      # signed record, then SHA256SUMS.txt - THE commit point - then a consistency
+      # wait, then VERSION last. Every copy is `allowOverwrite: true`, so
+      # re-advancing is idempotent.
+      #
+      #   died BEFORE any copy        `cli/next` untouched, consumers unaffected.
+      #   (token, gate refusal)       A rerun captures the correct predecessor and
+      #                               goes fully green. THE ONLY CLEAN RERUN.
+      #
+      #   died MID-COPY, before       `cli/next` serves new binaries under the OLD
+      #   the manifest                manifest. Fail-closed by design - a verifying
+      #                               consumer cross-checks the two and REFUSES -
+      #                               so nothing installs wrong, but `update` is
+      #                               BROKEN for next-ring consumers until it
+      #                               completes. A rerun re-runs this step and
+      #                               HEALS the ring, then fails at "Verify
+      #                               predecessor checksum" because the capture
+      #                               above read the mixed state. The red rerun is
+      #                               NOT wasted: it repaired the only thing with
+      #                               consumer impact before it failed.
+      #
+      #   died AFTER the commit       Ring correct and serving this release; only
+      #   point (during VERSION)      VERSION advertises the old one, which reaches
+      #                               the version notice but not `update` (it
+      #                               compares checksums). A rerun dies at SMOKE 3.
+      #
+      # THE RECIPE: rerun ONCE regardless. Green means it was the first case and
+      # you are done. Red means the ring is now consistent and the remedy is the
+      # standing one - a new version. A second rerun cannot help: `cli/next` now
+      # serves this release, so the capture takes it as its own predecessor and
+      # `--require-replace` correctly refuses a test that would prove nothing.
       - name: Advance cli/next
         if: steps.publish.outputs.store_origin != ''
         env:
@@ -902,8 +972,9 @@ jobs:
       # read as a bug rather than as the designed outcome.
       #
       # ON A RERUN past `Advance cli/next` the captured predecessor IS this release,
-      # no real swap is possible, and this step fails. Correct: the remedy for a
-      # failed release here is a NEW VERSION, never a rerun. See the capture step.
+      # no real swap is possible, and this step fails. Correct, and not a rerun
+      # bug: see `Advance cli/next` above for why the lane only moves forward, and
+      # for what a rerun does from each failure position.
       # Skipped on a channel's first release (no predecessor), when that predecessor
       # published no objects (`usable != 1`), or when it predates the baked update
       # channel (the script SKIPs, exit 0). Predecessor is linux-x64 (this runner),
@@ -1151,7 +1222,10 @@ jobs:
   # AFTER THE POINTER MOVES, like SMOKE 3 and 4, and for the same reason: it
   # updates from `cli/next`, so the ring has to be advanced first. A red run here
   # therefore means "macOS consumers may not be able to update off this build",
-  # and the remedy is the lane's standing one - a NEW VERSION, never a rerun.
+  # and the remedy is the lane's standing one (`Advance cli/next`): a new version.
+  # Note this job is a LEAF - it writes nothing, so re-running it alone is always
+  # safe and is what flips a run red only by this leg back to success, which is
+  # what `promote-cli.yml`'s successful-run gate reads.
   #
   # `macos-latest` is Apple silicon, so the asset is `wego-darwin-arm64`. The
   # darwin-x64, linux-arm64 and Windows binaries are still built and never run;
