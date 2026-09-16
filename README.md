@@ -171,6 +171,30 @@ Notes worth knowing:
   ownership marker records which ring wrote the skill, but nothing compares it
   yet, so the last writer wins.
 
+### Pointing your agent at one of them
+
+The skill names `wego` throughout, so out of the box your agent drives your normal
+install. If the one you actually work in is `wego-edge`, say so in the skill — the
+CLI will keep the edit:
+
+```bash
+skill=~/.claude/skills/wego/SKILL.md
+perl -pi -e 's/\bwego (?=[a-z<])/wego-edge /g' "$skill"
+```
+
+Then open it and fix the two places that are more than a name: the installer URL in
+rule 1, and the `curl … | bash` block in rule 2. Both still describe a fresh single
+install, and running that installer on this machine would put a different ring in
+place of your `wego`. On a side-by-side machine the honest instruction is to ask the
+user to reinstall it rather than to install anything.
+
+From then on `wego-edge update` leaves the file alone: an edited body counts as a
+local modification, and the unattended refresh stands down rather than destroy what
+you typed. The cost is that it also stops picking up new command documentation — to
+take a newer body, run `wego-edge skill install --force` and redo the two steps
+above. A foreground `wego skill install` that you type still overwrites, and says
+that it replaced something it had not written.
+
 ## What the CLI covers
 
 - `wego login` / `whoami` / `logout` — browser-based OAuth + PKCE, no access token
