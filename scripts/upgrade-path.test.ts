@@ -16,8 +16,9 @@
  *
  * The fake also REFUSES unless it finds `$XDG_CONFIG_HOME/wego/install.json`,
  * exactly as a real post-foundations#74 binary does. That makes the config-scope
- * invariant behavioural rather than a text pin: a CLI scopes its config by the
- * name it is invoked as (`src/config.ts` `installScope`), so if the script ever
+ * invariant behavioural rather than a text pin: the fake derives its scope from
+ * the name it was invoked as — the rule every build up to 1.2.7 used, and the one
+ * the constant `wego` agrees with for a binary called `wego` — so if the script ever
  * stops copying the start binary to a file named `wego`, the arranged record
  * lands in a directory the copy does not read and every case here fails.
  */
@@ -47,10 +48,11 @@ const fakeBinary = (opts: { settled?: boolean } = {}) => `#!/bin/sh
 #PAD=0
 set -eu
 me="$0"
-# The config scope is the name this binary was INVOKED as, exactly as
-# \`src/config.ts\` \`installScope\` derives it. That is what makes the script's
-# choice of copy name testable here: point it at a copy called anything but
-# \`wego\` and the arranged record becomes invisible, as on a real machine.
+# The config scope is the name this binary was INVOKED as: the rule every real
+# build up to 1.2.7 used, and one the constant \`wego\` agrees with for a binary
+# actually called \`wego\`. Deriving it here is what makes the script's choice of
+# copy name testable: point it at a copy called anything but \`wego\` and the
+# arranged record becomes invisible, as on a real machine.
 scope=$(basename "$me")
 cur=$(sed -n 's/^#VERSION=//p' "$me")
 next=""
