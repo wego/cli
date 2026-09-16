@@ -132,8 +132,11 @@ Edge carries its own signing identity, distinct from the release one.
 
 ## A promote
 
-`promote-cli.yml`, `workflow_dispatch` only. Inputs: `tag`, and `allow_not_next`
-for the rollback path.
+`promote-cli.yml`, `workflow_dispatch` only. One input: `tag`.
+
+It has no rollback mode. A promote only ever advances `cli/stable` onto what
+`cli/next` serves, so every gate below may assume `next == tag` unconditionally.
+Putting `stable` back on an earlier release is `rollback-cli.yml`.
 
 Two jobs:
 
@@ -164,8 +167,8 @@ Before the move:
 | Gate | What it refuses |
 |---|---|
 | Validate the tag | A tag that is not a plain release version |
-| Record the rollback target | Nothing, but it reads what `cli/stable` serves **now**, because the move is what destroys that answer. Every failure message after this point names the tag to put back, and the lane it belongs to: `1.0.x` and `1.1.0` are `cli-vX.Y.Z` in wego-ai's lane, `1.2.0` and later are `vX.Y.Z` here |
-| Require a completed, successful release run | A tag whose release lane never finished, so `cli/<tag>/` may be half-written. `allow_not_next` does not bypass this |
+| Record the rollback target | Nothing, but it reads what `cli/stable` serves **now**, because the move is what destroys that answer. Every failure message after this point names the tag to put back, and the lane it belongs to: `1.0.x` and `1.1.0` are `cli-vX.Y.Z` in wego-ai's lane, `1.2.0` and later are `vX.Y.Z` through `rollback-cli.yml` here |
+| Require a completed, successful release run | A tag whose release lane never finished, so `cli/<tag>/` may be half-written |
 | Refuse a tag whose tree cannot publish the plugin | A promote that succeeds having silently published nothing. Checked before the ring moves, for that reason |
 | Require the legacy bridge pin to be live | Moving `cli/stable` while the pin is down, which strands every 1.0.x install permanently |
 | Walk the pre-relay route | The pin *pointing* somewhere without anything being there. The check above reads one header; this one walks the whole 1.0.x route, pin then frozen prefix then live pointer, against the ring as it stands. A collected object or an expired certificate passes the header probe and strands the same installs |
@@ -184,23 +187,79 @@ Then the plugin publishes to `wego/skills` from the tag's own tree.
 
 ## A rollback
 
-Rolling `cli/stable` back is a promote of an earlier tag:
+`rollback-cli.yml`, `workflow_dispatch` only. Inputs: `tag` (required, no
+default), `reason` (required), `plan_only`.
 
 ```
-promote-cli.yml  with  tag=vX.Y.Z  and  allow_not_next=true
+rollback-cli.yml  with  tag=vX.Y.Z  reason="..."
 ```
 
-`allow_not_next` relaxes **which** tag may be promoted – it drops the requirement
-that `cli/next` already serves it. It does not bypass the requirement that the
-tag has a successful release run behind it.
+**A separate lane, not a mode on the promote.** It used to be
+`promote-cli.yml` with `allow_not_next=true`, an input that promoted a tag
+`cli/next` does not serve by *subtracting* the gates which assume it does. That
+boolean was the defect: it silently changed the meaning of twenty downstream
+steps, so correctness depended on every future gate's author remembering to opt
+rollback out. In wego/cli#48 two `cli/next`-coupled gates arrived without the
+guard and hard-failed every rollback — silently, because nothing exercises a
+rollback until an incident. Splitting the files removes the mode rather than
+guarding it, and `scripts/workflow-lanes.test.ts` keeps them apart.
+
+**The posture is inverted from a promote, deliberately.** A promote is
+fail-closed because a blocked run costs a re-run. A blocked rollback costs
+continued exposure to a build already known to be bad. So there are two blocking
+checks and everything else runs after the pointer moves:
+
+| Step | Blocks | Why |
+|---|---|---|
+| Validate the tag | yes | The only thing a human can get wrong now that there is no default |
+| Record what `cli/stable` serves today | no | The build being rolled back *from*. Only the rescue check needs it, so a store that will not answer must not block the fix |
+| Require the rollback target to be intact | yes | The one thing the target's own history cannot vouch for: that its frozen prefix survived, complete, with every platform. A missing asset strands that platform on a download that 404s |
+| **Move `cli/stable`** | — | `upload-release-blob.ts --promote <tag> --to stable`, no `--require-serving`. Every install is on the old bytes from here |
+| Can machines on the bad build reach this rollback | no | The question nothing else in the repo asks — see below |
+| Verify `cli/stable` | no | Every asset hash-checked against the manifest just committed |
+
+About ten seconds from dispatch to every install being served the old bytes.
+
+**The promote battery is not repeated.** A rollback target is bytes that already
+served `cli/stable` — stronger evidence than any gate can manufacture, since it
+shipped to the whole install base and survived. Re-running those gates can only
+produce false negatives, and it buys exposure minutes with its own runtime.
+
+**The rescue check is the point.** The promote lane's install-base walks drive
+1.1.0 and 1.0.1 — the *old* population. The population a rollback exists to
+rescue is the one already on the build being rolled back from, and nothing else
+asks whether it can get off. If it passes, every affected machine self-heals on
+its next `wego update`. If it fails, the rollback protected everyone who had not
+yet updated and nobody who had, and those machines need a manual reinstall — a
+binary that cannot take an update cannot take the fix either. Two very different
+incidents, and you want to know which within minutes.
+
+**No legacy bridge pin gate**, unlike a promote. A 1.0.x machine never reads this
+pointer — the pin serves it the frozen prefix whatever `stable` names — so a
+rollback can neither strand those installs nor rescue them. Blocking one on a
+pre-existing condition it cannot affect would only extend the outage.
+
+**No plugin publish.** The SKILL.md ships embedded in the binary and `update`
+re-runs the freshly swapped binary's own `skill install --owned-only`, so a
+machine taking the rollback gets that release's skills automatically.
+`wego/skills` serves third-party discovery, which never follows `cli/stable`; it
+sits one version ahead until the next forward promote resynchronises it.
+
+**It checks out `main`, not the tag** — the opposite of a promote, which needs
+the tag's tree for the plugin publisher. With nothing to read from the tag, a
+rollback runs *today's* scripts rather than whatever they looked like at a tag
+cut months ago.
+
+**`plan_only` runs every check and stops before the move.** Nothing is written.
+This is how you rehearse the lane outside an incident, and the absence of any way
+to do that is why #48's breakage went unnoticed.
 
 **The target is whatever `cli/stable` served before the promote you are undoing**,
 and the lane that owns it follows from the version, because the tag grammar
 changed at the relay: wego-ai published `cli-vX.Y.Z` up to 1.1.0, this repository
 publishes `vX.Y.Z` from 1.2.0 on. A promote run records both in its own failure
 messages, so read them rather than guessing. There is no universal floor to roll
-back to: a pre-relay 1.0.x machine never reads this pointer at all, since the
-legacy bridge serves it the frozen prefix whatever `stable` names.
+back to: a pre-relay 1.0.x machine never reads this pointer at all.
 
 There is also a manual path for moving `cli/next` itself, run against the
 publisher rather than through a lane:
