@@ -53,6 +53,7 @@ interface Step {
 }
 interface Job {
   "runs-on"?: string;
+  needs?: string | string[];
   permissions?: Record<string, string>;
   environment?: unknown;
   outputs?: Record<string, string>;
@@ -318,6 +319,53 @@ describe(`${ACTION}: one definition, so the legs cannot drift`, () => {
     // The three that do not need one stay ungated.
     for (const tool of [GATE, INSTALL]) {
       expect(gated.some((s) => (s.run ?? "").includes(tool))).toBe(false);
+    }
+  });
+});
+
+describe(`${LANE}: nothing publishes until BOTH platforms can leave`, () => {
+  const needsOf = (job: string): string[] => {
+    const n = wf.jobs[job]?.needs;
+    return n === undefined ? [] : Array.isArray(n) ? n : [n];
+  };
+  /** Jobs that run the leave proof: `upgrade-path.sh … stable`, one hop. */
+  const leaveJobs = Object.entries(wf.jobs)
+    .filter(([, j]) =>
+      (j.steps ?? []).some(
+        (st) =>
+          (st.run ?? "").includes("upgrade-path.sh") &&
+          (st.run ?? "").includes("stable"),
+      ),
+    )
+    .map(([job]) => job);
+
+  it("proves it on linux AND on macOS", () => {
+    expect(leaveJobs).toHaveLength(2);
+    const runners = leaveJobs.map((j) => wf.jobs[j]?.["runs-on"] ?? "");
+    expect(runners.some((r) => r.startsWith("ubuntu-"))).toBe(true);
+    expect(runners.some((r) => r.startsWith("macos-"))).toBe(true);
+  });
+
+  it("holds publication until the macOS leg has proved it", () => {
+    // The whole point. This proof used to run in `replace-macos`, downstream of
+    // `release` — so a Mac that could not replace itself was discovered with
+    // `cli/next` already serving the build, and `cli/next` has no backward path.
+    expect(needsOf("release")).toContain("leave-macos");
+  });
+
+  it("keeps that job UPSTREAM of publication, not merely beside it", () => {
+    // A `needs: release` here would restore the old ordering while leaving every
+    // other assertion in this file green.
+    const upstream = needsOf("leave-macos");
+    expect(upstream).not.toContain("release");
+    expect(upstream).toEqual(expect.arrayContaining(["prepare", "build"]));
+  });
+
+  it("runs no leave proof downstream of publication", () => {
+    // Where the proof RUNS decides what a failure costs. One that runs after the
+    // ring moved can only report damage; one that runs before can prevent it.
+    for (const job of leaveJobs) {
+      expect(needsOf(job)).not.toContain("release");
     }
   });
 });

@@ -415,9 +415,101 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # THE macOS HALF OF "CAN THIS BUILD LEAVE", MOVED AHEAD OF PUBLICATION.
+  #
+  # This proof used to sit in `replace-macos`, which starts only after `release` has
+  # published the tag AND advanced `cli/next`. So a build that could not replace
+  # itself on a Mac was discovered with the ring already serving it - and `cli/next`
+  # has no backward path, so the remedy was the next version rather than an undo.
+  # Every Mac that had taken it by then was stuck, because accepting a rollback needs
+  # the update path that is broken. The linux half of this same proof already gates
+  # publication; this is its twin, and it was only downstream because the macOS
+  # STEPS were downstream, not because the CHECK had to be.
+  #
+  # It can run here because it needs nothing this run publishes. The binary arrives
+  # from `build` as an artifact, and the version it replaces itself with is whatever
+  # `cli/stable` ALREADY serves - the same two inputs the linux gate uses.
+  #
+  # `needs: [prepare, build]`, deliberately not `sign`: this job verifies bytes
+  # against the MANIFEST, and the manifest's own signature is checked in `release`
+  # before anything is published. So it runs alongside `sign` instead of behind it.
+  #
+  # Holds NEITHER capability the lane is careful about: no `environment`, so no store
+  # token; no `id-token`, so nothing to exchange for a certificate.
+  leave-macos:
+    name: Prove this build can leave, on macOS
+    needs: [prepare, build]
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # Runs the keyed prod binary; without this the run posts CI events as product data.
+      WEGO_CLI_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Download built binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-binaries
+          path: dist
+
+      - name: Download the manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-checksums
+          path: dist
+
+      # VERIFY-THEN-EXECUTE, the lane's rule: a 64 MB binary that arrived over an
+      # artifact hop is checked against the manifest before it is run. `shasum -a
+      # 256 -c`, not `sha256sum` - the macOS runner image has no coreutils, and the
+      # formats are identical.
+      - name: Verify the built binaries against the signed manifest
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 -c SHA256SUMS.txt
+
+      - name: Smoke test a user-shaped replace on macOS (cli/stable)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          bin=./dist/wego-darwin-arm64
+          chmod +x "$bin"
+
+          got=$("$bin" version)
+          if [ "$got" != "$VERSION" ]; then
+            echo "::error::wego-darwin-arm64 reports '$got', not '$VERSION' - built without WEGO_BUILD_VERSION baked, so 'wego update' would return having done nothing and this leg would prove nothing."
+            exit 1
+          fi
+
+          outgoing=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' | tr -d '\r\n')
+          if [ -z "$outgoing" ]; then
+            echo "::error::cli/stable serves no VERSION, so there are no differing bytes for this build to replace itself with and the unforced path cannot be exercised."
+            exit 1
+          fi
+          if [ "$outgoing" = "$VERSION" ]; then
+            echo "::error::cli/stable already serves $VERSION, so no byte swap is possible and a pass here would prove nothing. Cut a new version rather than re-releasing one that is already stable."
+            exit 1
+          fi
+
+          if ! sh scripts/upgrade-path.sh "$bin" stable "$outgoing" --max-hops 1; then
+            echo "::error::the darwin-arm64 $VERSION binary cannot replace itself on the ordinary, unforced path. Every Mac that took this build would be stuck on it, and a rollback cannot reach them - accepting one needs the update path that is broken. The forced step above passed, so fetch/decompress/checksum/quarantine/rename all run: what fails here is the binary landing somewhere other than where it runs from, or the unforced branch itself."
+            exit 1
+          fi
+          echo "ok: the darwin-arm64 binary replaces itself the way a user's upgrade does."
+
+
   release:
     name: Publish CLI binaries to cli/next
-    needs: [prepare, build, sign]
+    needs: [prepare, build, sign, leave-macos]
     # The ONLY job that advances a ring, so the only one that needs a slot. ONE
     # group, because every release writes the SAME pointer (`cli/next`): a split
     # would let two releases interleave on it and leave the ring holding whichever
@@ -1322,35 +1414,6 @@ jobs:
       # format and fall back happily); this one takes the REAL branch and would
       # catch a mis-landed replace the forced one cannot see. Dropping either
       # loses a failure class.
-      - name: Smoke test a user-shaped replace on macOS (cli/stable)
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          bin=./dist/wego-darwin-arm64
-          chmod +x "$bin"
-
-          got=$("$bin" version)
-          if [ "$got" != "$VERSION" ]; then
-            echo "::error::wego-darwin-arm64 reports '$got', not '$VERSION' - built without WEGO_BUILD_VERSION baked, so 'wego update' would return having done nothing and this leg would prove nothing."
-            exit 1
-          fi
-
-          outgoing=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' | tr -d '\r\n')
-          if [ -z "$outgoing" ]; then
-            echo "::error::cli/stable serves no VERSION, so there are no differing bytes for this build to replace itself with and the unforced path cannot be exercised."
-            exit 1
-          fi
-          if [ "$outgoing" = "$VERSION" ]; then
-            echo "::error::cli/stable already serves $VERSION, so no byte swap is possible and a pass here would prove nothing. Cut a new version rather than re-releasing one that is already stable."
-            exit 1
-          fi
-
-          if ! sh scripts/upgrade-path.sh "$bin" stable "$outgoing" --max-hops 1; then
-            echo "::error::the darwin-arm64 $VERSION binary cannot replace itself on the ordinary, unforced path. Every Mac that took this build would be stuck on it, and a rollback cannot reach them - accepting one needs the update path that is broken. The forced step above passed, so fetch/decompress/checksum/quarantine/rename all run: what fails here is the binary landing somewhere other than where it runs from, or the unforced branch itself."
-            exit 1
-          fi
-          echo "ok: the darwin-arm64 binary replaces itself the way a user's upgrade does."
 
 
   # NO POST-RELEASE SMOKE JOB HERE (#74 rung 7).
