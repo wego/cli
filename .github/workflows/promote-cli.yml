@@ -832,12 +832,51 @@ jobs:
           printf '{"ring":"stable","installUrl":"%s"}\n' "$url" \
             > "$work/home/.config/wego/install.json"
 
-          set +e
-          out=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
-                WEGO_CLI_TELEMETRY=0 "$work/bin/wego" update -y 2>&1)
-          code=$?
-          set -e
-          echo "$out"
+          # EXIT 5 IS NOT A VERDICT ON THIS BUILD - it is the CLI's own "try again"
+          # (update.ts:550 returns EXIT.RETRYABLE; update.test.ts:775 pins it). It
+          # is what a ring mid-flip serves, and it clears on its own. Run
+          # 35108775349 rolled back a good v1.3.0 because `[ "$code" -ne 0 ]`
+          # could not tell that apart from a build nobody can install.
+          #
+          # ONLY the propagation case. `signature.ts` returns `inconsistent` - and
+          # so exit 5 - for TWO conditions: a record for a different manifest
+          # (settles) and a record whose signature does not verify (never does).
+          # Retrying the second would burn two minutes before reporting a corrupt
+          # record, so the MESSAGE, not the code alone, gates the retry.
+          #
+          # BOUNDED at 8 x 15s = 120s, comfortably past the 60s
+          # `cacheControlMaxAge` on the ring's objects. Past that the propagation
+          # theory is dead and the failure is real.
+          #
+          # The barrier above should make this fire zero times; it is here for the
+          # edge IT cannot speak for - the two steps resolve `api.wego.com`
+          # independently and need not land on the same POP. Any retry at all is
+          # therefore worth a warning rather than silence: it is how a growing
+          # window becomes visible instead of absorbed.
+          attempt=0
+          while :; do
+            set +e
+            out=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
+                  WEGO_CLI_TELEMETRY=0 "$work/bin/wego" update -y 2>&1)
+            code=$?
+            set -e
+            echo "$out"
+
+            if [ "$code" -ne 5 ]; then break; fi
+            if ! printf '%s' "$out" | grep -q 'for a different manifest'; then break; fi
+
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 8 ]; then
+              echo "::error::cli/stable never became coherent: a binary taken from it still reports that its manifest and its signed record disagree, after 8 attempts over 2 minutes. The barrier above passed, so this is not the ordinary propagation window - the record did not converge at all, which points at the publisher or the store rather than at $TAG's build. $ROLLBACK"
+              exit 1
+            fi
+            echo "... exit 5 (manifest and record do not yet agree) - retry $attempt/8 in 15s"
+            sleep 15
+          done
+
+          if [ "$attempt" -gt 0 ]; then
+            echo "::warning::cli/stable needed $attempt retries before a binary from it could verify the ring. The barrier above is meant to make that 0 - if this recurs, the propagation window is growing."
+          fi
 
           if [ "$code" -ne 0 ]; then
             echo "::error::a binary taken from cli/stable cannot update itself (exit $code). cli/stable now serves $TAG and every install following it is affected. $ROLLBACK See wego/cli#25. Note that a rollback cannot reach a machine that already took these bytes AND cannot update - it has to be reinstalled."
