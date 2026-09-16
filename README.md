@@ -78,127 +78,18 @@ Install one by naming it, and you are done — the installer records the ring an
 `wego update` follows it from then on:
 
 ```bash
-curl -fsSL 'https://api.wego.com/install?ring=next' | bash
+curl -fsSL 'https://docs.wego.com/cli/install?ring=next' | bash
 ```
 
-That is all most people ever need. Running **more than one at once** is a
-developer setup, and has its own section below.
+That is all most people ever need.
 
-## Running stable, next and edge together
+### Other install shapes
 
-You only need this if you want two or three rings installed on one machine at the
-same time — normally because you develop the CLI and also use it. One install per
-machine needs none of it.
-
-Every per-install file — the ring record, your login, your settings, your
-telemetry choice — lives in one directory, `$XDG_CONFIG_HOME/wego/` (default
-`~/.config/wego/`). So giving an extra install its own `XDG_CONFIG_HOME` is the
-whole act of isolating it, and there is nothing else to set. The install script
-honours that variable too, and computes the same path from it, so the record it
-writes is exactly the one that install reads back.
-
-Keep one install as the normal one, installed the usual way, and add the others.
-Paste this as-is:
-
-```bash
-for ring in next edge; do
-  root="$HOME/.wego/$ring"
-
-  # The binary and its whole config directory, kept to themselves.
-  XDG_CONFIG_HOME="$root/config" \
-  WEGO_CLI_INSTALL_DIR="$root/bin" \
-  WEGO_CLI_INSTALL_SKILL=0 \
-    sh -c "curl -fsSL 'https://api.wego.com/install?ring=$ring' | sh"
-
-  # A launcher on your PATH, so you never have to remember the variable.
-  mkdir -p "$HOME/.local/bin"
-  printf '#!/bin/sh\nexec env XDG_CONFIG_HOME=%s WEGO_CLI_NO_UPDATE_NOTICE=1 "%s" "$@"\n' \
-    "$root/config" "$root/bin/wego" > "$HOME/.local/bin/wego-$ring"
-  chmod +x "$HOME/.local/bin/wego-$ring"
-done
-```
-
-Then use them by name, exactly like `wego`:
-
-```bash
-wego version         # your normal install
-wego-next version
-wego-edge version
-wego-edge update     # updates only the edge install, from the edge ring
-```
-
-What that leaves on disk:
-
-```
-~/.config/wego/            ← your normal install: ring record, login, settings
-~/.wego/next/bin/wego      ← the next binary
-~/.wego/next/config/wego/  ← and its own ring record, login, settings, telemetry
-~/.wego/edge/bin/wego
-~/.wego/edge/config/wego/
-~/.local/bin/wego-next     ← the launchers you actually type
-~/.local/bin/wego-edge
-```
-
-Notes worth knowing:
-
-- **Leave `WEGO_CLI_BIN` alone.** Each binary keeps its default name, `wego`,
-  inside its own directory; the launcher supplies the name you type. Renaming the
-  binary instead would file the installer's record under `<root>/<that name>/`
-  while the CLI reads `<root>/wego/`, so the install would come up with no ring
-  record at all and `update` would refuse.
-- **Always go through the launcher.** Running `~/.wego/edge/bin/wego` directly,
-  with no `XDG_CONFIG_HOME`, makes it read your normal install's directory — so
-  `update` would pull that ring's build into your edge binary. `wego update` names
-  the ring it is following on the confirm and again on success, so you can see it
-  happen, but `update -y` skips the confirm.
-- **Each install logs in separately**, because each owns its own
-  `credentials.json`. That is what a genuinely separate install costs.
-- **Messages name the binary, not the launcher** — the file under the launcher
-  really is called `wego`, so `wego-edge login` ends with "Run `wego whoami` to
-  verify". Harmless for most lines, but not for the update notice: it would compare
-  your edge install against the **edge** ring and then tell you to run `wego update
-  -y`, which updates your *normal* install instead and leaves the edge one stale
-  while looking like it worked. That is why the launcher above sets
-  `WEGO_CLI_NO_UPDATE_NOTICE=1`. Ask on demand with `wego-edge update --check`,
-  which is read-only and reports the right ring.
-- **Removing one** is `rm -r ~/.wego/edge ~/.local/bin/wego-edge`. Your normal
-  install is untouched.
-- **The agent skill is shared, and the config root does not isolate it.** `wego
-  skill install` writes `~/.claude/skills/wego` (plus any other agent directory it
-  detects) whichever install runs it, because that lives under `$HOME`. The body
-  names `wego` throughout, so your agent keeps driving your normal install no
-  matter which ring wrote the file — what differs is *which build's* commands the
-  file describes. Two things overwrite it: running `skill install` from another
-  install, and `update`, which re-installs the skill from the binary it just
-  swapped in. `WEGO_CLI_INSTALL_SKILL=0` above covers the first at install time,
-  not the second — so after a `wego-edge update`, run `wego skill install` to put
-  your agent back on the body that matches the binary it actually runs. The
-  ownership marker records which ring wrote the skill, but nothing compares it
-  yet, so the last writer wins.
-
-### Pointing your agent at one of them
-
-The skill names `wego` throughout, so out of the box your agent drives your normal
-install. If the one you actually work in is `wego-edge`, say so in the skill — the
-CLI will keep the edit:
-
-```bash
-skill=~/.claude/skills/wego/SKILL.md
-perl -pi -e 's/\bwego (?=[a-z<])/wego-edge /g' "$skill"
-```
-
-Then open it and fix the two places that are more than a name: the installer URL in
-rule 1, and the `curl … | bash` block in rule 2. Both still describe a fresh single
-install, and running that installer on this machine would put a different ring in
-place of your `wego`. On a side-by-side machine the honest instruction is to ask the
-user to reinstall it rather than to install anything.
-
-From then on `wego-edge update` leaves the file alone: an edited body counts as a
-local modification, and the unattended refresh stands down rather than destroy what
-you typed. The cost is that it also stops picking up new command documentation — to
-take a newer body, run `wego-edge skill install --force` and redo the two steps
-above. A foreground `wego skill install` that you type still overwrites, and says
-that it replaced something it had not written.
+[**Installing and updating**](docs/install-and-update.md) is the full guide: staying
+on `next` as your everyday `wego`, switching an install between rings, running two or
+three rings side by side and updating each one, what the shared agent skill does when
+you have more than one, uninstalling any combination, and migrating a side-by-side
+setup built before the config directory became a constant.
 
 ## What the CLI covers
 
@@ -301,7 +192,7 @@ wego config list          # prints the settings file path
 
 State lives under `~/.config/wego/` — one directory, whatever the binary on disk
 is called; `$XDG_CONFIG_HOME` is honoured, and it is how you give a second install
-a store of its own. `credentials.json` holds the tokens, `settings.json` the
+a store of its own ([the guide](docs/install-and-update.md) has the recipe). `credentials.json` holds the tokens, `settings.json` the
 preferences, `telemetry.json` the reporting choice.
 
 > **Upgrading from 1.2.7 or earlier with a renamed binary?** Those versions keyed
@@ -321,7 +212,7 @@ The environment variables the CLI reads at run time:
 | `WEGO_CLI_REDIRECT_PORT` | Fixed local port for the login callback. |
 | `WEGO_CLI_NO_UPDATE_NOTICE` | Silences the "a newer version exists" notice. |
 | `WEGO_API_URL` | Points the CLI at another API — including one on your own machine. |
-| `XDG_CONFIG_HOME` | The root of this install's config directory (default `~/.config`). Setting it is how a second install gets a store of its own — see [Running stable, next and edge together](#running-stable-next-and-edge-together). |
+| `XDG_CONFIG_HOME` | The root of this install's config directory (default `~/.config`). Setting it is how a second install gets a store of its own — see [Installing and updating](docs/install-and-update.md). |
 
 `WEGO_TARGET` used to take a third value, `local`. It is gone: set `WEGO_API_URL`
 instead, which reaches an API on your own machine from the default `prod` target.
