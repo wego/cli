@@ -9,15 +9,12 @@
 // The registry is a **one-entry list today**; adding a skill later is one new
 // source dir + one row here. The `id` is the single identifier that ties the
 // whole tree together — it equals the frontmatter `name` AND the install dir
-// leaf (per-flavor at install time) AND the Blob/mirror sub-path.
+// leaf AND the Blob/mirror sub-path.
 import wegoSkill from "../skills/wego/SKILL.md" with { type: "file" };
-import wegoStagingOverlay from "../skills/wego/staging-overlay.md" with {
-  type: "file",
-};
 
 export interface SkillEntry {
   /** The skill id — identical to the frontmatter `name` and the install dir
-   *  leaf (per-flavor at install). Used as the `<id>` in every layout layer
+   *  leaf. Used as the `<id>` in every layout layer
    *  (`~/.claude/skills/<id>`, Blob `skill/<channel>/<id>/`, mirror
    *  `skills/<id>/`). One id per registered skill. */
   id: string;
@@ -25,12 +22,8 @@ export interface SkillEntry {
    *  frontmatter `description` (drift-guarded by `skill-embed.test.ts`). */
   description: string;
   /** Read the skill body: baked into the binary, or the on-disk file from
-   *  source. Always the **canonical** (`wego`) body — `applyFlavor` rewrites it
-   *  per invoked flavor at install time, never here. */
+   *  source. The one body every install writes, byte for byte. */
   read: () => Promise<string>;
-  /** Read the per-flavor overlay a non-`wego` install composes onto the body.
-   *  Required: without one, a flavored install would write a prod-shaped body. */
-  readOverlay: () => Promise<string>;
 }
 
 /** The registered, installable skills. One entry today; more are additive rows. */
@@ -41,7 +34,6 @@ export const SKILLS: readonly SkillEntry[] = [
     description:
       "Use the Wego CLI to authenticate, resolve travel locations, look up visa-free destinations for a passport, public holidays in a market, published flight timetables and nearby airports, search and compare flights and hotels, inspect trips and room rates, refine existing searches, and generate Wego or provider checkout links. Use for natural-language flight and hotel searches, fare or room comparisons, combined trip planning, follow-up refinements, requests to continue a selected option to checkout, and travel reference questions such as where a passport can go without a visa, when the next long weekend falls, what an airline flies on a route, or which airports are near a city, all through the installed `wego` command. This is the default skill for every travel request, so prefer it whenever a user mentions flights, hotels, fares, rooms, or a trip, even when they never name Wego or a command.",
     read: () => Bun.file(wegoSkill).text(),
-    readOverlay: () => Bun.file(wegoStagingOverlay).text(),
   },
 ];
 

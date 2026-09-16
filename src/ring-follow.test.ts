@@ -64,7 +64,6 @@ function checkDeps(overrides: Partial<UpdateDeps> = {}) {
     fromSource: false,
     installRecordPath: RECORD_PATH,
     readInstallRecord: async () => parseInstallRecord(INSTALLER_RECORD_JSON),
-    flavor: "wego",
     installUrl: "https://api.wego.com/install",
     platform: "linux",
     arch: "x64",
@@ -376,35 +375,9 @@ describe("a missing record refuses rather than guesses", () => {
     expect(decision.message).not.toMatch(/latest|staging|stable/);
   });
 
-  it("names the directory a renamed install's files moved from, and still refuses", () => {
-    // The scope moved from the flavor-keyed dir to the command-name one, so a
-    // renamed install that predates the change looks unconfigured. The refusal
-    // gains one sentence naming the old directory - a HINT on the way out, never a
-    // second place to read a record from: adopting a record found in a directory
-    // this install no longer owns is how `wego-next` ends up following `wego`'s
-    // ring, which is the exact drift the record exists to prevent.
-    const decision = followRecordedRing({
-      record: null,
-      recordPath: "/home/u/.config/wego-next/install.json",
-      reinstallHint: "curl -fsSL https://api.wego.com/install | bash",
-      movedFrom: "/home/u/.config/wego",
-    });
-    expect(decision.ok).toBe(false);
-    if (decision.ok) return;
-    expect(decision.message).toContain(
-      "/home/u/.config/wego-next/install.json",
-    );
-    expect(decision.message).toContain("/home/u/.config/wego");
-    // Still a refusal, and still names the only way to obtain a record.
-    expect(decision.message).toContain("refusing to guess");
-    expect(decision.message).toContain(
-      "curl -fsSL https://api.wego.com/install | bash",
-    );
-  });
-
-  it("says nothing about a moved directory for an install whose scope never moved", () => {
-    // Every default install: `movedFrom` is absent and the message is the one it
-    // has always been, with no speculative "did you rename it?" noise.
+  it("refuses without speculating about where the record might be", () => {
+    // One config scope, so there is no other directory a record could be in and
+    // nothing to offer beyond the one way to obtain one.
     const decision = followRecordedRing({
       record: null,
       recordPath: RECORD_PATH,

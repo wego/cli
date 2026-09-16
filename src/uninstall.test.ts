@@ -29,7 +29,6 @@ function makeDeps(overrides: Partial<UninstallDeps> = {}) {
     error: (m) => err.push(m),
     version: "0.2.2",
     fromSource: false,
-    flavor: "wego",
     platform: "linux",
     execPath: EXEC,
     credentialsPath: CREDS,

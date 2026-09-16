@@ -67,8 +67,6 @@ import {
   defaultSettingsPath,
   defaultTelemetryPath,
   defaultUpdateCheckPath,
-  installScope,
-  legacyScopeDir,
   loadCliConfig,
   resolveCliTarget,
   resolveConfigScope,
@@ -111,7 +109,6 @@ import {
   spawnTelemetrySender,
 } from "./telemetry-send";
 import {
-  inheritTelemetryOptOut,
   loadTelemetryState,
   persistDeviceId,
   setTelemetryEnabled,
@@ -143,19 +140,6 @@ const VERSION = process.env.WEGO_BUILD_VERSION ?? "0.0.0-dev";
 // machine (`ring-follow.ts`), read by `update` and by the new-version notice alike
 // (foundations#74 rung 3: a missing record refuses rather than guesses). A build
 // argument here is what let the two drift, so nothing bakes one any more.
-// `?.trim() || "wego"`, not `?? "wego"`: an empty/whitespace `WEGO_BUILD_FLAVOR`
-// must fall back to `wego`, or the skill dir collapses to the shared root
-// (`~/.claude/skills`).
-const FLAVOR = process.env.WEGO_BUILD_FLAVOR?.trim() || "wego";
-// The install's own identity: the name this binary was invoked as. FLAVOR and
-// SCOPE are the same string for every default install (the command is named after
-// the flavor) and differ only for a deliberately renamed second install - which is
-// the whole point: FLAVOR is the RELEASE (the published asset, the name text calls
-// this tool, the one agent-skill dir all channels share), SCOPE is THIS INSTALL
-// (its ring record, credentials, settings, telemetry). Keeping the skill on FLAVOR
-// is deliberate: it lives under $HOME, one channel owns it, and splitting it would
-// hand an agent instructions for a binary it is not driving.
-const SCOPE = installScope();
 const BUILD_API_URL = process.env.WEGO_BUILD_API_URL;
 // Write-only PostHog key, baked like VERSION; absent ⇒ telemetry stays silent.
 const POSTHOG_KEY = process.env.WEGO_BUILD_POSTHOG_PROJECT_KEY || undefined;
@@ -193,7 +177,7 @@ export function helpText(prog: string): string {
     ...indexRow("WEGO_CLI_TELEMETRY", "on | off | log"),
     ...indexRow(
       "WEGO_CREDENTIALS_PATH",
-      `Where the login is stored. Default ~/.config/${SCOPE}/credentials.json`,
+      "Where the login is stored. Default ~/.config/wego/credentials.json",
     ),
     "",
     `Run ${prog} <command> --help for flags.`,
@@ -366,7 +350,6 @@ function buildSkillDeps(
     ...io,
     skills: SKILLS,
     version: VERSION,
-    flavor: FLAVOR,
     // Stamped into the ownership marker, so a second channel's background refresh
     // can tell this skill is not its to maintain (`skill-refresh.ts`).
     ring,
@@ -389,9 +372,8 @@ function buildSkillDeps(
  *  disables the cross-channel guard, which is the behaviour that predates rings. */
 function recordedRing(): string | undefined {
   try {
-    return parseInstallRecord(
-      readFileSync(defaultInstallRecordPath(process.env, SCOPE), "utf8"),
-    )?.ring;
+    return parseInstallRecord(readFileSync(defaultInstallRecordPath(), "utf8"))
+      ?.ring;
   } catch {
     return undefined;
   }
@@ -411,27 +393,25 @@ function recordedRing(): string | undefined {
  *  once with a baked base on one side and the record on the other. */
 async function readOwnInstallRecord() {
   return parseInstallRecord(
-    await readFile(defaultInstallRecordPath(process.env, SCOPE), "utf8").catch(
-      () => null,
-    ),
+    await readFile(defaultInstallRecordPath(), "utf8").catch(() => null),
   );
 }
 
 export function buildVersionNoticeDeps(): VersionNoticeDeps {
-  const statePath = defaultUpdateCheckPath(process.env, SCOPE);
+  const statePath = defaultUpdateCheckPath();
   return {
     command: process.argv[2],
     fromSource: runningFromSource(),
     version: VERSION,
-    flavor: FLAVOR,
-    // The flavor is the release identity; this is the command the user types. They
-    // differ whenever the install was renamed (`WEGO_CLI_BIN`), and the notice's
-    // `… update -y` hint has to name a command that exists on the machine.
+    // The command the user types. A renamed install (`WEGO_CLI_BIN`) still has to
+    // be told to run its own name, so the notice's `… update -y` hint names a
+    // command that exists on the machine.
     invokedAs: programName(),
     // The ring this install FOLLOWS, read the same way `update` reads it and from
     // the same path, so the notice and `update` can never name different rings.
-    // SCOPE-scoped for the reason the `update` wiring states: the record
-    // describes where the BINARY came from, not which auth host `--target` picked.
+    // Read from the one constant config scope, for the reason the `update` wiring
+    // states: the record describes where the BINARY came from, not which auth host
+    // `--target` picked.
     readInstallRecord: readOwnInstallRecord,
     env: process.env,
     now: Date.now(),
@@ -484,19 +464,19 @@ export function buildRealDeps(): RunDeps {
   const skillDeps = buildSkillDeps(io);
   // The credentials path the same way `loadCliConfig` derives it, but without
   // requiring the full (baked) config — so `uninstall` runs from source too.
-  // `resolveConfigScope`, not the bare `SCOPE`: on a non-prod target the store is
+  // `resolveConfigScope`, not the bare config scope: on a non-prod target the store is
   // keyed by the issuing auth host too, and this derivation has to land on the
   // same file the command itself reads.
   const configScope = resolveConfigScope();
   const credentialsPath =
     process.env.WEGO_CREDENTIALS_PATH?.trim() ||
     defaultCredentialsPath(process.env, configScope);
-  const telemetryPath = defaultTelemetryPath(process.env, SCOPE);
-  const settingsPath = defaultSettingsPath(process.env, SCOPE);
-  // Which ring this install came from (foundations#74 rung 3). SCOPE-scoped, not
+  const telemetryPath = defaultTelemetryPath();
+  const settingsPath = defaultSettingsPath();
+  // Which ring this install came from (foundations#74 rung 3). Config-scoped, not
   // `configScope`: the record describes where the BINARY came from, so it must
   // not move when a `--target` picks a different auth host.
-  const installRecordPath = defaultInstallRecordPath(process.env, SCOPE);
+  const installRecordPath = defaultInstallRecordPath();
   // Memoized: a single command resolves preferences at two or three points (the
   // query merge, the site rung, the currency hint), and they must all see the
   // SAME file — a re-read mid-command could otherwise price the create and its
@@ -601,11 +581,6 @@ export function buildRealDeps(): RunDeps {
         // malformed all arrive as `null`, which `update` refuses on — nothing
         // here substitutes a default ring.
         readInstallRecord: readOwnInstallRecord,
-        // So a refusal on a renamed install can say where its files went, rather
-        // than reading a record it no longer owns. `undefined` for every install
-        // whose command name still matches its release.
-        legacyScopeDir: legacyScopeDir(),
-        flavor: FLAVOR,
         installUrl: BUILD_API_URL
           ? `${BUILD_API_URL.replace(/\/+$/, "")}/install`
           : undefined,
@@ -676,16 +651,15 @@ export function buildRealDeps(): RunDeps {
         ...io,
         version: VERSION,
         fromSource: runningFromSource(),
-        flavor: FLAVOR,
         platform: process.platform,
         execPath: process.execPath,
         credentialsPath,
         settingsPath,
-        updateCheckPath: defaultUpdateCheckPath(process.env, SCOPE),
+        updateCheckPath: defaultUpdateCheckPath(),
         installRecordPath,
-        sessionPath: defaultSessionPath(process.env, SCOPE),
+        sessionPath: defaultSessionPath(),
         authFailurePath,
-        skillPath: defaultUserSkillDir(homedir(), FLAVOR),
+        skillPath: defaultUserSkillDir(homedir()),
         telemetryStatePath: telemetryPath,
         telemetryOptedOut: async () =>
           !(await loadTelemetryState(telemetryPath)).enabled,
@@ -734,8 +708,7 @@ export function buildRealDeps(): RunDeps {
       logout(config, {
         ...io,
         clearCredentials,
-        clearSession: () =>
-          clearSession(defaultSessionPath(process.env, SCOPE)),
+        clearSession: () => clearSession(defaultSessionPath()),
       }),
   };
 }
@@ -772,27 +745,16 @@ async function resolveTelemetryIdentity(): Promise<{
   deviceId: string;
 }> {
   const credentialsPath =
-    process.env.WEGO_CREDENTIALS_PATH?.trim() ||
-    defaultCredentialsPath(process.env, SCOPE);
+    process.env.WEGO_CREDENTIALS_PATH?.trim() || defaultCredentialsPath();
   const uid = uidFromAccessToken(
     (await loadCredentials(credentialsPath))?.accessToken,
   );
-  const { deviceId } = await loadTelemetryState(
-    defaultTelemetryPath(process.env, SCOPE),
-  );
+  const { deviceId } = await loadTelemetryState(defaultTelemetryPath());
   const device = deviceId ?? EPHEMERAL_DEVICE_ID;
   return { distinctId: uid ?? device, deviceId: device };
 }
 
 /** Real wiring for the post-command telemetry emit. */
-/** The telemetry file a PRE-RENAME install of this binary wrote, if this install
- *  is one whose scope moved at all. Read for one purpose only — inheriting an
- *  opt-out (`inheritTelemetryOptOut`) — never for the device id. */
-function legacyTelemetryPath(): string | undefined {
-  const dir = legacyScopeDir();
-  return dir ? join(dir, "telemetry.json") : undefined;
-}
-
 /** The three local paths telemetry reads, derived once. */
 function telemetryPaths(): { telemetryPath: string; credentialsPath: string } {
   return {
@@ -800,7 +762,7 @@ function telemetryPaths(): { telemetryPath: string; credentialsPath: string } {
     // install scope: keying it by target too would mint a new device per target
     // and inflate device counts. The credentials are the opposite — see
     // `resolveConfigScope`.
-    telemetryPath: defaultTelemetryPath(process.env, SCOPE),
+    telemetryPath: defaultTelemetryPath(),
     credentialsPath:
       process.env.WEGO_CREDENTIALS_PATH?.trim() ||
       defaultCredentialsPath(process.env, resolveConfigScope()),
@@ -945,25 +907,13 @@ if (import.meta.main) {
     console.error(formatCliError(err, programName()));
     process.exit(EXIT.USAGE);
   }
-  // Transitional, and BEFORE the first telemetry read: an install whose config
-  // scope moved (its command was renamed) would otherwise come up with no
-  // telemetry file at the new path, and no file means ON — silently resuming
-  // sending for someone who had opted out. Zero I/O for every install whose name
-  // still matches its release, where `legacyScopeDir()` is `undefined`. Never
-  // allowed to fail a command: the worst case is the setting not carrying over,
-  // which the user can still see and set with `telemetry status` / `telemetry off`.
-  await inheritTelemetryOptOut(
-    telemetryPaths().telemetryPath,
-    legacyTelemetryPath(),
-  ).catch(() => {});
   // Read before the command, so `uninstall` — which deletes both files — still
   // reports which machine and account it came from. Measured at 0.037ms, inside
   // the duration_ms window and deliberately not worth engineering out.
   const snapshot = await readTelemetrySnapshot();
   // Resolved HERE and nowhere else; see `shouldResolveSession`.
   const sessionId = shouldResolveSession(process.argv, process.env)
-    ? (await resolveSession({ path: defaultSessionPath(process.env, SCOPE) }))
-        .id
+    ? (await resolveSession({ path: defaultSessionPath() })).id
     : undefined;
   setAnalyticsHeaders(resolveAnalyticsHeaders(snapshot, sessionId));
   // Names the caller, so it follows the telemetry opt-out (README.md, Telemetry).

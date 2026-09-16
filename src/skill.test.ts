@@ -12,7 +12,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   AGENTS,
-  applyFlavor,
   markerRing,
   markerSource,
   parseSkillArgs,
@@ -24,8 +23,6 @@ import type { SkillEntry } from "./skill-embed";
 
 const BODY =
   "---\nname: wego\ndescription: Drive the Wego funnels.\n---\n\n# Wego CLI\n\nDrive the funnels.\n\n## Operating contract\n\n1. Drive it.\n";
-const OVERLAY =
-  "---\ndescription: Use the {{flavor}} CLI, the staging build, only when asked for staging.\n---\n\n> Installed for the `{{flavor}}` (staging) flavor. Nothing here is a production quote.\n";
 
 let home: string;
 let cwd: string;
@@ -58,7 +55,6 @@ function makeDeps(overrides: Partial<SkillDeps> & { body?: string } = {}): {
       id: "wego",
       description: "Drive the Wego funnels.",
       read: () => Promise.resolve(body ?? BODY),
-      readOverlay: () => Promise.resolve(OVERLAY),
     },
   ];
   const deps: SkillDeps = {
@@ -66,7 +62,6 @@ function makeDeps(overrides: Partial<SkillDeps> & { body?: string } = {}): {
     error: (m) => err.push(m),
     skills,
     version: "9.9.9",
-    flavor: "wego",
     homedir: () => home,
     cwd: () => cwd,
     confirm: (q) => {
@@ -155,13 +150,11 @@ describe("resolveSkill (registry resolution)", () => {
       id: "wego",
       description: "a",
       read: () => Promise.resolve("a"),
-      readOverlay: () => Promise.resolve(OVERLAY),
     },
     {
       id: "other",
       description: "b",
       read: () => Promise.resolve("b"),
-      readOverlay: () => Promise.resolve(OVERLAY),
     },
   ];
   const one = [two[0]];
@@ -177,17 +170,6 @@ describe("resolveSkill (registry resolution)", () => {
   });
   it("no id + more than one entry is a usage error (synthetic fixture)", () => {
     expect(() => resolveSkill(two)).toThrow(/More than one skill/);
-  });
-  it("the flavor name resolves the shipped skill, since `list` prints it", () => {
-    expect(resolveSkill(two, "wegostaging", "wegostaging").id).toBe("wego");
-  });
-  it("the flavor alias never shadows another entry's own id", () => {
-    expect(resolveSkill(two, "other", "wegostaging").id).toBe("other");
-  });
-  it("an unknown id still throws when a flavor is passed", () => {
-    expect(() => resolveSkill(two, "nope", "wegostaging")).toThrow(
-      /skill list/,
-    );
   });
 });
 
@@ -216,29 +198,12 @@ describe("skill list (discovery – offline, auth-free)", () => {
     expect(await skill(["list", "--json", "--typo"], deps)).toBe(1);
   });
 
-  it("staging lists its own id + description, so list and install agree", async () => {
-    const { deps, out } = makeDeps({ flavor: "wegostaging" });
-    expect(await skill(["list", "--json"], deps)).toBe(0);
-    expect(JSON.parse(out[0])).toEqual([
-      {
-        id: "wegostaging",
-        description:
-          "Use the wegostaging CLI, the staging build, only when asked for staging.",
-      },
-    ]);
-  });
-
-  it("the id staging lists is one `install` accepts", async () => {
-    const { deps } = makeDeps({ flavor: "wegostaging" });
-    expect(await skill(["install", "wegostaging", "-y"], deps)).toBe(0);
-    const installed = join(
-      home,
-      ".claude",
-      "skills",
-      "wegostaging",
-      "SKILL.md",
-    );
-    expect(await exists(installed)).toBe(true);
+  it("the id `list` prints is one `install` accepts", async () => {
+    const { deps } = makeDeps();
+    expect(await skill(["install", "wego", "-y"], deps)).toBe(0);
+    expect(
+      await exists(join(home, ".claude", "skills", "wego", "SKILL.md")),
+    ).toBe(true);
   });
 });
 
@@ -418,10 +383,9 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     "---\nname: wego\ndescription: Published body.\n---\n\n# Wego CLI\n\nRun wego whoami (remote).\n\n## Operating contract\n\n1. Drive it.\n";
   const URL = "https://blob.example/skill/stable";
 
-  it("verifies + writes the fetched canonical body, applyFlavor-rewritten locally", async () => {
-    const staging = makeDeps({
+  it("verifies + writes the fetched canonical body, byte for byte", async () => {
+    const remote = makeDeps({
       body: EMBEDDED,
-      flavor: "wegostaging",
       skillUrl: URL,
       fetchRemoteSkill: (base, id) => {
         expect(base).toBe(URL);
@@ -429,30 +393,21 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
         return Promise.resolve(REMOTE);
       },
     });
-    expect(await skill(["install", "-y"], staging.deps)).toBe(0);
-    const written = await readFile(
-      join(home, ".claude", "skills", "wegostaging", "SKILL.md"),
-      "utf8",
-    );
-    // The remote canonical body was used AND rewritten to the staging flavor.
-    expect(written).toBe(applyFlavor(REMOTE, "wegostaging", OVERLAY));
-    expect(written).toContain("wegostaging whoami");
-    expect(written).not.toContain("wego whoami");
+    expect(await skill(["install", "-y"], remote.deps)).toBe(0);
+    const written = await readFile(userSkillFile(), "utf8");
+    // The remote canonical body was used, and nothing rewrote it on the way in.
+    expect(written).toBe(REMOTE);
+    expect(written).toContain("wego whoami (remote)");
   });
 
-  it("falls back to the embedded copy (also flavor-rewritten) on any fetch failure, exit 0", async () => {
-    const staging = makeDeps({
+  it("falls back to the embedded copy on any fetch failure, exit 0", async () => {
+    const fallback = makeDeps({
       body: EMBEDDED,
-      flavor: "wegostaging",
       skillUrl: URL,
       fetchRemoteSkill: () => Promise.resolve(null), // non-200/timeout/mismatch/…
     });
-    expect(await skill(["install", "-y"], staging.deps)).toBe(0);
-    const written = await readFile(
-      join(home, ".claude", "skills", "wegostaging", "SKILL.md"),
-      "utf8",
-    );
-    expect(written).toBe(applyFlavor(EMBEDDED, "wegostaging", OVERLAY));
+    expect(await skill(["install", "-y"], fallback.deps)).toBe(0);
+    expect(await readFile(userSkillFile(), "utf8")).toBe(EMBEDDED);
   });
 
   describe("requireRemote (the background refresh's mode)", () => {
@@ -931,11 +886,10 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     expect(await readFile(userSkillFile(), "utf8")).toBe(EMBEDDED);
   });
 
-  it("content-based idempotency compares the POST-rewrite bytes (staging re-run is a no-op)", async () => {
+  it("content-based idempotency makes a re-run a no-op", async () => {
     const mk = () =>
       makeDeps({
         body: EMBEDDED,
-        flavor: "wegostaging",
         skillUrl: URL,
         fetchRemoteSkill: () => Promise.resolve(REMOTE),
       });
@@ -1224,143 +1178,6 @@ describe("skill path / uninstall / dispatch", () => {
     const unknown = makeDeps();
     expect(await skill(["frobnicate"], unknown.deps)).toBe(1);
     expect(unknown.err.join("\n")).toMatch(/Unknown skill sub-command/);
-  });
-});
-
-describe("skill flavor scoping (wego vs wegostaging)", () => {
-  const FLAVORED_BODY =
-    "---\nname: wego\ndescription: Flavored body.\n---\n\n# Wego CLI\n\nRun `wego login` then wego whoami.\n\n## Operating contract\n\n1. Drive it.\n";
-  const skillFile = (flavor: string) =>
-    join(home, ".claude", "skills", flavor, "SKILL.md");
-
-  it("staging install writes ~/.claude/skills/wegostaging with a wegostaging body", async () => {
-    const { deps } = makeDeps({ flavor: "wegostaging", body: FLAVORED_BODY });
-    expect(await skill(["install", "-y"], deps)).toBe(0);
-    const body = await readFile(skillFile("wegostaging"), "utf8");
-    expect(body).toContain("name: wegostaging");
-    expect(body).toContain("`wegostaging login`");
-    expect(body).toContain("wegostaging whoami");
-    expect(body).not.toContain("name: wego\n");
-    expect(body).not.toContain("wego login");
-    expect(await exists(skillFile("wego"))).toBe(false);
-  });
-
-  it("prod install is byte-identical to the baked body (rewrite is a no-op)", async () => {
-    const { deps } = makeDeps({ flavor: "wego", body: FLAVORED_BODY });
-    expect(await skill(["install", "-y"], deps)).toBe(0);
-    expect(await readFile(skillFile("wego"), "utf8")).toBe(FLAVORED_BODY);
-  });
-
-  it("two flavors installed side by side never share a dir", async () => {
-    const prod = makeDeps({ body: FLAVORED_BODY });
-    const staging = makeDeps({ flavor: "wegostaging", body: FLAVORED_BODY });
-    expect(await skill(["install", "-y"], prod.deps)).toBe(0);
-    expect(await skill(["install", "-y"], staging.deps)).toBe(0);
-    expect(await exists(skillFile("wego"))).toBe(true);
-    expect(await exists(skillFile("wegostaging"))).toBe(true);
-  });
-
-  it("staging uninstall removes only its own dir, leaving the prod skill intact", async () => {
-    const prod = makeDeps({ body: FLAVORED_BODY });
-    const staging = makeDeps({ flavor: "wegostaging", body: FLAVORED_BODY });
-    await skill(["install", "-y"], prod.deps);
-    await skill(["install", "-y"], staging.deps);
-
-    const removeStaging = makeDeps({ flavor: "wegostaging" });
-    expect(await skill(["uninstall"], removeStaging.deps)).toBe(0);
-    expect(await exists(skillFile("wegostaging"))).toBe(false);
-    expect(await exists(skillFile("wego"))).toBe(true);
-  });
-
-  it("takes the flavored description from the overlay, not the canonical body", async () => {
-    const DESC_BODY =
-      "---\nname: wego\ndescription: Use the Wego CLI to search flights and hotels. This is the default skill for every travel request.\n---\n\n# Wego CLI\n\n## Operating contract\n\n1. Drive it.\n";
-    const staging = makeDeps({ flavor: "wegostaging", body: DESC_BODY });
-    expect(await skill(["install", "-y"], staging.deps)).toBe(0);
-    const body = await readFile(skillFile("wegostaging"), "utf8");
-    expect(body).toContain("only when asked for staging");
-    expect(body).not.toContain("the default skill for every travel request");
-    // An unquoted YAML scalar breaks on either, so the built value carries neither.
-    const value = body.match(/^description: (.+)$/m)?.[1] ?? "";
-    expect(value).not.toContain(": ");
-    expect(value).not.toContain('"');
-  });
-
-  it("prod keeps the canonical description (the rewrite is flavor-only)", async () => {
-    const DESC_BODY =
-      "---\nname: wego\ndescription: Use the Wego CLI to search flights and hotels.\n---\n\n# Wego CLI\n";
-    const { deps } = makeDeps({ flavor: "wego", body: DESC_BODY });
-    expect(await skill(["install", "-y"], deps)).toBe(0);
-    expect(await readFile(skillFile("wego"), "utf8")).toBe(DESC_BODY);
-  });
-
-  it("never leaves a production API host in a staging body", async () => {
-    const HOST_BODY =
-      "---\nname: wego\ndescription: Host body.\n---\n\n1. Every command here is `wego <sub>`, installed from `https://api.wego.com/install`.\n\n   curl -fsSL https://api.wego.com/install | bash\n\n## Operating contract\n\n1. Drive it.\n";
-    const staging = makeDeps({ flavor: "wegostaging", body: HOST_BODY });
-    expect(await skill(["install", "-y"], staging.deps)).toBe(0);
-    const body = await readFile(skillFile("wegostaging"), "utf8");
-    expect(body).not.toContain("api.wego.com");
-    expect(body).toContain("https://api.wegostaging.com/install");
-    expect(body).toContain("`wegostaging <sub>`");
-  });
-
-  it("refuses a body missing the operating-contract anchor, so the warning cannot vanish", async () => {
-    const NO_ANCHOR =
-      "---\nname: wego\ndescription: No anchor.\n---\n\n# Wego CLI\n\nNo contract heading here.\n";
-    const staging = makeDeps({ flavor: "wegostaging", body: NO_ANCHOR });
-    expect(await skill(["install", "-y"], staging.deps)).toBe(1);
-    expect(await exists(skillFile("wegostaging"))).toBe(false);
-  });
-
-  it("refuses a body missing `name: wego`", async () => {
-    const NO_NAME =
-      "---\ndescription: No name.\n---\n\n## Operating contract\n\n1. Do things.\n";
-    const staging = makeDeps({ flavor: "wegostaging", body: NO_NAME });
-    expect(await skill(["install", "-y"], staging.deps)).toBe(1);
-  });
-
-  it("refuses an overlay that is not `---` framed", async () => {
-    const staging = makeDeps({
-      flavor: "wegostaging",
-      skills: [
-        {
-          id: "wego",
-          description: "d",
-          read: () => Promise.resolve(BODY),
-          readOverlay: () =>
-            Promise.resolve("description: smuggled in prose\n\n> preamble\n"),
-        },
-      ],
-    });
-    expect(await skill(["install", "-y"], staging.deps)).toBe(1);
-    expect(await exists(skillFile("wegostaging"))).toBe(false);
-  });
-
-  it("names the flavor, not the registry id, when it asks to install", async () => {
-    const { deps, confirmCalls } = makeDeps({ flavor: "wegostaging" });
-    expect(await skill(["install"], deps)).toBe(0);
-    expect(confirmCalls[0]).toContain("wegostaging agent skill");
-    expect(confirmCalls[0]).not.toContain("wego agent skill");
-  });
-
-  it("refuses a canonical body with no description to flavor", async () => {
-    const NO_DESC = "---\nname: wego\n---\n\n# Wego CLI\n";
-    const staging = makeDeps({ flavor: "wegostaging", body: NO_DESC });
-    expect(await skill(["install", "-y"], staging.deps)).toBe(1);
-    expect(await exists(skillFile("wegostaging"))).toBe(false);
-  });
-
-  it("flavor-locks the operating contract for staging, leaving the enum `wego` literal", async () => {
-    const OC_BODY =
-      "---\nname: wego\ndescription: Contract body.\n---\n\n## Operating contract\n\n1. Use the production command `wego` by default. Run `wego login` first.\n2. Filter with `--booking-types wego|airline` or the enum `wego`.\n";
-    const staging = makeDeps({ flavor: "wegostaging", body: OC_BODY });
-    expect(await skill(["install", "-y"], staging.deps)).toBe(0);
-    const body = await readFile(skillFile("wegostaging"), "utf8");
-    expect(body).toContain("Installed for the `wegostaging` (staging) flavor");
-    expect(body).toContain("`wegostaging login`");
-    expect(body).toContain("--booking-types wego|airline");
-    expect(body).toContain("the enum `wego`");
   });
 });
 

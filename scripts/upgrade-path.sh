@@ -112,11 +112,14 @@ mkdir -p "$HOME"
 WEGO_CLI_TELEMETRY=0
 export WEGO_CLI_TELEMETRY
 
-# The copy is named `wego`, and the NAME is load-bearing: a CLI scopes its config
-# by the name it is invoked as (`src/config.ts` `installScope`), so a copy called
-# `start-binary` would look for its ring record in `$XDG_CONFIG_HOME/start-binary/`
-# and never see the one arranged below. Same reason as `update-smoke.sh`, pinned
-# there by a unit test and here by `upgrade-path.test.ts`.
+# The copy is named `wego`, and the NAME is load-bearing for the builds this chain
+# STARTS from. The config scope is the constant `wego` (`src/config.ts`
+# `CONFIG_SCOPE`), but every build up to 1.2.7 scoped by the name it was invoked
+# as, so a copy called `start-binary` would look for its ring record in
+# `$XDG_CONFIG_HOME/start-binary/` and never see the one arranged below. `wego` is
+# what both rules resolve to, which is what lets one chain span the change. Same
+# reason as `update-smoke.sh`, pinned there by a unit test and here by
+# `upgrade-path.test.ts`.
 mkdir -p "$tmp/bin"
 BIN="$tmp/bin/wego"
 case "$SRC" in

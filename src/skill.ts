@@ -41,10 +41,8 @@ async function sha256Hex(body: string): Promise<string> {
  *    so a project install lands in `.claude/skills/<id>` **and** the shared
  *    `.agents/skills/<id>`; multi-target installs are best-effort.
  *
- * The dir leaf is the resolved skill `id`; the shipped `wego` skill is
- * **flavor-scoped** (`wego` | `wegostaging`, per #1188), so the leaf, frontmatter
- * `name`, and command lines all carry the flavor and the two binaries never
- * collide. Written against injected deps so the flows are unit-testable without
+ * The dir leaf is the resolved skill `id` — `wego` for the shipped skill, on
+ * every install. Written against injected deps so the flows are unit-testable without
  * touching the real home dir, network, or prompting; `index.ts` wires the
  * concrete implementations.
  */
@@ -61,20 +59,15 @@ export interface SkillDeps extends SkillIo {
   skills: readonly SkillEntry[];
   /** CLI version — used only in the human log lines (matches `wego version`). */
   version: string;
-  /** The build flavor (`wego` | `wegostaging`), from `index.ts`'s baked `FLAVOR`.
-   *  It is the shipped skill's dir *leaf* (`~/.claude/skills/<flavor>`) and the
-   *  command the rewritten body invokes — so the prod/staging binaries never
-   *  share a dir and a staging skill drives `wegostaging`. */
-  flavor: string;
   /** The release ring this install follows (`ring-follow.ts`), stamped into the
    *  ownership marker so a second channel's background refresh can tell that the
    *  skill is not its to maintain. `undefined` on a pre-ring install or from
    *  source — the marker then names no ring and every reader degrades to the
    *  behaviour it had before rings existed. */
   ring?: string;
-  /** `~` — the base for user/global scope (`~/.claude/skills/<flavor>`). */
+  /** `~` — the base for user/global scope (`~/.claude/skills/wego`). */
   homedir: () => string;
-  /** cwd — the base for project scope (`./.claude/skills/<flavor>`). */
+  /** cwd — the base for project scope (`./.claude/skills/wego`). */
   cwd: () => string;
   /** Confirm a filesystem write; bypassed when `-y`/`--yes` is passed. */
   confirm: (question: string) => Promise<boolean>;
@@ -166,10 +159,6 @@ interface SkillOptions {
 // resolved once at module load — so the usage lines name the command they typed.
 const PROG = programName();
 
-// The build flavor, read the SAME static way `index.ts` reads it. Used only for
-// the static USAGE text; the runtime dir + body rewrite use `deps.flavor`.
-const FLAVOR = process.env.WEGO_BUILD_FLAVOR?.trim() || "wego";
-
 /**
  * Vendored agent → skills-dir path table (compiled-in data, no runtime
  * dependency — replaces the old `SUPPORTED_AGENTS` Set). `global` is relative to
@@ -194,7 +183,7 @@ export const SKILL_USAGE = usage({
   flags: [
     [
       "--scope VALUE",
-      `user: every agent folder found in your home (~/.claude, ~/.codex, ~/.cursor, ~/.opencode, ~/.cline); ~/.claude/skills/${FLAVOR} when none. project: ./.claude/skills/${FLAVOR} and ./.agents/skills/${FLAVOR}.`,
+      "user: every agent folder found in your home (~/.claude, ~/.codex, ~/.cursor, ~/.opencode, ~/.cline); ~/.claude/skills/wego when none. project: ./.claude/skills/wego and ./.agents/skills/wego.",
       SCOPES,
     ],
     ["-g, --global", "Same as --scope user."],
@@ -375,7 +364,7 @@ export function parseSkillArgs(args: string[]): SkillOptions {
   return opts;
 }
 
-/** The one flavor-scoped skill: its install leaf and id follow the flavor. */
+/** The shipped skill's id, which is also its install dir leaf. */
 const SHIPPED_SKILL_ID = "wego";
 
 /**
@@ -384,21 +373,11 @@ const SHIPPED_SKILL_ID = "wego";
  * error that names `skill list`. The `>1` branch is only reachable via an
  * injected synthetic fixture today (capability, not exercised by the sole
  * shipped skill).
- *
- * `flavor` lets the shipped skill answer to its install name, which is the id
- * `skill list` prints; an entry's own id always wins over that alias.
  */
 export function resolveSkill(
   skills: readonly SkillEntry[],
   id?: string,
-  flavor?: string,
 ): SkillEntry {
-  if (id !== undefined && flavor !== undefined && id === flavor) {
-    const own = skills.find((s) => s.id === id);
-    if (own) return own;
-    const shipped = skills.find((s) => s.id === SHIPPED_SKILL_ID);
-    if (shipped) return shipped;
-  }
   if (id === undefined) {
     if (skills.length === 1) return skills[0];
     throw new Error(
@@ -416,7 +395,7 @@ export function resolveSkill(
   return found;
 }
 
-/** The default user-scope skill dir, `~/.claude/skills/<flavor>`. Exported so
+/** The default user-scope skill dir, `~/.claude/skills/wego`. Exported so
  *  `index.ts` builds `wego uninstall`'s summary path from the SAME leaf the
  *  actual removal resolves through, keeping the printed and deleted targets from
  *  drifting. */
@@ -424,38 +403,29 @@ export function resolveSkill(
  * Every user-scope dir a **default** `skill install` would write to on this
  * machine — i.e. `selectedAgents`' user-scope auto-detect (agents whose home
  * config dir exists, Claude when none is), mapped through `AGENTS[].global` and
- * deduped by root, with the flavor leaf.
+ * deduped by root, with the skill leaf.
  *
  * Exists because the background refresh must watch exactly what the installer
  * writes. `defaultUserSkillDir` alone is only correct on a Claude machine: a
  * Codex/Cursor/OpenCode/Cline-only user gets the skill auto-installed under that
- * agent's dir and no `~/.claude/skills/<flavor>` at all, so gating the refresh on
+ * agent's dir and no `~/.claude/skills/wego` at all, so gating the refresh on
  * the Claude marker would report "not owned" forever and freeze exactly the
  * installs this feature is meant to keep current.
  *
  * `defaultUserSkillDir` stays Claude-only for `uninstall`, which is deliberately
  * conservative — removal should not sweep every detected agent's global dir.
  */
-export function autoDetectedUserSkillDirs(
-  home: string,
-  flavor: string,
-): string[] {
+export function autoDetectedUserSkillDirs(home: string): string[] {
   const detected = AGENT_NAMES.filter((a) =>
     existsSync(join(home, dirname(AGENTS[a].global))),
   );
   const agents = detected.length > 0 ? detected : ["claude"];
   const roots = new Set(agents.map((a) => join(home, AGENTS[a].global)));
-  return [...roots].map((root) => join(root, flavor));
+  return [...roots].map((root) => join(root, SHIPPED_SKILL_ID));
 }
 
-export function defaultUserSkillDir(home: string, flavor: string): string {
-  return join(home, ".claude", "skills", flavor);
-}
-
-/** The install dir leaf for a skill. The shipped `wego` skill is flavor-scoped
- *  (#1188): its leaf/name/id become the flavor. Any other skill uses its id. */
-function skillLeaf(entry: SkillEntry, flavor: string): string {
-  return entry.id === SHIPPED_SKILL_ID ? flavor : entry.id;
+export function defaultUserSkillDir(home: string): string {
+  return join(home, ".claude", "skills", SHIPPED_SKILL_ID);
 }
 
 /** The skills **root** dir for one agent under the chosen scope. */
@@ -506,133 +476,6 @@ function resolveTargets(
     roots.add(agentRoot(deps, opts, agent));
   }
   return [...roots].map((root) => join(root, leaf));
-}
-
-/** Only the shipped skill is flavor-scoped, so only it takes the overlay. */
-function isFlavorScoped(entry: SkillEntry, flavor: string): boolean {
-  return entry.id === SHIPPED_SKILL_ID && flavor !== SHIPPED_SKILL_ID;
-}
-
-/** Flavor `body` for `entry`, reading its overlay only when the flavor needs one. */
-export async function flavorBody(
-  entry: SkillEntry,
-  body: string,
-  flavor: string,
-): Promise<string> {
-  if (!isFlavorScoped(entry, flavor)) return body;
-  return applyFlavor(body, flavor, await entry.readOverlay());
-}
-
-/** The description this flavor would install, which is what `list` must report. */
-export async function flavorDescription(
-  entry: SkillEntry,
-  flavor: string,
-): Promise<string> {
-  if (!isFlavorScoped(entry, flavor)) return entry.description;
-  return parseOverlay(await entry.readOverlay(), flavor).description;
-}
-
-/** Substitute `anchor`, or throw naming it: a silent miss ships a staging body
- *  without the flavoring the anchor carries. Presence is checked separately, so
- *  a replacement identical to what is there is not read as a missing anchor. */
-function replaceOnce(
-  body: string,
-  anchor: string,
-  replacement: string,
-  label: string,
-): string {
-  if (!body.includes(anchor)) {
-    throw new Error(
-      `canonical body is missing ${label}, so it cannot be flavored`,
-    );
-  }
-  return body.replace(anchor, replacement);
-}
-
-/** Rewrite the one line `matches` picks, or throw naming what was missing. */
-function replaceLine(
-  body: string,
-  matches: (line: string) => boolean,
-  next: string,
-  label: string,
-): string {
-  const lines = body.split("\n");
-  const at = lines.findIndex(matches);
-  if (at === -1) {
-    throw new Error(
-      `canonical body is missing ${label}, so it cannot be flavored`,
-    );
-  }
-  lines[at] = next;
-  return lines.join("\n");
-}
-
-/** The trimmed value of the `<key>:` line in `lines`, or null. */
-function readKey(lines: string[], key: string): string | null {
-  const prefix = `${key}:`;
-  for (const line of lines) {
-    if (line.startsWith(prefix)) return line.slice(prefix.length).trim();
-  }
-  return null;
-}
-
-/** The `description:` and preamble a non-`wego` flavor overlays onto the body. */
-export function parseOverlay(
-  overlay: string,
-  flavor: string,
-): { description: string; preamble: string } {
-  const sub = (s: string) => s.replaceAll("{{flavor}}", flavor);
-  // Framed first: an unframed file would otherwise pass its whole self off as
-  // the preamble, and take a `description:` from anywhere in the prose.
-  const lines = overlay.split("\n");
-  const close = lines[0] === "---" ? lines.indexOf("---", 1) : -1;
-  if (close === -1) {
-    throw new Error("flavor overlay is not `---` framed frontmatter");
-  }
-  const description = readKey(lines.slice(1, close), "description");
-  if (!description) {
-    throw new Error(
-      "flavor overlay frontmatter carries no `description:` line",
-    );
-  }
-  const preamble = lines
-    .slice(close + 1)
-    .join("\n")
-    .trim();
-  if (!preamble) throw new Error("flavor overlay carries no body");
-  return { description: sub(description), preamble: sub(preamble) };
-}
-
-/** Flavor the canonical body: a no-op for `wego`, else compose `overlay` onto it
- *  (`docs/skill-distribution.md`). */
-export function applyFlavor(
-  body: string,
-  flavor: string,
-  overlay: string,
-): string {
-  if (flavor === "wego") return body;
-  const { description, preamble } = parseOverlay(overlay, flavor);
-  const renamed = replaceLine(
-    body
-      .replaceAll("wego ", `${flavor} `)
-      .replaceAll("api.wego.com", `api.${flavor}.com`),
-    (line) => line === "name: wego",
-    `name: ${flavor}`,
-    "frontmatter `name: wego`",
-  );
-  const described = replaceLine(
-    renamed,
-    (line) => line.startsWith("description:"),
-    `description: ${description}`,
-    "frontmatter `description:`",
-  );
-  // Last, so the overlay's own text is not reprocessed by the passes above.
-  return replaceOnce(
-    described,
-    "## Operating contract\n",
-    `## Operating contract\n\n${preamble}\n`,
-    "the `## Operating contract` heading",
-  );
 }
 
 /** Read a file, returning `null` only when it does NOT exist (`ENOENT`).
@@ -829,11 +672,8 @@ async function writeFileAtomic(file: string, content: string): Promise<void> {
 }
 
 /** Resolve the canonical install body: the verified remote copy when a URL is
- *  baked and `--embedded` wasn't passed, else the embedded copy — then
- *  `applyFlavor` locally (offline). Verification is over the canonical body,
- *  BEFORE the rewrite (Part B contract); the embedded fallback flows through the
- *  same rewrite. Content-based idempotency downstream compares these
- *  post-rewrite bytes. */
+ *  baked and `--embedded` wasn't passed, else the embedded copy. One body, shipped
+ *  as published — there is no local rewrite between verification and the write. */
 async function resolveInstallBody(
   deps: SkillDeps,
   entry: SkillEntry,
@@ -864,7 +704,7 @@ async function resolveInstallBody(
   // refresh; the installer needs it per-dir, so the fact travels instead.
   const verified = canonical !== null;
   if (canonical === null) canonical = await entry.read();
-  return { body: await flavorBody(entry, canonical, deps.flavor), verified };
+  return { body: canonical, verified };
 }
 
 type TargetOutcome = {
@@ -1067,23 +907,23 @@ function reportOutcomes(deps: SkillDeps, outcomes: TargetOutcome[]): number {
 }
 
 async function install(deps: SkillDeps, opts: SkillOptions): Promise<number> {
-  const entry = resolveSkill(deps.skills, opts.skillId, deps.flavor);
+  const entry = resolveSkill(deps.skills, opts.skillId);
   const resolved = await resolveInstallBody(deps, entry, opts);
   if (resolved === null) {
     // Only reachable with `requireRemote` (the background refresh): the channel
     // was unverifiable, so leave every target exactly as it is.
     deps.log(
-      `Could not verify the published ${skillLeaf(entry, deps.flavor)} skill – leaving the installed copy unchanged.`,
+      `Could not verify the published ${entry.id} skill – leaving the installed copy unchanged.`,
     );
     return 0;
   }
-  const leaf = skillLeaf(entry, deps.flavor);
+  const leaf = entry.id;
   const targets = resolveTargets(deps, opts, leaf, false);
 
   if (!opts.yes) {
     const list = targets.map((t) => `  ${join(t, "SKILL.md")}`).join("\n");
     const ok = await deps.confirm(
-      `Install the ${skillLeaf(entry, deps.flavor)} agent skill to:\n${list}\n?`,
+      `Install the ${entry.id} agent skill to:\n${list}\n?`,
     );
     if (!ok) {
       deps.log("Skipped.");
@@ -1101,8 +941,8 @@ async function install(deps: SkillDeps, opts: SkillOptions): Promise<number> {
 }
 
 function printPath(deps: SkillDeps, opts: SkillOptions): number {
-  const entry = resolveSkill(deps.skills, opts.skillId, deps.flavor);
-  const leaf = skillLeaf(entry, deps.flavor);
+  const entry = resolveSkill(deps.skills, opts.skillId);
+  const leaf = entry.id;
   // An EXPLICIT selection (`-a`/`--agent '*'`) asks "where would this agent's copy
   // go" — answer verbatim, installed or not.
   if (opts.agents.length > 0) {
@@ -1165,13 +1005,11 @@ async function list(deps: SkillDeps, args: string[]): Promise<void> {
   const unknown = args.find((arg) => arg !== "--json");
   if (unknown) throw new Error(`Unknown option: ${unknown}\n${SKILL_USAGE}`);
   // The id a user may pass back to `install`, and the description that install
-  // would actually write - both flavor-scoped, or the two disagree on staging.
-  const rows = await Promise.all(
-    deps.skills.map(async (s) => ({
-      id: skillLeaf(s, deps.flavor),
-      description: await flavorDescription(s, deps.flavor),
-    })),
-  );
+  // would actually write.
+  const rows = deps.skills.map((s) => ({
+    id: s.id,
+    description: s.description,
+  }));
   if (args.includes("--json")) {
     deps.log(JSON.stringify(rows));
     return;
@@ -1225,8 +1063,8 @@ async function uninstallOne(
 }
 
 async function uninstall(deps: SkillDeps, opts: SkillOptions): Promise<number> {
-  const entry = resolveSkill(deps.skills, opts.skillId, deps.flavor);
-  const leaf = skillLeaf(entry, deps.flavor);
+  const entry = resolveSkill(deps.skills, opts.skillId);
+  const leaf = entry.id;
   const targets = resolveTargets(deps, opts, leaf, true);
   const outcomes: TargetOutcome[] = [];
   for (const dir of targets) {
