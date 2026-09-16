@@ -5,11 +5,31 @@ installer records which ring it installed from, and `wego update` follows that
 record for the life of the install. Nothing about the ring is compiled into the
 binary, so a promote is a pointer move rather than a rebuild.
 
-| Ring | Who it is for | Moves |
-| --- | --- | --- |
-| `stable` | everyone; the default | on each release promote |
-| `next` | early adopters who want the release candidate | ahead of `stable` |
-| `edge` | engineers working on the CLI itself | every merge to `main` |
+| Ring | Who it is for | Moves | Backward compatibility |
+| --- | --- | --- | --- |
+| `stable` | everyone; the default | on each release promote | kept, or made easy to migrate |
+| `next` | anyone who wants the release candidate early | ahead of `stable` | **not guaranteed** |
+| `edge` | engineers working on the CLI itself | every merge to `main` | **not guaranteed** |
+
+## What each ring promises
+
+**`next` and `edge` are development builds, and we ask you to treat them as such.**
+Backward compatibility is **not guaranteed** on either, and can change **without
+notice**: a command, a flag, a JSON field name, an output shape or an exit code may
+differ between two builds with no deprecation window and no note. `edge` moves
+fastest, rebuilding on every merge to `main`, and `next` is the release candidate —
+but the promise is the same for both, which is that there isn't one.
+
+**On `stable` we do our best not to break you.** Keeping backward compatibility is
+the goal for everything you would reasonably depend on. Where we cannot keep it, we
+make the change either **easy to migrate** — a documented path, and the command
+itself telling you what to do — or **hard to miss**, failing loudly rather than
+quietly changing what it does.
+
+The practical consequence: **anything automated should run `stable`.** That means CI,
+and it means an agent, because the agent skill drives the CLI by parsing its JSON —
+a field that moves under `edge` breaks the agent silently. Run `next` or `edge` where
+a person is reading the output.
 
 Every recipe below is the same idea applied differently, so one rule is worth
 reading first.
@@ -60,6 +80,10 @@ curl -fsSL 'https://docs.wego.com/cli/install?ring=next' | bash
 
 Because the config directory does not depend on the ring, **you stay logged in and
 keep your settings**. From then on `wego update` follows `next`.
+
+Re-read [what each ring promises](#what-each-ring-promises) before you do this.
+`next` carries no backward-compatibility guarantee, so it is a choice for a machine
+where you are the one reading the output — not for one running CI or an agent.
 
 `edge` works the same way (`?ring=edge`), but understand what you are asking for:
 it rebuilds on every merge to `main`, its versions look like `1.2.8-edge.<sha>`,

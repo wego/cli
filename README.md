@@ -68,11 +68,17 @@ before swapping it in, and `wego update --check` only reports.
 
 Three pointers, each serving a different build of the same CLI:
 
-| Ring | Who it is for | Moves |
-| --- | --- | --- |
-| `stable` | everyone; the default install | on each release promote |
-| `next` | early adopters, opt-in | ahead of `stable` |
-| `edge` | engineers working on the CLI | every merge to `main` |
+| Ring | Who it is for | Moves | Backward compatibility |
+| --- | --- | --- | --- |
+| `stable` | everyone; the default install | on each release promote | kept, or made easy to migrate |
+| `next` | early adopters, opt-in | ahead of `stable` | **not guaranteed** |
+| `edge` | engineers working on the CLI | every merge to `main` | **not guaranteed** |
+
+`next` and `edge` are **development builds**: backward compatibility is not
+guaranteed and can change without notice. On `stable` we do our best to keep it, and
+where we cannot, we make the change either easy to migrate or hard to miss. So
+anything automated — CI, or an agent driving the CLI — should run `stable`. Detail in
+[what each ring promises](docs/install-and-update.md#what-each-ring-promises).
 
 Install one by naming it, and you are done — the installer records the ring and
 `wego update` follows it from then on:
