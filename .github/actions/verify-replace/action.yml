@@ -81,7 +81,7 @@ runs:
     # fail-closed, before anything is chmod'd or run.
     - name: Verify predecessor checksum (${{ inputs.asset }})
       if: inputs.prev-usable == '1'
-      shell: sh
+      shell: bash
       env:
         DIR: ${{ inputs.predecessor-dir }}
         ASSET: ${{ inputs.asset }}
@@ -111,7 +111,7 @@ runs:
     # the expected version, so a release RERUN cannot greenwash.
     - name: SMOKE 3 · predecessor self-updates onto this release (${{ inputs.asset }})
       if: inputs.prev-usable == '1'
-      shell: sh
+      shell: bash
       env:
         OLD_BINARY: ${{ inputs.predecessor-dir }}/${{ inputs.asset }}
         VERSION: ${{ inputs.version }}
@@ -192,7 +192,7 @@ runs:
     # Platform-relevant on both legs: the script's own `uname` mapping picks the
     # asset, so darwin and linux take different paths through it.
     - name: SMOKE 6 · the install script writes where this build reads (${{ inputs.asset }})
-      shell: sh
+      shell: bash
       env:
         VERSION: ${{ inputs.version }}
         URL: ${{ inputs.install-url }}

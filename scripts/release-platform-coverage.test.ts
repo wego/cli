@@ -45,6 +45,7 @@ import { readFileSync } from "node:fs";
 
 interface Step {
   name?: string;
+  shell?: string;
   uses?: string;
   run?: string;
   if?: string;
@@ -548,5 +549,35 @@ describe(`${LANE}: no check is written twice`, () => {
       expect(callers.some((r) => r.startsWith("ubuntu-"))).toBe(true);
       expect(callers.some((r) => r.startsWith("macos-"))).toBe(true);
     }
+  });
+});
+
+describe("composite actions: one interpreter, on every runner", () => {
+  it("declares `shell: bash` on every step", () => {
+    // A composite step MUST name its shell — there is no default to inherit. The
+    // obvious-looking choice, `sh`, is wrong twice over: these steps previously ran
+    // under the workflow default, which is `bash -e {0}`, so `sh` changes the
+    // interpreter rather than preserving it; and `/bin/sh` is dash on ubuntu and
+    // bash-in-POSIX-mode on macOS, which would reintroduce a per-platform
+    // difference into the change that exists to remove them.
+    //
+    // The scripts these steps INVOKE keep their own `#!/bin/sh` and are called as
+    // `sh scripts/…`. That is deliberate and platform-identical, because the
+    // interpreter is named explicitly rather than inherited from the runner image.
+    const offenders: string[] = [];
+    for (const [file, act] of [
+      [ACTION, action],
+      [BUILD_ACTION, buildAction],
+    ] as const) {
+      for (const st of act.runs.steps ?? []) {
+        if (!st.run) continue;
+        if (st.shell !== "bash") {
+          offenders.push(
+            `${file}: ${st.name ?? "(unnamed)"} → ${st.shell ?? "(none)"}`,
+          );
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
