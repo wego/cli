@@ -33,9 +33,49 @@ inputs:
     required: false
     default: https://api.wego.com/install
 
+  store-origin:
+    description: >-
+      The Blob origin this run published under. Empty when nothing was published,
+      which skips the 1.1.0 hop rather than pointing it at a prefix that is not
+      there.
+    required: false
+    default: ''
+
 runs:
   using: composite
   steps:
+    # VERIFY-THEN-EXECUTE, at every point of EXECUTION rather than once per job.
+    # The binaries reached this runner over an artifact hop and SMOKES 4-6 are about
+    # to run one. `release` checked them before publishing as well; repeating it
+    # costs nothing and is what makes a second job safe to have at all.
+    - name: Verify the binaries against the signed manifest (${{ inputs.asset }})
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd dist
+        # One helper for both runners: linux has coreutils, the macOS image does not.
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum -c SHA256SUMS.txt
+        else
+          shasum -a 256 -c SHA256SUMS.txt
+        fi
+
+    # VERIFY-THEN-EXECUTE, at every point of EXECUTION rather than once per job.
+    # The binaries reached this runner over an artifact hop and SMOKES 4-6 are about
+    # to run one. `release` checked them before publishing as well; repeating it
+    # costs nothing and is what makes a second job safe to have at all.
+    - name: Verify the binaries against the signed manifest (${{ inputs.asset }})
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd dist
+        # One helper for both runners: linux has coreutils, the macOS image does not.
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum -c SHA256SUMS.txt
+        else
+          shasum -a 256 -c SHA256SUMS.txt
+        fi
+
     # Verify-then-execute. The next step runs the predecessor as `wego update`, so
     # its bytes are checked against the SHA256SUMS.txt captured beside it first —
     # fail-closed, before anything is chmod'd or run.
@@ -118,6 +158,33 @@ runs:
           bun run scripts/assert-self-update.ts \
             "./dist/$ASSET" "$URL" "$RING" \
             --expect "$VERSION" --force-replace
+
+    # THE LEGACY BRIDGE ROUTE, which is not the same journey as SMOKE 3.
+    #
+    # `apps/api`'s bridge pin keys on the USER AGENT, not the platform: any `?dl=`
+    # for ring `stable` from an agent starting `Bun/` is served the frozen
+    # `cli/cli-v1.1.0/` prefix instead of the live pointer. So a 1.0.x machine
+    # cannot reach this release in one hop on EITHER platform - it lands on 1.1.0
+    # first, and only the next `update` carries it the rest of the way. That
+    # intermediate hop verifies a different repository's signature.
+    #
+    # Both legs run it against their own asset, from one definition, because the
+    # route is identical and only the bytes differ.
+    - name: 1.1.0 upgrade path onto this release (${{ inputs.asset }})
+      if: inputs.store-origin != ''
+      shell: bash
+      env:
+        ORIGIN: ${{ inputs.store-origin }}
+        VERSION: ${{ inputs.version }}
+        ASSET: ${{ inputs.asset }}
+        RING: ${{ inputs.ring }}
+      run: |
+        set -euo pipefail
+        if ! sh scripts/upgrade-path.sh \
+               "$ORIGIN/cli/cli-v1.1.0/$ASSET" "$RING" "$VERSION" --max-hops 1; then
+          echo "::error::a 1.1.0 install of $ASSET cannot reach $VERSION on cli/$RING. Promoting this build would strand every install at or below 1.1.0 - and every 1.0.x machine too, since the legacy bridge pin lands it on 1.1.0 first. Exit 6 means a signed record 1.1.0 does not accept (check identitiesForRing and what this lane signed as); anything else is in the route, manifest, download or replace path."
+          exit 1
+        fi
 
     # SMOKE 6 — the install contract, which nothing in either repository executes.
     # SMOKES 3-5 all hand-place a binary and arrange its record; this one installs

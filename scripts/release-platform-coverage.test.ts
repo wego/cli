@@ -71,6 +71,9 @@ const LANE = "release-cli.yml";
  *  ask the same questions of the resolved leg. */
 const ACTION = ".github/actions/verify-replace/action.yml";
 const ACTION_REF = "./.github/actions/verify-replace";
+/** The pre-publication half. Everything that gates the store lives here. */
+const BUILD_ACTION = ".github/actions/verify-build/action.yml";
+const BUILD_REF = "./.github/actions/verify-build";
 /** The install contract: the installer writes a record, this build reads it. */
 const INSTALL = "scripts/install-smoke.sh";
 /** The up-to-date / replace gate. Drives `wego update` from a built asset. */
@@ -87,6 +90,12 @@ interface Action {
   runs: { steps?: Step[] };
 }
 const action = Bun.YAML.parse(readFileSync(ACTION, "utf8")) as Action;
+const buildAction = Bun.YAML.parse(
+  readFileSync(BUILD_ACTION, "utf8"),
+) as Action;
+/** Resolve a `uses:` to the action it names, or undefined for a plain step. */
+const actionFor = (uses?: string): Action | undefined =>
+  uses === ACTION_REF ? action : uses === BUILD_REF ? buildAction : undefined;
 
 /** Substitute a calling step's `with:` (falling back to the action's declared
  *  defaults) into an action step's text, so a resolved leg reads exactly as the
@@ -117,11 +126,10 @@ function legs(tool: string): Leg[] {
       // A step that delegates to the action stands for the action's own steps,
       // attributed to the job that called it — which is what keeps "does the
       // darwin leg prove SMOKE 5" a question about the lane and not about a file.
-      const steps: Step[] =
-        s.uses === ACTION_REF ? (action.runs.steps ?? []) : [s];
+      const act = actionFor(s.uses);
+      const steps: Step[] = act ? (act.runs.steps ?? []) : [s];
       const withs = (s.with ?? {}) as Record<string, unknown>;
-      const resolve = (t: string) =>
-        s.uses === ACTION_REF ? resolveInputs(t, withs) : t;
+      const resolve = (t: string) => (act ? resolveInputs(t, withs) : t);
       return steps
         .filter((step) => resolve(step.run ?? "").includes(tool))
         .map((step) => ({
@@ -328,15 +336,22 @@ describe(`${LANE}: nothing publishes until BOTH platforms can leave`, () => {
     const n = wf.jobs[job]?.needs;
     return n === undefined ? [] : Array.isArray(n) ? n : [n];
   };
-  /** Jobs that run the leave proof: `upgrade-path.sh … stable`, one hop. */
+  /** Jobs that run the leave proof: `upgrade-path.sh … stable`, one hop. The proof
+   *  lives in a composite action now, so a job "runs" it by calling one — scanning
+   *  job steps alone would find nothing and pass the emptiness through. */
+  const runsLeave = (st: Step): boolean => {
+    const bodies = (actionFor(st.uses)?.runs.steps ?? [st]).map(
+      (x) => x.run ?? "",
+    );
+    return bodies.some(
+      (b) =>
+        b.includes("upgrade-path.sh") &&
+        b.includes("stable") &&
+        !b.includes("cli-v1.1.0"),
+    );
+  };
   const leaveJobs = Object.entries(wf.jobs)
-    .filter(([, j]) =>
-      (j.steps ?? []).some(
-        (st) =>
-          (st.run ?? "").includes("upgrade-path.sh") &&
-          (st.run ?? "").includes("stable"),
-      ),
-    )
+    .filter(([, j]) => (j.steps ?? []).some(runsLeave))
     .map(([job]) => job);
 
   it("proves it on linux AND on macOS", () => {
@@ -446,21 +461,24 @@ function classify(): Map<string, Hit[]> {
       (st.name ?? "").startsWith("Publish immutable artifact"),
     );
     steps.forEach((st, idx) => {
-      const delegated = st.uses === ACTION_REF;
-      const inner: Step[] = delegated ? (action.runs.steps ?? []) : [st];
+      const act = actionFor(st.uses);
+      const inner: Step[] = act ? (act.runs.steps ?? []) : [st];
       const withs = (st.with ?? {}) as Record<string, unknown>;
+      // A delegated step runs where its CALL SITE runs — not where the action is
+      // defined. Both actions are called from both platforms; what separates
+      // pre-publication from post-advance is the position of the `uses:` step.
+      const stage: Hit["stage"] =
+        needs.includes("release") || (pubIdx >= 0 && idx > pubIdx)
+          ? "post-advance"
+          : "pre-publish";
       for (const one of inner) {
-        const body = delegated
+        const body = act
           ? resolveInputs(one.run ?? "", withs)
           : (one.run ?? "");
-        const name = one.name ?? "";
+        const name = act
+          ? resolveInputs(one.name ?? "", withs)
+          : (one.name ?? "");
         if (!body && !name) continue;
-        const stage: Hit["stage"] =
-          delegated ||
-          needs.includes("release") ||
-          (pubIdx >= 0 && idx > pubIdx)
-            ? "post-advance"
-            : "pre-publish";
         for (const [check, matches] of PARITY_CHECKS) {
           if (matches(body, name)) {
             if (!found.has(check)) found.set(check, []);
@@ -499,4 +517,36 @@ describe(`${LANE}: linux-x64 and darwin-arm64 run the same checks, at the same s
       expect(gates("macos")).toBe(gates("linux"));
     });
   }
+});
+
+describe(`${LANE}: no check is written twice`, () => {
+  it("leaves no check-bearing step body in the workflow itself", () => {
+    // Drift is only possible where a check exists in two places. After both
+    // actions, every check the parity list names is defined once and called
+    // twice — so this asserts the ABSENCE of the thing that could drift, rather
+    // than that two copies currently happen to agree.
+    const offenders: string[] = [];
+    for (const [job, j] of Object.entries(wf.jobs)) {
+      for (const st of j.steps ?? []) {
+        if (actionFor(st.uses)) continue;
+        const body = st.run ?? "";
+        const name = st.name ?? "";
+        if (!body) continue;
+        for (const [check, matches] of PARITY_CHECKS) {
+          if (matches(body, name)) offenders.push(`${job}: ${name} (${check})`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("calls each action from both platforms", () => {
+    for (const ref of [ACTION_REF, BUILD_REF]) {
+      const callers = Object.values(wf.jobs)
+        .filter((j) => (j.steps ?? []).some((st) => st.uses === ref))
+        .map((j) => j["runs-on"] ?? "");
+      expect(callers.some((r) => r.startsWith("ubuntu-"))).toBe(true);
+      expect(callers.some((r) => r.startsWith("macos-"))).toBe(true);
+    }
+  });
 });

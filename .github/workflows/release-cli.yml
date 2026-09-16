@@ -470,108 +470,15 @@ jobs:
       # artifact hop is checked against the manifest before it is run. `shasum -a
       # 256 -c`, not `sha256sum` - the macOS runner image has no coreutils, and the
       # formats are identical.
-      - name: Verify the built binaries against the signed manifest
-        run: |
-          set -euo pipefail
-          cd dist
-          shasum -a 256 -c SHA256SUMS.txt
+      # The four pre-publication checks, one definition, in
+      # `.github/actions/verify-build`.
+      - name: Verify this build before publishing (wego-darwin-arm64)
+        uses: ./.github/actions/verify-build
+        with:
+          asset: wego-darwin-arm64
+          version: ${{ needs.prepare.outputs.version }}
 
-      # PARITY with the linux leg's "Smoke test built binaries". Cheap, and it
-      # separates two failures the leave proof would otherwise report as one: a
-      # binary that does not RUN, versus one that runs but cannot replace itself.
-      - name: Smoke test built binaries (darwin-arm64)
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-          WEGO_CLI_NO_UPDATE_NOTICE: "1"
-        run: |
-          set -euo pipefail
-          binary="./dist/wego-darwin-arm64"
-          chmod +x "$binary"
-          got=$("$binary" version)
-          echo "wego version -> $got"
-          [ "$got" = "$VERSION" ] || { echo "version mismatch: expected $VERSION, got $got" >&2; exit 1; }
-          WEGO_CREDENTIALS_PATH="${RUNNER_TEMP}/wego-missing-credentials.json" "$binary" logout
 
-      # PARITY with the linux leg, and NOT redundant with it. This measures the user
-      # agent THIS BINARY actually sends, by pointing a copy at a local probe and
-      # running its real `update`. Reading `USER_AGENT` out of `api.ts` and calling
-      # both platforms covered would be reasoning from source about an artifact,
-      # which is exactly the move that let wego/cli#25 ship: v1.2.0's binary sent no
-      # agent, apps/api's legacy bridge pin read it as a pre-relay 1.0.x install and
-      # served it the frozen build forever, and it could never update again.
-      - name: Require this build to be distinguishable from a pre-relay install (darwin-arm64)
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          url='https://api.wego.com/install'
-          work="$RUNNER_TEMP/agent-probe"; rm -rf "$work"
-          mkdir -p "$work/bin" "$work/home/.config/wego"
-          cp ./dist/wego-darwin-arm64 "$work/bin/wego"
-          chmod +x "$work/bin/wego"
-          : > "$work/agent.txt"
-          AGENT_FILE="$work/agent.txt" bun -e 'const out=Bun.file(process.env.AGENT_FILE).writer();Bun.serve({hostname:"127.0.0.1",port:8977,fetch(r){out.write((r.headers.get("user-agent")??"")+"\n");out.flush();return new Response("probe",{status:404});}});' &
-          LPID=$!
-          sleep 2
-          printf '{"ring":"stable","installUrl":"http://127.0.0.1:8977/install"}\n' \
-            > "$work/home/.config/wego/install.json"
-          set +e
-          out=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
-                WEGO_CLI_TELEMETRY=0 "$work/bin/wego" update -y 2>&1)
-          set -e
-          kill "$LPID" 2>/dev/null || true
-          echo "$out"
-          if printf '%s' "$out" | grep -q 'Self-update applies to installed release binaries'; then
-            echo "::error::the darwin-arm64 build does not consider itself a release binary, so it never made a request and this check measured NOTHING. It was built without WEGO_BUILD_VERSION."
-            exit 1
-          fi
-          agent=$(head -1 "$work/agent.txt" || true)
-          if [ -z "$agent" ]; then
-            echo "::error::the darwin-arm64 build made no request to the probe, so its user agent could not be measured and this check proved NOTHING. Output above."
-            exit 1
-          fi
-          echo "$VERSION's darwin-arm64 binary sends: $agent"
-          if printf '%s' "$agent" | grep -qiE '^bun/'; then
-            echo "::error::the darwin-arm64 build sends '$agent', which apps/api's legacy bridge pin treats as a pre-relay 1.0.x install. Every Mac install of it would be pinned to the frozen bridge, whose record it cannot verify - it could never update again. That is what v1.2.0 shipped (wego/cli#25). Refusing before anything is published."
-            exit 1
-          fi
-          loc=$(curl -sI -A "$agent" "$url?dl=SHA256SUMS.txt&ring=stable" \
-                  | grep -i '^location:' || true)
-          if printf '%s' "$loc" | grep -q '/cli/cli-v1.1.0/'; then
-            echo "::error::api.wego.com serves the darwin-arm64 build ('$agent') from the legacy bridge on ring stable: '$loc'. Publishing it would strand every Mac install of it."
-            exit 1
-          fi
-          echo "ok: the darwin-arm64 build is not claimed by the pin. $loc"
-
-      - name: Smoke test a user-shaped replace on macOS (cli/stable)
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          bin=./dist/wego-darwin-arm64
-          chmod +x "$bin"
-
-          got=$("$bin" version)
-          if [ "$got" != "$VERSION" ]; then
-            echo "::error::wego-darwin-arm64 reports '$got', not '$VERSION' - built without WEGO_BUILD_VERSION baked, so 'wego update' would return having done nothing and this leg would prove nothing."
-            exit 1
-          fi
-
-          outgoing=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' | tr -d '\r\n')
-          if [ -z "$outgoing" ]; then
-            echo "::error::cli/stable serves no VERSION, so there are no differing bytes for this build to replace itself with and the unforced path cannot be exercised."
-            exit 1
-          fi
-          if [ "$outgoing" = "$VERSION" ]; then
-            echo "::error::cli/stable already serves $VERSION, so no byte swap is possible and a pass here would prove nothing. Cut a new version rather than re-releasing one that is already stable."
-            exit 1
-          fi
-
-          if ! sh scripts/upgrade-path.sh "$bin" stable "$outgoing" --max-hops 1; then
-            echo "::error::the darwin-arm64 $VERSION binary cannot replace itself on the ordinary, unforced path. Every Mac that took this build would be stuck on it, and a rollback cannot reach them - accepting one needs the update path that is broken. The forced step above passed, so fetch/decompress/checksum/quarantine/rename all run: what fails here is the binary landing somewhere other than where it runs from, or the unforced branch itself."
-            exit 1
-          fi
-          echo "ok: the darwin-arm64 binary replaces itself the way a user's upgrade does."
 
 
   release:
@@ -675,207 +582,13 @@ jobs:
       #
       # `-c` also fails on a file the manifest LISTS but the reassembly did not
       # deliver, which is the direction a too-narrow upload glob would break.
-      - name: Re-verify the reassembled binaries against the signed manifest
-        run: |
-          set -euo pipefail
-          cd dist
-          sha256sum -c SHA256SUMS.txt
-
-      # SMOKE 1 — the built binaries actually run and carry the right baked
-      # version + complete baked public config (linux-x64 runs natively on the
-      # runner). `logout` loads config without making a network request, so it
-      # catches a missed/misspelled static WEGO_BUILD_* read before publication.
-      - name: Smoke test built binaries
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-          # These binaries are newer than the channel they'd read, so the
-          # new-version notice would stay quiet on its own — but relying on that
-          # makes a comparison rule load-bearing for CI. Switch it off outright so
-          # this step never depends on it, and never reaches the network.
-          WEGO_CLI_NO_UPDATE_NOTICE: "1"
-        run: |
-          set -euo pipefail
-          # One binary, one name (#74 rung 7): a second name here would mean a
-          # second build.
-          binary="./dist/wego-linux-x64"
-          chmod +x "$binary"
-          got=$("$binary" version)
-          echo "wego version -> $got"
-          [ "$got" = "$VERSION" ] || { echo "version mismatch: expected $VERSION, got $got" >&2; exit 1; }
-          WEGO_CREDENTIALS_PATH="${RUNNER_TEMP}/wego-missing-credentials.json" "$binary" logout
-
-      # THE EARLIEST POSSIBLE GATE ON THE v1.2.0 CLASS OF BUG, and deliberately
-      # placed before the FIRST store write of the run.
-      #
-      # `apps/api`'s legacy bridge pin (wego/foundations#132) keys on one thing: a
-      # `?dl=` request for ring `stable` whose user agent starts with `Bun/` is a
-      # pre-relay 1.0.x install and is answered from the frozen `cli/cli-v1.1.0/`
-      # bridge. The rule is ALLOW-BY-DEFAULT, so a build that fails to identify
-      # itself is treated as legacy - and v1.2.0 shipped exactly that way, having
-      # passed every check this lane had (wego/cli#25).
-      #
-      # The same measurement runs in `promote-cli.yml` before `cli/stable` moves.
-      # It is repeated HERE because that was far too late: by then the bad bytes
-      # are the immutable `cli/<tag>/` artifact, `cli/next` is serving them, a
-      # GitHub Release names them, and the only remedy is another release. Asked
-      # at this point, a failure costs a red run and nothing else - no prefix is
-      # written, no pointer moves, no version is burned.
-      #
-      # NEEDS NO RING, which is what makes the early placement possible: the pin's
-      # only input is the agent, and the agent is a property of the binary sitting
-      # in ./dist. The update-outcome smokes further down genuinely cannot move
-      # up - they ask whether a binary can complete an update against `cli/next`,
-      # which cannot be answered until `cli/next` serves this build.
-      #
-      # WEGO_BUILD_VERSION IS DELIBERATELY NOT SET. `update` returns EXIT.OK
-      # without acting for a dev-versioned binary (update.ts:364), so setting it
-      # here would paper over a build that failed to bake its version and leave
-      # the guard below asserting nothing. The step above has already proved
-      # `wego version` reports $VERSION on its own.
-      - name: Require this build to be distinguishable from a pre-relay install
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          url='https://api.wego.com/install'
-          work="$RUNNER_TEMP/agent-probe"; rm -rf "$work"
-          mkdir -p "$work/bin" "$work/home/.config/wego"
-
-          # THE BINARY MUST BE NAMED `wego`: the config directory is derived from
-          # the name it is invoked as, so `wego-linux-x64` would look for
-          # `.config/wego-linux-x64/`, find no install record, and exit without
-          # touching the network - a green check that measured nothing.
-          cp ./dist/wego-linux-x64 "$work/bin/wego"
-          chmod +x "$work/bin/wego"
-
-          # A listener that records the agent and 404s. The 404 is fine: the agent
-          # goes out on the FIRST request, which is all this needs.
-          #
-          # `bun -e`, not a heredoc: a heredoc body inside a YAML block scalar
-          # carries the block's indentation into the file and has to be stripped
-          # back out, which is a silent breakage waiting to happen in a lane
-          # nothing lints.
-          : > "$work/agent.txt"
-          AGENT_FILE="$work/agent.txt" bun -e 'const out=Bun.file(process.env.AGENT_FILE).writer();Bun.serve({hostname:"127.0.0.1",port:8977,fetch(r){out.write((r.headers.get("user-agent")??"")+"\n");out.flush();return new Response("probe",{status:404});}});' &
-          LPID=$!
-          sleep 2
-
-          printf '{"ring":"stable","installUrl":"http://127.0.0.1:8977/install"}\n' \
-            > "$work/home/.config/wego/install.json"
-          set +e
-          out=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
-                WEGO_CLI_TELEMETRY=0 "$work/bin/wego" update -y 2>&1)
-          set -e
-          kill "$LPID" 2>/dev/null || true
-          echo "$out"
-
-          if printf '%s' "$out" | grep -q 'Self-update applies to installed release binaries'; then
-            echo "::error::this build does not consider itself a release binary, so it never made a request and this check measured NOTHING. It was built without WEGO_BUILD_VERSION."
-            exit 1
-          fi
-          agent=$(head -1 "$work/agent.txt" || true)
-          if [ -z "$agent" ]; then
-            echo "::error::this build made no request to the probe, so its user agent could not be measured and this check proved NOTHING. Output above."
-            exit 1
-          fi
-          echo "$VERSION's binary sends: $agent"
-
-          # The pin's own predicate, applied to the measured value.
-          if printf '%s' "$agent" | grep -qiE '^bun/'; then
-            echo "::error::this build sends '$agent', which apps/api's legacy bridge pin treats as a pre-relay 1.0.x install. Every install of it would be pinned to the frozen bridge, whose record it cannot verify - it could never update again. That is what v1.2.0 shipped (wego/cli#25). Refusing before anything is published."
-            exit 1
-          fi
-
-          # And the real route's actual decision, which is the claim that matters.
-          loc=$(curl -sI -A "$agent" "$url?dl=SHA256SUMS.txt&ring=stable" \
-                  | grep -i '^location:' || true)
-          if printf '%s' "$loc" | grep -q '/cli/cli-v1.1.0/'; then
-            echo "::error::api.wego.com serves this build ('$agent') from the legacy bridge on ring stable: '$loc'. Publishing it would strand every install of it."
-            exit 1
-          fi
-          echo "ok: this build is not claimed by the pin. $loc"
-
-      # Publish to the IMMUTABLE cli/<tag>/ ONLY (--freeze). cli/next is NOT
-      # moved here — it advances only after SMOKE-2 verifies these exact bytes,
-      # so a transport-corrupted upload can never become the served candidate.
-      # REQUIRE_PUBLISH makes a deliberate release FAIL if the token is missing
-      # (no silent "green but published nothing"); the tag-push path keeps the
-      # graceful pre-go-live skip.
-      #
-      # Every release requires it: a run that quietly published nothing would report
-      # green while `cli/next` still served the previous build, and the promote that
-      # followed would move `cli/stable` onto bytes nobody meant to ship.
-      #
-      # No guard here against two runs colliding on one tag, and none is needed: a tag
-      # names the commit whoever created it chose, and both entrypoints arrive with it
-      # already created. The immutable prefix protects itself regardless of who writes
-      # it - `putImmutableAssets` puts with `allowOverwrite: false`, and the
-      # THE ANTI-BRICK GATE: this binary must be able to LEAVE, proven by making
-      # it actually leave. Nothing has been published and no pointer has moved.
-      #
-      # THE FAILURE IT EXISTS FOR IS THE WORST ONE THIS PROJECT HAS. A build that
-      # cannot `wego update` bricks every machine that takes it, and a rollback
-      # does not rescue them: they already hold the broken binary, and a binary
-      # that cannot update cannot take the rollback either. Reinstall by hand is
-      # the only exit. v1.2.0 shipped exactly this (wego/cli#25).
-      #
-      # SMOKE 4 BELOW ALREADY ASKS THE QUESTION AND ACCEPTS A WEAKER ANSWER. It
-      # runs this binary against `cli/next`, which by then serves these very bytes,
-      # so the correct outcome is "already up to date" - and that is precisely
-      # where `update` STOPS. The hashes match, so it never downloads, never
-      # gunzips, never verifies a payload, never renames anything over itself. The
-      # request path is covered; the REPLACE path ships unexercised. v1.2.0's bug
-      # happened to be in the request, which is why that check was enough once and
-      # is not enough in general.
-      #
-      # SO THIS ONE MAKES IT DO THE WHOLE THING. Pointed at `cli/stable` - which
-      # still serves the OUTGOING release and which this lane never touches - the
-      # new binary must fetch, decompress, checksum and atomically replace itself
-      # in place. Downgrading is not a strange thing to ask of it: `update`
-      # compares CHECKSUMS, not versions, so this is byte-for-byte the code path a
-      # user's upgrade takes.
-      #
-      # IT NEEDS NOTHING PUBLISHED, which is why it sits here rather than after
-      # the publish: the binary is in `dist/` and `cli/stable` is already live. A
-      # failure costs a re-run and nobody outside this job has seen the build.
-      #
-      # COVERS linux-x64 ONLY, and for THIS direction that limit bites: the code
-      # doing the work is the NEW code, freshly compiled per platform, and macOS
-      # has a branch nothing here executes (the quarantine clear). See the release
-      # notes/README before widening - a macos-latest leg would close it.
-      - name: Require this build to be able to update itself for real
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          bin=./dist/wego-linux-x64
-          chmod +x "$bin"
-
-          # A dev-versioned binary makes `update` return OK without acting, so a
-          # gate handed one would go green having tested nothing. Assert the build
-          # baked its version rather than hoping it did.
-          got=$("$bin" version)
-          if [ "$got" != "$VERSION" ]; then
-            echo "::error::./dist/wego-linux-x64 reports '$got', not '$VERSION'. It was built without WEGO_BUILD_VERSION baked, so 'wego update' would exit OK without doing anything and this gate would prove nothing."
-            exit 1
-          fi
-
-          outgoing=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' | tr -d '\r\n')
-          if [ -z "$outgoing" ]; then
-            echo "::error::cli/stable serves no VERSION, so there is nothing for this build to update ONTO and its replace path cannot be exercised. Refusing to publish a build whose ability to leave is unproven."
-            exit 1
-          fi
-          if [ "$outgoing" = "$VERSION" ]; then
-            echo "::error::cli/stable already serves $VERSION, so pointing this build at it would exercise no byte swap. Re-releasing a version that is already stable leaves the replace path untested - cut a new version instead."
-            exit 1
-          fi
-
-          echo "making the new $VERSION binary install stable's $outgoing over itself..."
-          if ! sh scripts/upgrade-path.sh "$bin" stable "$outgoing" --max-hops 1; then
-            echo "::error::the $VERSION binary CANNOT UPDATE ITSELF. Publishing it would brick every machine that takes it - and a rollback would not reach them, because a binary that cannot update cannot take one either. This is wego/cli#25. Nothing has been published; fix the update path and re-tag. Exit 6 means a signed record this build refuses (check USER_AGENT and identitiesForRing); anything else is in the download, decompress, checksum or replace path."
-            exit 1
-          fi
-          echo "ok: the $VERSION binary performs a real self-replace - it can leave."
+      # The four pre-publication checks, one definition, in
+      # `.github/actions/verify-build`.
+      - name: Verify this build before publishing (wego-linux-x64)
+        uses: ./.github/actions/verify-build
+        with:
+          asset: wego-linux-x64
+          version: ${{ needs.prepare.outputs.version }}
 
       - name: Publish immutable artifact (cli/<tag>)
         id: publish
@@ -1189,28 +902,6 @@ jobs:
       # ring `next` at all (exit 6, correctly). Its route exists solely on `stable`,
       # behind the pin - so `promote-cli.yml` owns it, where the pin is also checked
       # before the pointer moves.
-      - name: Smoke test the 1.1.0 upgrade path (cli/next)
-        if: steps.publish.outputs.store_origin != ''
-        env:
-          ORIGIN: ${{ steps.publish.outputs.store_origin }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          if ! sh scripts/upgrade-path.sh \
-                 "$ORIGIN/cli/cli-v1.1.0/wego-linux-x64" next "$VERSION" --max-hops 1; then
-            echo "::error::a 1.1.0 install cannot reach $VERSION on cli/next. Promoting this build would strand every install at or below 1.1.0 - and every 1.0.x machine too, since the legacy bridge pin lands it on 1.1.0 first. Exit 6 means a signed record 1.1.0 does not accept (check identitiesForRing and what this lane signed as); anything else is in the route, manifest, download or replace path."
-            exit 1
-          fi
-
-      # Verify-then-execute. SMOKE 3 executes the predecessor as `wego update`, so its
-      # bytes are checksum-verified fail-closed first: the capture step above only
-      # downloads the binary and its SHA256SUMS.txt, and this step checks one against
-      # the other before anything is chmod'd or run. Separate from the capture so the
-      # verification is a step in its own right rather than a branch inside a download.
-      # Gated on `usable`, because an empty `cli/next` leaves no binary to verify.
-      # SMOKES 3-6 for linux-x64. Every step behind this `uses:` used to sit
-      # here inline and again, copied, in `replace-macos` — see the action for what
-      # the two copies had already started to differ by.
       - name: Prove the replace path (linux-x64)
         if: steps.publish.outputs.store_origin != ''
         uses: ./.github/actions/verify-replace
@@ -1219,6 +910,7 @@ jobs:
           version: ${{ needs.prepare.outputs.version }}
           predecessor-dir: ${{ runner.temp }}/prev-channel
           prev-usable: ${{ steps.prev_channel.outputs.usable }}
+          store-origin: ${{ steps.publish.outputs.store_origin }}
 
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new
@@ -1406,16 +1098,6 @@ jobs:
           name: cli-checksums
           path: dist
 
-      # VERIFY-THEN-EXECUTE, the same rule the predecessor smoke follows: this job
-      # is about to run a 64 MB binary that arrived over an artifact hop, so it is
-      # checked against the manifest first. `shasum -a 256 -c`, not `sha256sum` -
-      # the macOS runner image has no coreutils, and the formats are identical.
-      - name: Verify the built binaries against the signed manifest
-        run: |
-          set -euo pipefail
-          cd dist
-          shasum -a 256 -c SHA256SUMS.txt
-
       # SMOKE 3 (macOS leg) - A MACHINE CAN ARRIVE AT THIS RELEASE, ON DARWIN.
       #
       # The predecessor could not be fetched here. It lives at `cli/next` only until
@@ -1451,24 +1133,6 @@ jobs:
       # The same four proofs as the linux leg, from the same definition. This job
       # exists because `clearQuarantine` is compiled in per platform and a linux
       # runner can never reach it — not because the checks differ.
-      # PARITY with the linux leg's 1.1.0 hop, and its own route: apps/api's bridge
-      # pin keys on the USER AGENT, not the platform, so a 1.0.x Mac is landed on
-      # `cli/cli-v1.1.0/wego-darwin-arm64` exactly as a 1.0.x linux box is landed on
-      # its own. That darwin asset is served (the frozen prefix holds every platform
-      # 1.1.0 shipped) and, until this step, nothing ever ran it.
-      - name: Smoke test the 1.1.0 upgrade path on macOS (cli/next)
-        if: needs.release.outputs.store_origin != ''
-        env:
-          ORIGIN: ${{ needs.release.outputs.store_origin }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          if ! sh scripts/upgrade-path.sh \
-                 "$ORIGIN/cli/cli-v1.1.0/wego-darwin-arm64" next "$VERSION" --max-hops 1; then
-            echo "::error::a 1.1.0 Mac install cannot reach $VERSION on cli/next. Promoting this build would strand every Mac at or below 1.1.0 - and every 1.0.x Mac too, since the legacy bridge pin lands it on 1.1.0 first. Exit 6 means a signed record 1.1.0 does not accept (check identitiesForRing and what this lane signed as); anything else is in the route, manifest, download or replace path."
-            exit 1
-          fi
-
       - name: Prove the replace path (darwin-arm64)
         uses: ./.github/actions/verify-replace
         with:
@@ -1476,6 +1140,7 @@ jobs:
           version: ${{ needs.prepare.outputs.version }}
           predecessor-dir: ${{ runner.temp }}/prev-channel
           prev-usable: ${{ needs.release.outputs.prev_usable }}
+          store-origin: ${{ needs.release.outputs.store_origin }}
 
       # THE SAME PATH, TAKEN THE WAY A USER TAKES IT - the one claim this job
       # could not make until now.
