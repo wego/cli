@@ -17,8 +17,7 @@ import {
  * this module reads it in the background and hands the caller one stderr line.
  *
  * Deliberate constraints, because this runs after every command:
- *  - **Throttled**, per flavor: `wegostaging` hourly (its channel carries the
- *    prerelease line), `wego` daily (stable tags only).
+ *  - **Throttled**, daily: one published build, one cadence.
  *  - **Persist, then nag.** The channel's answer is stored, so the notice keeps
  *    printing on every command until the user updates — with no further network
  *    calls. A once-per-window notice is trivially missed, and the whole point is
@@ -51,19 +50,10 @@ export function isOptedOut(raw: string | undefined): boolean {
 /** The from-source version stamp (matches `index.ts`'s `VERSION` fallback). */
 const DEV_VERSION = "0.0.0-dev";
 
-/** The staging build flavor. Its channel carries the prerelease line, which moves
- *  far more often than prod's, so a tester can be a day behind on a 24h window. */
-const STAGING_FLAVOR = "wegostaging";
-
-export const NOTICE_INTERVAL_PROD_MS = 24 * 60 * 60 * 1000;
-export const NOTICE_INTERVAL_STAGING_MS = 60 * 60 * 1000;
-
-/** How long a stored answer is trusted before the channel is read again. */
-export function noticeIntervalMs(flavor: string): number {
-  return flavor === STAGING_FLAVOR
-    ? NOTICE_INTERVAL_STAGING_MS
-    : NOTICE_INTERVAL_PROD_MS;
-}
+/** How long a stored answer is trusted before the channel is read again. One
+ *  window, because there is one published build: the second, hour-long one
+ *  belonged to the staging flavor's faster-moving prerelease line. */
+export const NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** Per-request deadline for the channel read. Two seconds, matching the
  *  background skill refresh's tightened budget rather than `update`'s 30s: this is
@@ -236,18 +226,16 @@ export function shouldNotify(latest: string, current: string): boolean {
 /** The one stderr line. Pinned by a test so humans see a stable shape — an agent
  *  is told to treat its PRESENCE as the signal and never parse it.
  *
- *  The two names are deliberately separate. `flavor` is the RELEASE identity, so a
- *  renamed install still says which release line it is on. `command` is what the
- *  user must actually TYPE, which is the name the binary was invoked as: an
- *  install renamed by `WEGO_CLI_BIN` would otherwise be told to run a command that
- *  does not exist on its machine. They are the same string on a default install. */
+ *  `wego` is the RELEASE, which is one name now. `command` is what the user must
+ *  actually TYPE, which is the name the binary was invoked as: an install renamed
+ *  by `WEGO_CLI_BIN` would otherwise be told to run a command that does not exist
+ *  on its machine. They are the same string on a default install. */
 export function formatVersionNotice(
-  flavor: string,
   current: string,
   latest: string,
-  command: string = flavor,
+  command = "wego",
 ): string {
-  return `A new ${flavor} is available: ${current} -> ${latest}. Run \`${command} update -y\`.`;
+  return `A new wego is available: ${current} -> ${latest}. Run \`${command} update -y\`.`;
 }
 
 /** The line for a ring that MOVED without moving forward — the prerelease case,
@@ -256,12 +244,11 @@ export function formatVersionNotice(
  *  ordering nothing established; this says only what is known, which is that the
  *  channel is serving other bytes than the ones running. */
 export function formatChannelChangedNotice(
-  flavor: string,
   current: string,
   latest: string,
-  command: string = flavor,
+  command = "wego",
 ): string {
-  return `Your ${flavor} channel now serves ${latest} (you have ${current}). Run \`${command} update -y\`.`;
+  return `Your wego channel now serves ${latest} (you have ${current}). Run \`${command} update -y\`.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -314,13 +301,9 @@ export interface VersionNoticeDeps {
   fromSource: boolean;
   /** The running binary's version (matches `wego version`). */
   version: string;
-  /** The baked build flavor — `wego` | `wegostaging`. Drives the cadence, the
-   *  state path, and the wording, so a RENAMED binary keeps its own identity
-   *  instead of following whatever name it was invoked under. */
-  flavor: string;
-  /** The name the binary was invoked as (`programName()`). Separate from `flavor`
-   *  on purpose: the flavor names the release, this names the command the user has
-   *  to type, and `WEGO_CLI_BIN` lets an install carry a different one. */
+  /** The name the binary was invoked as (`programName()`). The release is always
+   *  named `wego`; this names the command the user has to type, and `WEGO_CLI_BIN`
+   *  lets an install carry a different one. */
   invokedAs: string;
   /** The installer's ring record — the same one `update` follows. Absent,
    *  unreadable and malformed all arrive as `null`, and `null` REFUSES: the
@@ -505,21 +488,15 @@ export async function maybeNotifyNewVersion(
     // "newer" when the ordering is real, "your channel now serves" when all that
     // is known is that the bytes differ (`shouldNotify`).
     const message = isNewerVersion(latest, deps.version)
-      ? formatVersionNotice(deps.flavor, deps.version, latest, deps.invokedAs)
-      : formatChannelChangedNotice(
-          deps.flavor,
-          deps.version,
-          latest,
-          deps.invokedAs,
-        );
+      ? formatVersionNotice(deps.version, latest, deps.invokedAs)
+      : formatChannelChangedNotice(deps.version, latest, deps.invokedAs);
     return { outcome, message };
   };
 
   // A stamp in the FUTURE (clock set backwards, or a bad write) must not throttle
   // forever, so only a non-negative age inside the window counts as fresh.
   const age = state ? deps.now - state.checkedAt : Number.POSITIVE_INFINITY;
-  if (age >= 0 && age < noticeIntervalMs(deps.flavor))
-    return { outcome: "throttled" };
+  if (age >= 0 && age < NOTICE_INTERVAL_MS) return { outcome: "throttled" };
 
   // Claim the window BEFORE the fetch, and only proceed if the claim LANDED. An
   // unwritable state file (read-only `$HOME`, immutable home) otherwise means

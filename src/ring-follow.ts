@@ -159,29 +159,19 @@ export type RingDecision =
  * user can see what is missing) and the reinstall line that writes it — the only
  * way to obtain a record, by design: nothing here may invent one.
  *
- * `movedFrom` is the one extra sentence a refusal can earn: the directory an
- * earlier version of this same install kept its files in, when the install's
- * config scope has since moved (`config.ts` `legacyScopeDir`). It is a HINT
- * printed on a refusal, never a second place to look — reading a record from a
- * directory this install no longer owns is how one install ends up following
- * another's ring.
  */
 export function followRecordedRing(args: {
   record: InstallRecord | null;
   recordPath: string;
   reinstallHint: string;
-  movedFrom?: string;
 }): RingDecision {
-  const { record, recordPath, reinstallHint, movedFrom } = args;
+  const { record, recordPath, reinstallHint } = args;
   if (!record) {
     return {
       ok: false,
       message:
         `no release ring recorded at ${recordPath} – refusing to guess which ring to update from.\n` +
-        (movedFrom
-          ? `This install now keeps its files under the name it is invoked as, so they moved from ${movedFrom}.\n` +
-            `Move that directory across to keep your login and preferences, or reinstall:\n  ${reinstallHint}`
-          : `Reinstall to record it:\n  ${reinstallHint}`),
+        `Reinstall to record it:\n  ${reinstallHint}`,
     };
   }
   return {

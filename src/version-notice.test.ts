@@ -7,10 +7,8 @@ import {
   looksLikeVersion,
   MAX_VERSION_BYTES,
   maybeNotifyNewVersion,
-  NOTICE_INTERVAL_PROD_MS,
-  NOTICE_INTERVAL_STAGING_MS,
+  NOTICE_INTERVAL_MS,
   noticeChannel,
-  noticeIntervalMs,
   parseSemver,
   shouldNotify,
   type UpdateCheckState,
@@ -50,7 +48,6 @@ function deps(over: Partial<VersionNoticeDeps> = {}): Harness {
     command: "whoami",
     fromSource: false,
     version: CURRENT,
-    flavor: "wego",
     invokedAs: "wego",
     // A record by DEFAULT: it is the only source a notice can resolve, so the
     // base bundle has to carry one for the cases below to exercise the notice at
@@ -60,7 +57,7 @@ function deps(over: Partial<VersionNoticeDeps> = {}): Harness {
     now: NOW,
     // Stale by a day and a second ⇒ past the prod window.
     readState: async () => ({
-      checkedAt: NOW - NOTICE_INTERVAL_PROD_MS - 1_000,
+      checkedAt: NOW - NOTICE_INTERVAL_MS - 1_000,
     }),
     claimWindow: async () => {
       claims.n++;
@@ -159,17 +156,6 @@ describe("parseSemver / isNewerVersion", () => {
   });
 });
 
-describe("noticeIntervalMs", () => {
-  it("checks staging hourly and prod daily", () => {
-    // The staging channel carries the prerelease line, which moves far more often
-    // than prod's, so a tester on a 24h window can be a whole day behind their own
-    // channel.
-    expect(noticeIntervalMs("wegostaging")).toBe(NOTICE_INTERVAL_STAGING_MS);
-    expect(noticeIntervalMs("wego")).toBe(NOTICE_INTERVAL_PROD_MS);
-    expect(NOTICE_INTERVAL_STAGING_MS).toBeLessThan(NOTICE_INTERVAL_PROD_MS);
-  });
-});
-
 describe("isSelfManagementCommand", () => {
   it("covers update, uninstall and skill, and nothing else", () => {
     for (const c of ["update", "uninstall", "skill"]) {
@@ -186,7 +172,7 @@ describe("maybeNotifyNewVersion", () => {
     const d = deps();
     const r = await maybeNotifyNewVersion(d);
     expect(r.outcome).toBe("checked");
-    expect(r.message).toBe(formatVersionNotice("wego", CURRENT, LATEST));
+    expect(r.message).toBe(formatVersionNotice(CURRENT, LATEST));
     expect(d.fetches()).toEqual([DEFAULT_VERSION_URL]);
   });
 
@@ -271,16 +257,20 @@ describe("maybeNotifyNewVersion", () => {
     expect(d.claims()).toBe(0);
   });
 
-  it("uses the staging window for the staging flavor", async () => {
-    const age = NOTICE_INTERVAL_STAGING_MS + 1_000;
-    // Same age: fresh for prod, stale for staging.
+  it("uses the one window for every install", async () => {
+    // Inside it, throttled; past it, checked. There is no second cadence to pick
+    // between any more.
     expect(
-      (await maybeNotifyNewVersion(deps({ readState: stored(age) }))).outcome,
+      (
+        await maybeNotifyNewVersion(
+          deps({ readState: stored(NOTICE_INTERVAL_MS - 1_000) }),
+        )
+      ).outcome,
     ).toBe("throttled");
     expect(
       (
         await maybeNotifyNewVersion(
-          deps({ flavor: "wegostaging", readState: stored(age) }),
+          deps({ readState: stored(NOTICE_INTERVAL_MS + 1_000) }),
         )
       ).outcome,
     ).toBe("checked");
@@ -318,7 +308,7 @@ describe("maybeNotifyNewVersion", () => {
     // honest to say.
     const d = deps({
       claimWindow: async () => false,
-      readState: stored(NOTICE_INTERVAL_PROD_MS + 1_000),
+      readState: stored(NOTICE_INTERVAL_MS + 1_000),
     });
     const r = await maybeNotifyNewVersion(d);
     expect(r.outcome).toBe("skipped-unclaimable");
@@ -364,7 +354,7 @@ describe("maybeNotifyNewVersion", () => {
     ];
     for (const [why, f] of cases) {
       const d = deps({
-        readState: stored(NOTICE_INTERVAL_PROD_MS + 1_000),
+        readState: stored(NOTICE_INTERVAL_MS + 1_000),
         fetch: f as unknown as typeof fetch,
       });
       const r = await maybeNotifyNewVersion(d);
@@ -413,7 +403,7 @@ describe("maybeNotifyNewVersion", () => {
       },
     });
     const d = deps({
-      readState: stored(NOTICE_INTERVAL_PROD_MS + 1_000),
+      readState: stored(NOTICE_INTERVAL_MS + 1_000),
       fetch: (async () => new Response(stream)) as unknown as typeof fetch,
     });
     const r = await maybeNotifyNewVersion(d);
@@ -436,7 +426,7 @@ describe("maybeNotifyNewVersion", () => {
       fetch: (async () => new Response(stream)) as unknown as typeof fetch,
     });
     const r = await maybeNotifyNewVersion(d);
-    expect(r.message).toBe(formatVersionNotice("wego", CURRENT, LATEST));
+    expect(r.message).toBe(formatVersionNotice(CURRENT, LATEST));
   });
 
   it("trims the trailing newline the published file carries", async () => {
@@ -447,7 +437,7 @@ describe("maybeNotifyNewVersion", () => {
         new Response(`${LATEST}\n`)) as unknown as typeof fetch,
     });
     expect((await maybeNotifyNewVersion(d)).message).toBe(
-      formatVersionNotice("wego", CURRENT, LATEST),
+      formatVersionNotice(CURRENT, LATEST),
     );
   });
 
@@ -465,18 +455,18 @@ describe("maybeNotifyNewVersion", () => {
     expect(d.fetches()).toEqual([DEFAULT_VERSION_URL]);
   });
 
-  it("names the flavor it was built as, not the notice's own wording", async () => {
-    const d = deps({ flavor: "wegostaging", invokedAs: "wegostaging" });
+  it("names the release, which is one name", async () => {
+    const d = deps();
     expect((await maybeNotifyNewVersion(d)).message).toBe(
-      `A new wegostaging is available: ${CURRENT} -> ${LATEST}. Run \`wegostaging update -y\`.`,
+      `A new wego is available: ${CURRENT} -> ${LATEST}. Run \`wego update -y\`.`,
     );
   });
 
   it("tells a renamed install to run the command it actually has", async () => {
-    // `WEGO_CLI_BIN` installs the same prod release under another name. The flavor
-    // still names the RELEASE (that is its identity), but a hint reading `wego
-    // update -y` would name a command that does not exist on that machine.
-    const d = deps({ flavor: "wego", invokedAs: "mywego" });
+    // `WEGO_CLI_BIN` installs the same release under another name. The release is
+    // still named `wego`, but a hint reading `wego update -y` would name a command
+    // that does not exist on that machine.
+    const d = deps({ invokedAs: "mywego" });
     expect((await maybeNotifyNewVersion(d)).message).toBe(
       `A new wego is available: ${CURRENT} -> ${LATEST}. Run \`mywego update -y\`.`,
     );

@@ -13,11 +13,9 @@ import { buildRealDeps } from "./index";
  * deps; this covers the other half, the half those files cannot see - that
  * `buildRealDeps()` can actually assemble them. Both closures derive several
  * per-install paths inline (`defaultUpdateCheckPath`, `defaultSessionPath`,
- * `defaultInstallRecordPath`, and `legacyScopeDir()` for the refusal that names
- * where a renamed install's files went), so a path helper that threw, or one left
- * on the old flavor key after the scope rule changed, would surface only when a
- * user ran the command - and `update` is the one command that cannot be rehearsed
- * after release.
+ * `defaultInstallRecordPath`), so a path helper that threw, or one left on an old
+ * scope key, would surface only when a user ran the command - and `update` is the
+ * one command that cannot be rehearsed after release.
  *
  * Reaching the from-source refusal is what proves it: the guard sits AFTER the
  * whole dependency object has been evaluated, so an assembly fault cannot reach

@@ -7,12 +7,13 @@
  * file and, when that binary refuses for want of a ring record, writes the record
  * the installer would have written and retries.
  *
- * Both halves depend on ONE thing agreeing: the copy's **file name**. A CLI scopes
- * its config by the name it is invoked as (`src/config.ts` `installScope`), so a
- * copy called `old-binary` looks for its record in `$XDG_CONFIG_HOME/old-binary/`
- * and the arranged record — written to the `wego` directory — is invisible to it.
- * The retry then refuses exactly as the first attempt did, and the smoke fails on
- * an artifact that is in fact fine.
+ * Both halves depend on ONE thing agreeing: the copy's **file name**. The CLI under
+ * test scopes its config to the constant `wego`, but the PREDECESSOR it is run
+ * against may not — every binary up to and including 1.2.7 scoped by the name it
+ * was invoked as, so a copy called `old-binary` looks for its record in
+ * `$XDG_CONFIG_HOME/old-binary/` and the arranged record — written to the `wego`
+ * directory — is invisible to it. The retry then refuses exactly as the first
+ * attempt did, and the smoke fails on an artifact that is in fact fine.
  *
  * Nothing else in the repo can catch that: the script only runs on a release, needs
  * a published predecessor and real network, and the failure looks like a bad build

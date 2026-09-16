@@ -41,8 +41,8 @@ export type CliTarget = {
 const CONFIG_HOME = mkdtempSync(join(tmpdir(), "wego-cli-e2e-config-"));
 
 /** The settings file the spawned CLI will read (issue #1386), inside the suite's
- *  throwaway config home. From source the install scope is always `wego` — the CLI
- *  runs under `bun`, which `installScope()` answers `wego` for. */
+ *  throwaway config home. The config scope is the constant `wego`, from source and
+ *  from a binary alike. */
 const SETTINGS_PATH = join(CONFIG_HOME, "wego", "settings.json");
 
 /**

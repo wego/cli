@@ -73,7 +73,7 @@ console.log(`Building wego CLI binaries (version ${VERSION})`);
 await $`rm -rf dist && mkdir -p dist`;
 
 for (const { target, suffix } of TARGETS) {
-  const outfile = `dist/${spec.bin}-${suffix}`;
+  const outfile = `dist/wego-${suffix}`;
   console.log(`→ ${outfile}  (${target})`);
   // `--no-compile-autoload-dotenv`: the binary is batteries-included, so it must
   // NOT silently absorb a stray `.env`/`.env.local` in the tester's CWD (that
@@ -87,13 +87,12 @@ for (const { target, suffix } of TARGETS) {
       WEGO_BUILD_API_URL: spec.apiUrl,
       WEGO_BUILD_CLIENT_ID: spec.clientId,
       WEGO_BUILD_VERSION: VERSION,
-      // `wego update`'s one baked knob. FLAVOR is the asset-name prefix — one value
-      // now (`wego`), kept as a baked key rather than a literal so `update` and the
-      // publisher still read the name from one place. There is no baked ring base:
-      // `update` and the new-version notice both resolve the ring from the install
-      // record at run time (`src/ring-follow.ts`), which is what lets a promote move
-      // a pointer instead of rebuilding.
-      WEGO_BUILD_FLAVOR: spec.bin,
+      // Nothing else is baked. The asset-name prefix is the literal `wego`, here and
+      // in `update`, rather than a build knob that could disagree with the filename
+      // this loop actually writes. There is no baked ring base either: `update` and
+      // the new-version notice both resolve the ring from the install record at run
+      // time (`src/ring-follow.ts`), which is what lets a promote move a pointer
+      // instead of rebuilding.
       // `?? ""`, not `undefined`, on purpose: passing the key — even empty —
       // makes `bun build --env 'WEGO_BUILD_*'` INLINE the static
       // `process.env.WEGO_BUILD_POSTHOG_PROJECT_KEY` read to a literal, so a

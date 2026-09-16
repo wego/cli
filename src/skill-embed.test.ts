@@ -2,12 +2,10 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyFlavor } from "./skill";
 import { readEmbeddedSkill, SKILLS } from "./skill-embed";
 
 const cliRoot = join(import.meta.dir, "..");
 const skillMd = join(cliRoot, "skills/wego/SKILL.md");
-const stagingOverlayMd = join(cliRoot, "skills/wego/staging-overlay.md");
 
 /** The leading YAML frontmatter block, without its `---` fences. Scoped on
  *  purpose: the body is prose that can legally contain a line beginning
@@ -84,38 +82,6 @@ describe("SKILL.md frontmatter limits", () => {
   });
 });
 
-// The flavor rewrite walks the WHOLE canonical body, frontmatter included, so a
-// new frontmatter field is a new surface for it to cross. `skill.test.ts`
-// already asserts the install-URL rewrite, but against a SYNTHETIC body, and the
-// staging install below already ran without checking the URL it produced. What
-// nothing did until now is compose the overlay over the REAL `SKILL.md` and
-// re-check the install URL, which is what catches a frontmatter edit breaking
-// the staging seam.
-describe("the staging overlay over the real SKILL.md", () => {
-  const flavored = (): string =>
-    applyFlavor(
-      readFileSync(skillMd, "utf8"),
-      "wegostaging",
-      readFileSync(stagingOverlayMd, "utf8"),
-    );
-
-  it("still rewrites the install URL after a frontmatter edit", () => {
-    const body = flavored();
-    expect(body).toContain("https://api.wegostaging.com/install");
-    expect(body).not.toContain("api.wego.com/install");
-  });
-
-  it("carries compatibility through the rewrite, endpoint included", () => {
-    // The field names both the binary and the API host, and `applyFlavor`
-    // reaches them by two different passes - `"wego "` and `"api.wego.com"`.
-    // Asserting only the first would miss a staging body still pointing at prod.
-    const compatibility = frontmatterField(flavored(), "compatibility");
-    expect(compatibility).toContain("wegostaging CLI on PATH");
-    expect(compatibility).toContain("api.wegostaging.com");
-    expect(compatibility).not.toContain("api.wego.com");
-  });
-});
-
 // The skill is baked into the shipped binary and installed for END USERS
 // (`wego skill install`), whose prod/staging binary has no repo, no `.envrc`,
 // no local `apps/api`, and a baked API URL. So developer-local workflow
@@ -141,27 +107,6 @@ describe("SKILL.md dev/prod boundary", () => {
       body.includes(t.toLowerCase()),
     );
     expect(leaked).toEqual([]);
-  });
-
-  // The overlay is composed INTO the installed body, so it reaches the same user.
-  it("holds for the staging overlay too", () => {
-    const body = readFileSync(stagingOverlayMd, "utf8").toLowerCase();
-    const leaked = DEV_ONLY_TOKENS.filter((t) =>
-      body.includes(t.toLowerCase()),
-    );
-    expect(leaked).toEqual([]);
-  });
-
-  // Emitted as an unquoted YAML scalar, so a `: ` here breaks the frontmatter.
-  it("the real overlay description is safe as an unquoted YAML scalar", () => {
-    const overlay = readFileSync(stagingOverlayMd, "utf8");
-    const value = overlay.match(/^description:\s*(.+)$/m)?.[1];
-    if (!value) throw new Error("staging overlay has no `description:`");
-    expect(value).not.toContain(": ");
-    expect(value).not.toContain('"');
-    expect(value).not.toContain("'");
-    expect(value.trimStart()).toBe(value);
-    expect(value).not.toMatch(/^[[{&*!|>%@`]/);
   });
 });
 
@@ -209,35 +154,26 @@ describe("skill embed in a compiled binary", () => {
       );
       expect(run.exitCode).toBe(0);
 
-      // The installed leaf is the flavor; a from-source/unbaked build is `wego`.
+      // One leaf, on every install: the skill id.
       const installed = readFileSync(
         join(skillsRoot, "wego", "SKILL.md"),
         "utf8",
       );
-      // `applyFlavor` is a no-op for `wego`, so the written body is byte-identical
+      // Nothing rewrites the body any more, so the written file is byte-identical
       // to the on-disk source of truth.
       expect(installed.trimEnd()).toBe(readFileSync(skillMd, "utf8").trimEnd());
       expect(installed).toContain("# Wego CLI");
 
-      // The overlay is a SECOND baked asset, so a staging install off the same
-      // repo-free binary is what proves it was embedded rather than read.
-      const stagingRun = Bun.spawnSync(
+      // A second install off the same repo-free binary must land on that same
+      // leaf rather than minting one from the environment it was invoked in.
+      const again = Bun.spawnSync(
         [bin, "skill", "install", "--embedded", "--dir", skillsRoot, "-y"],
-        {
-          cwd: work,
-          stdout: "pipe",
-          stderr: "pipe",
-          env: { ...process.env, WEGO_BUILD_FLAVOR: "wegostaging" },
-        },
+        { cwd: work, stdout: "pipe", stderr: "pipe" },
       );
-      expect(stagingRun.exitCode).toBe(0);
-      const staging = readFileSync(
-        join(skillsRoot, "wegostaging", "SKILL.md"),
-        "utf8",
-      );
-      expect(staging).toContain("name: wegostaging");
-      expect(staging).toContain("Nothing here is a production quote");
-      expect(staging).not.toContain("{{flavor}}");
+      expect(again.exitCode).toBe(0);
+      expect(
+        readFileSync(join(skillsRoot, "wego", "SKILL.md"), "utf8").trimEnd(),
+      ).toBe(readFileSync(skillMd, "utf8").trimEnd());
     } finally {
       rmSync(work, { recursive: true, force: true });
     }

@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { defaultTelemetryPath } from "./config";
 import {
   clearTelemetryState,
-  inheritTelemetryOptOut,
   loadTelemetryState,
   persistDeviceId,
   saveTelemetryState,
@@ -112,14 +111,19 @@ describe("telemetry state file", () => {
 });
 
 describe("defaultTelemetryPath", () => {
-  it("is flavor-scoped, so wego and wegostaging keep separate state", () => {
-    const prod = defaultTelemetryPath({ XDG_CONFIG_HOME: "/cfg" }, "wego");
-    const staging = defaultTelemetryPath(
-      { XDG_CONFIG_HOME: "/cfg" },
-      "wegostaging",
+  it("honours an explicitly passed scope, which is how targets stay apart", () => {
+    // The scope is still a parameter: `loadCliConfig` passes the target-aware leaf
+    // (`targetConfigScope`) for the token-issuer state, and the bare `wego` for the
+    // rest. Only the DEFAULT stopped varying.
+    expect(defaultTelemetryPath({ XDG_CONFIG_HOME: "/cfg" }, "wego")).toBe(
+      "/cfg/wego/telemetry.json",
     );
-    expect(prod).toBe("/cfg/wego/telemetry.json");
-    expect(staging).toBe("/cfg/wegostaging/telemetry.json");
+    expect(
+      defaultTelemetryPath(
+        { XDG_CONFIG_HOME: "/cfg" },
+        "wego/auth.wegostaging.com",
+      ),
+    ).toBe("/cfg/wego/auth.wegostaging.com/telemetry.json");
   });
 
   it("is a sibling of the credentials file, not part of it", () => {
@@ -132,84 +136,5 @@ describe("defaultTelemetryPath", () => {
     expect(defaultTelemetryPath({}, "wego")).toMatch(
       /\/\.config\/wego\/telemetry\.json$/,
     );
-  });
-});
-
-/**
- * The one file whose move is compensated rather than merely reported.
- *
- * Making the command name the config scope moved every per-install file. All but
- * this one fail in a direction that announces itself (the install looks logged
- * out; `update` refuses and names the old directory). Absent telemetry state means
- * ENABLED, so this one would fail by silently sending data a user had opted out
- * of - so the opt-out, and only the opt-out, is carried forward.
- */
-describe("inheritTelemetryOptOut", () => {
-  let legacy: string;
-  beforeEach(() => {
-    legacy = join(dir, "legacy", "telemetry.json");
-  });
-
-  it("carries an opt-out forward when the new path has no file yet", async () => {
-    await saveTelemetryState(legacy, { deviceId: "dev-old", enabled: false });
-    expect(await inheritTelemetryOptOut(path, legacy)).toBe(true);
-    // The setting travels; the machine id does NOT - two installs sharing one
-    // device id would report as one machine, and re-minting one is harmless.
-    expect(await loadTelemetryState(path)).toEqual({ enabled: false });
-  });
-
-  it("does not carry an ENABLED legacy setting forward", async () => {
-    // Nothing to protect: the default is already on, so seeding a file here would
-    // only freeze a setting the user never chose.
-    await saveTelemetryState(legacy, { deviceId: "dev-old", enabled: true });
-    expect(await inheritTelemetryOptOut(path, legacy)).toBe(false);
-    await expect(stat(path)).rejects.toThrow();
-  });
-
-  it("never overwrites a setting the new install already has", async () => {
-    await saveTelemetryState(path, { deviceId: "dev-new", enabled: true });
-    await saveTelemetryState(legacy, { enabled: false });
-    expect(await inheritTelemetryOptOut(path, legacy)).toBe(false);
-    expect(await loadTelemetryState(path)).toEqual({
-      deviceId: "dev-new",
-      enabled: true,
-    });
-  });
-
-  it("is a no-op when there is no legacy directory to inherit from", async () => {
-    // Every install whose command name still matches its release: `legacyScopeDir`
-    // is undefined, so this costs no I/O at all.
-    expect(await inheritTelemetryOptOut(path, undefined)).toBe(false);
-    expect(await inheritTelemetryOptOut(path, path)).toBe(false);
-    // An absent legacy file reads as enabled, so there is nothing to carry.
-    expect(await inheritTelemetryOptOut(path, legacy)).toBe(false);
-    await expect(stat(path)).rejects.toThrow();
-  });
-
-  it("inherits an unreadable legacy file as an opt-out", async () => {
-    // `loadTelemetryState` fails closed on a file it cannot parse, and this keeps
-    // the same answer: a file that may hold an opt-out is treated as one.
-    // Written through the real saver first, so the directory exists, then
-    // corrupted: an unparseable file's previous CONTENT is irrelevant.
-    await saveTelemetryState(legacy, { enabled: true });
-    await writeFile(legacy, "{ truncated", "utf8");
-    expect(await inheritTelemetryOptOut(path, legacy)).toBe(true);
-    expect(await loadTelemetryState(path)).toEqual({ enabled: false });
-  });
-
-  it("runs at most once, because the seed it writes is itself a setting", async () => {
-    await saveTelemetryState(legacy, { enabled: false });
-    expect(await inheritTelemetryOptOut(path, legacy)).toBe(true);
-    expect(await inheritTelemetryOptOut(path, legacy)).toBe(false);
-  });
-
-  it("leaves a re-enable alone on the next run", async () => {
-    // The seed must not fight the user: opting back IN on the new install has to
-    // stick, even though the legacy file still says off.
-    await saveTelemetryState(legacy, { enabled: false });
-    await inheritTelemetryOptOut(path, legacy);
-    await saveTelemetryState(path, { enabled: true });
-    expect(await inheritTelemetryOptOut(path, legacy)).toBe(false);
-    expect((await loadTelemetryState(path)).enabled).toBe(true);
   });
 });

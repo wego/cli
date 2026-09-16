@@ -64,6 +64,39 @@ Later releases arrive through the CLI itself. `wego update` replaces the binary
 with the latest release from the ring this install follows, verifies the checksum
 before swapping it in, and `wego update --check` only reports.
 
+### Release rings
+
+Three pointers, each serving a different build of the same CLI:
+
+| Ring | Who it is for | Moves | Backward compatibility |
+| --- | --- | --- | --- |
+| `stable` | everyone; the default install | on each release promote | kept, or made easy to migrate |
+| `next` | early adopters, opt-in | ahead of `stable` | **not guaranteed** |
+| `edge` | engineers working on the CLI | every merge to `main` | **not guaranteed** |
+
+`next` and `edge` are **development builds**: backward compatibility is not
+guaranteed and can change without notice. On `stable` we do our best to keep it, and
+where we cannot, we make the change either easy to migrate or hard to miss. So
+anything automated — CI, or an agent driving the CLI — should run `stable`. Detail in
+[what each ring promises](docs/install-and-update.md#what-each-ring-promises).
+
+Install one by naming it, and you are done — the installer records the ring and
+`wego update` follows it from then on:
+
+```bash
+curl -fsSL 'https://docs.wego.com/cli/install?ring=next' | bash
+```
+
+That is all most people ever need.
+
+### Other install shapes
+
+[**Installing and updating**](docs/install-and-update.md) is the full guide: staying
+on `next` as your everyday `wego`, switching an install between rings, running two or
+three rings side by side and updating each one, what the shared agent skill does when
+you have more than one, uninstalling any combination, and migrating a side-by-side
+setup built before the config directory became a constant.
+
 ## What the CLI covers
 
 - `wego login` / `whoami` / `logout` — browser-based OAuth + PKCE, no access token
@@ -163,10 +196,16 @@ wego config set site SG
 wego config list          # prints the settings file path
 ```
 
-State lives under `~/.config/<command>/` — `$XDG_CONFIG_HOME` is honoured, and the
-`<command>` segment is the name the binary was invoked as, so two installs never
-share a login. `credentials.json` holds the tokens, `settings.json` the
+State lives under `~/.config/wego/` — one directory, whatever the binary on disk
+is called; `$XDG_CONFIG_HOME` is honoured, and it is how you give a second install
+a store of its own ([the guide](docs/install-and-update.md) has the recipe). `credentials.json` holds the tokens, `settings.json` the
 preferences, `telemetry.json` the reporting choice.
+
+> **Upgrading from 1.2.7 or earlier with a renamed binary?** Those versions keyed
+> the directory to the command name, so an install invoked as `wego-next` kept its
+> state in `~/.config/wego-next/`. This release reads `~/.config/wego/` instead.
+> Move the directory across to keep your login, preferences and telemetry choice,
+> or run `wego login` again. A default install, named `wego`, is unaffected.
 
 The environment variables the CLI reads at run time:
 
@@ -179,6 +218,7 @@ The environment variables the CLI reads at run time:
 | `WEGO_CLI_REDIRECT_PORT` | Fixed local port for the login callback. |
 | `WEGO_CLI_NO_UPDATE_NOTICE` | Silences the "a newer version exists" notice. |
 | `WEGO_API_URL` | Points the CLI at another API — including one on your own machine. |
+| `XDG_CONFIG_HOME` | The root of this install's config directory (default `~/.config`). Setting it is how a second install gets a store of its own — see [Installing and updating](docs/install-and-update.md). |
 
 `WEGO_TARGET` used to take a third value, `local`. It is gone: set `WEGO_API_URL`
 instead, which reaches an API on your own machine from the default `prod` target.
