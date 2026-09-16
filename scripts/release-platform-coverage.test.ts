@@ -369,3 +369,134 @@ describe(`${LANE}: nothing publishes until BOTH platforms can leave`, () => {
     }
   });
 });
+
+/**
+ * PARITY, enforced rather than periodically re-derived.
+ *
+ * Every check the lane runs on one platform must run on the other, AT THE SAME
+ * STAGE — where a check runs decides what its failure costs. A leave proof that
+ * runs before publication prevents a bad build reaching anyone; the same proof
+ * after the ring advanced can only report the damage, because `cli/next` has no
+ * backward path.
+ *
+ * Identity is what a step INVOKES, not what it is called: the legs name the same
+ * check differently ("Smoke test built binaries" vs "…(darwin-arm64)"), so a
+ * name-keyed comparison reports every check as a gap. Name rules come FIRST,
+ * because several steps mention `cli-v1.1.0` or `SHA256SUMS.txt` in their error
+ * prose and a content rule alone mis-bins them.
+ *
+ * ADDING A CHECK? Add it here too. An entry missing from this list is simply not
+ * compared, which is the one way parity can regress without turning this red.
+ */
+const PARITY_CHECKS: [string, (body: string, name: string) => boolean][] = [
+  [
+    "user-agent / legacy bridge pin",
+    (_b, n) => /distinguishable from a pre-relay/i.test(n),
+  ],
+  [
+    "built binaries run at all",
+    (_b, n) => /^Smoke test built binaries/i.test(n),
+  ],
+  ["predecessor checksum verify", (_b, n) => /predecessor checksum/i.test(n)],
+  [
+    "manifest verify before execution",
+    (b) =>
+      /SHA256SUMS\.txt/.test(b) &&
+      /shasum -a 256 -c|sha256sum -c|-c SHA256SUMS/.test(b),
+  ],
+  [
+    "1.1.0 multi-hop",
+    (b) => /upgrade-path\.sh/.test(b) && /cli-v1\.1\.0/.test(b),
+  ],
+  [
+    "LEAVE · replace self with stable's bytes",
+    (b) => /upgrade-path\.sh/.test(b) && /\bstable\b/.test(b),
+  ],
+  ["SMOKE 3 · predecessor can arrive", (b) => /update-smoke\.sh/.test(b)],
+  [
+    "SMOKE 4 · reports up to date",
+    (b) => /assert-self-update/.test(b) && /--expect-unchanged/.test(b),
+  ],
+  [
+    "SMOKE 5 · forced in-place replace",
+    (b) => /assert-self-update/.test(b) && /--force-replace/.test(b),
+  ],
+  ["SMOKE 6 · install contract", (b) => /install-smoke\.sh/.test(b)],
+];
+
+interface Hit {
+  plat: "linux" | "macos";
+  stage: "pre-publish" | "post-advance";
+  job: string;
+}
+
+function classify(): Map<string, Hit[]> {
+  const found = new Map<string, Hit[]>();
+  for (const [job, j] of Object.entries(wf.jobs)) {
+    const runner = j["runs-on"] ?? "";
+    const plat = runner.startsWith("ubuntu-")
+      ? "linux"
+      : runner.startsWith("macos-")
+        ? "macos"
+        : null;
+    if (!plat) continue;
+    const needs = Array.isArray(j.needs) ? j.needs : j.needs ? [j.needs] : [];
+    const steps = j.steps ?? [];
+    const pubIdx = steps.findIndex((st) =>
+      (st.name ?? "").startsWith("Publish immutable artifact"),
+    );
+    steps.forEach((st, idx) => {
+      const delegated = st.uses === ACTION_REF;
+      const inner: Step[] = delegated ? (action.runs.steps ?? []) : [st];
+      const withs = (st.with ?? {}) as Record<string, unknown>;
+      for (const one of inner) {
+        const body = delegated
+          ? resolveInputs(one.run ?? "", withs)
+          : (one.run ?? "");
+        const name = one.name ?? "";
+        if (!body && !name) continue;
+        const stage: Hit["stage"] =
+          delegated ||
+          needs.includes("release") ||
+          (pubIdx >= 0 && idx > pubIdx)
+            ? "post-advance"
+            : "pre-publish";
+        for (const [check, matches] of PARITY_CHECKS) {
+          if (matches(body, name)) {
+            if (!found.has(check)) found.set(check, []);
+            found.get(check)?.push({ plat: plat as Hit["plat"], stage, job });
+            break;
+          }
+        }
+      }
+    });
+  }
+  return found;
+}
+
+describe(`${LANE}: linux-x64 and darwin-arm64 run the same checks, at the same stage`, () => {
+  const found = classify();
+
+  for (const [check] of PARITY_CHECKS) {
+    it(`runs on both platforms: ${check}`, () => {
+      const hits = found.get(check) ?? [];
+      const linux = hits.filter((h) => h.plat === "linux");
+      const macos = hits.filter((h) => h.plat === "macos");
+      expect(linux.length).toBeGreaterThan(0);
+      expect(macos.length).toBeGreaterThan(0);
+    });
+
+    it(`gates publication on both platforms, or on neither: ${check}`, () => {
+      // Stage is not cosmetic. Pre-publication a failure PREVENTS a bad build from
+      // reaching anyone; post-advance it can only describe one, because the ring it
+      // already moved has no backward path. So the property is not "same stage" —
+      // a check may legitimately run in several jobs, and macOS verifies the
+      // manifest in BOTH of its jobs because each downloads its own artifacts.
+      // What must match is whether the check stands between a bad build and users.
+      const hits = found.get(check) ?? [];
+      const gates = (plat: Hit["plat"]) =>
+        hits.some((h) => h.plat === plat && h.stage === "pre-publish");
+      expect(gates("macos")).toBe(gates("linux"));
+    });
+  }
+});

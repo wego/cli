@@ -476,6 +476,73 @@ jobs:
           cd dist
           shasum -a 256 -c SHA256SUMS.txt
 
+      # PARITY with the linux leg's "Smoke test built binaries". Cheap, and it
+      # separates two failures the leave proof would otherwise report as one: a
+      # binary that does not RUN, versus one that runs but cannot replace itself.
+      - name: Smoke test built binaries (darwin-arm64)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          WEGO_CLI_NO_UPDATE_NOTICE: "1"
+        run: |
+          set -euo pipefail
+          binary="./dist/wego-darwin-arm64"
+          chmod +x "$binary"
+          got=$("$binary" version)
+          echo "wego version -> $got"
+          [ "$got" = "$VERSION" ] || { echo "version mismatch: expected $VERSION, got $got" >&2; exit 1; }
+          WEGO_CREDENTIALS_PATH="${RUNNER_TEMP}/wego-missing-credentials.json" "$binary" logout
+
+      # PARITY with the linux leg, and NOT redundant with it. This measures the user
+      # agent THIS BINARY actually sends, by pointing a copy at a local probe and
+      # running its real `update`. Reading `USER_AGENT` out of `api.ts` and calling
+      # both platforms covered would be reasoning from source about an artifact,
+      # which is exactly the move that let wego/cli#25 ship: v1.2.0's binary sent no
+      # agent, apps/api's legacy bridge pin read it as a pre-relay 1.0.x install and
+      # served it the frozen build forever, and it could never update again.
+      - name: Require this build to be distinguishable from a pre-relay install (darwin-arm64)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          url='https://api.wego.com/install'
+          work="$RUNNER_TEMP/agent-probe"; rm -rf "$work"
+          mkdir -p "$work/bin" "$work/home/.config/wego"
+          cp ./dist/wego-darwin-arm64 "$work/bin/wego"
+          chmod +x "$work/bin/wego"
+          : > "$work/agent.txt"
+          AGENT_FILE="$work/agent.txt" bun -e 'const out=Bun.file(process.env.AGENT_FILE).writer();Bun.serve({hostname:"127.0.0.1",port:8977,fetch(r){out.write((r.headers.get("user-agent")??"")+"\n");out.flush();return new Response("probe",{status:404});}});' &
+          LPID=$!
+          sleep 2
+          printf '{"ring":"stable","installUrl":"http://127.0.0.1:8977/install"}\n' \
+            > "$work/home/.config/wego/install.json"
+          set +e
+          out=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
+                WEGO_CLI_TELEMETRY=0 "$work/bin/wego" update -y 2>&1)
+          set -e
+          kill "$LPID" 2>/dev/null || true
+          echo "$out"
+          if printf '%s' "$out" | grep -q 'Self-update applies to installed release binaries'; then
+            echo "::error::the darwin-arm64 build does not consider itself a release binary, so it never made a request and this check measured NOTHING. It was built without WEGO_BUILD_VERSION."
+            exit 1
+          fi
+          agent=$(head -1 "$work/agent.txt" || true)
+          if [ -z "$agent" ]; then
+            echo "::error::the darwin-arm64 build made no request to the probe, so its user agent could not be measured and this check proved NOTHING. Output above."
+            exit 1
+          fi
+          echo "$VERSION's darwin-arm64 binary sends: $agent"
+          if printf '%s' "$agent" | grep -qiE '^bun/'; then
+            echo "::error::the darwin-arm64 build sends '$agent', which apps/api's legacy bridge pin treats as a pre-relay 1.0.x install. Every Mac install of it would be pinned to the frozen bridge, whose record it cannot verify - it could never update again. That is what v1.2.0 shipped (wego/cli#25). Refusing before anything is published."
+            exit 1
+          fi
+          loc=$(curl -sI -A "$agent" "$url?dl=SHA256SUMS.txt&ring=stable" \
+                  | grep -i '^location:' || true)
+          if printf '%s' "$loc" | grep -q '/cli/cli-v1.1.0/'; then
+            echo "::error::api.wego.com serves the darwin-arm64 build ('$agent') from the legacy bridge on ring stable: '$loc'. Publishing it would strand every Mac install of it."
+            exit 1
+          fi
+          echo "ok: the darwin-arm64 build is not claimed by the pin. $loc"
+
       - name: Smoke test a user-shaped replace on macOS (cli/stable)
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -528,6 +595,9 @@ jobs:
     # is nothing to arrive FROM, and both platforms must skip together rather than
     # one of them inventing a predecessor out of the release being published.
     outputs:
+      # The Blob origin the tag was published under. The darwin 1.1.0 hop needs
+      # the same frozen `cli/cli-v1.1.0/` prefix the linux one reads.
+      store_origin: ${{ steps.publish.outputs.store_origin }}
       prev_usable: ${{ steps.prev_channel.outputs.usable }}
       prev_version: ${{ steps.prev_channel.outputs.prev_version }}
     # The store token and the baked public config live here. This is the ONLY job
@@ -1381,6 +1451,24 @@ jobs:
       # The same four proofs as the linux leg, from the same definition. This job
       # exists because `clearQuarantine` is compiled in per platform and a linux
       # runner can never reach it — not because the checks differ.
+      # PARITY with the linux leg's 1.1.0 hop, and its own route: apps/api's bridge
+      # pin keys on the USER AGENT, not the platform, so a 1.0.x Mac is landed on
+      # `cli/cli-v1.1.0/wego-darwin-arm64` exactly as a 1.0.x linux box is landed on
+      # its own. That darwin asset is served (the frozen prefix holds every platform
+      # 1.1.0 shipped) and, until this step, nothing ever ran it.
+      - name: Smoke test the 1.1.0 upgrade path on macOS (cli/next)
+        if: needs.release.outputs.store_origin != ''
+        env:
+          ORIGIN: ${{ needs.release.outputs.store_origin }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! sh scripts/upgrade-path.sh \
+                 "$ORIGIN/cli/cli-v1.1.0/wego-darwin-arm64" next "$VERSION" --max-hops 1; then
+            echo "::error::a 1.1.0 Mac install cannot reach $VERSION on cli/next. Promoting this build would strand every Mac at or below 1.1.0 - and every 1.0.x Mac too, since the legacy bridge pin lands it on 1.1.0 first. Exit 6 means a signed record 1.1.0 does not accept (check identitiesForRing and what this lane signed as); anything else is in the route, manifest, download or replace path."
+            exit 1
+          fi
+
       - name: Prove the replace path (darwin-arm64)
         uses: ./.github/actions/verify-replace
         with:
