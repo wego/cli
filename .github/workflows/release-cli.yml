@@ -415,9 +415,75 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # THE macOS HALF OF "CAN THIS BUILD LEAVE", MOVED AHEAD OF PUBLICATION.
+  #
+  # This proof used to sit in `replace-macos`, which starts only after `release` has
+  # published the tag AND advanced `cli/next`. So a build that could not replace
+  # itself on a Mac was discovered with the ring already serving it - and `cli/next`
+  # has no backward path, so the remedy was the next version rather than an undo.
+  # Every Mac that had taken it by then was stuck, because accepting a rollback needs
+  # the update path that is broken. The linux half of this same proof already gates
+  # publication; this is its twin, and it was only downstream because the macOS
+  # STEPS were downstream, not because the CHECK had to be.
+  #
+  # It can run here because it needs nothing this run publishes. The binary arrives
+  # from `build` as an artifact, and the version it replaces itself with is whatever
+  # `cli/stable` ALREADY serves - the same two inputs the linux gate uses.
+  #
+  # `needs: [prepare, build]`, deliberately not `sign`: this job verifies bytes
+  # against the MANIFEST, and the manifest's own signature is checked in `release`
+  # before anything is published. So it runs alongside `sign` instead of behind it.
+  #
+  # Holds NEITHER capability the lane is careful about: no `environment`, so no store
+  # token; no `id-token`, so nothing to exchange for a certificate.
+  leave-macos:
+    name: Prove this build can leave, on macOS
+    needs: [prepare, build]
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # Runs the keyed prod binary; without this the run posts CI events as product data.
+      WEGO_CLI_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Download built binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-binaries
+          path: dist
+
+      - name: Download the manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-checksums
+          path: dist
+
+      # VERIFY-THEN-EXECUTE, the lane's rule: a 64 MB binary that arrived over an
+      # artifact hop is checked against the manifest before it is run. `shasum -a
+      # 256 -c`, not `sha256sum` - the macOS runner image has no coreutils, and the
+      # formats are identical.
+      # The four pre-publication checks, one definition, in
+      # `.github/actions/verify-build`.
+      - name: Verify this build before publishing (wego-darwin-arm64)
+        uses: ./.github/actions/verify-build
+        with:
+          asset: wego-darwin-arm64
+          version: ${{ needs.prepare.outputs.version }}
+
+
+
+
   release:
     name: Publish CLI binaries to cli/next
-    needs: [prepare, build, sign]
+    needs: [prepare, build, sign, leave-macos]
     # The ONLY job that advances a ring, so the only one that needs a slot. ONE
     # group, because every release writes the SAME pointer (`cli/next`): a split
     # would let two releases interleave on it and leave the ring holding whichever
@@ -430,6 +496,17 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Read by `replace-macos`, which runs SMOKE 3 against the darwin predecessor
+    # captured below. `usable` is the SAME gate the linux SMOKE 3 reads, and sharing
+    # it is the point: an empty ring (first release) or an incomplete one means there
+    # is nothing to arrive FROM, and both platforms must skip together rather than
+    # one of them inventing a predecessor out of the release being published.
+    outputs:
+      # The Blob origin the tag was published under. The darwin 1.1.0 hop needs
+      # the same frozen `cli/cli-v1.1.0/` prefix the linux one reads.
+      store_origin: ${{ steps.publish.outputs.store_origin }}
+      prev_usable: ${{ steps.prev_channel.outputs.usable }}
+      prev_version: ${{ steps.prev_channel.outputs.prev_version }}
     # The store token and the baked public config live here. This is the ONLY job
     # in the lane that enters it, and the environment's deployment policy admits
     # only `main` and `v*` - so nothing but a release or a promote can read
@@ -505,143 +582,13 @@ jobs:
       #
       # `-c` also fails on a file the manifest LISTS but the reassembly did not
       # deliver, which is the direction a too-narrow upload glob would break.
-      - name: Re-verify the reassembled binaries against the signed manifest
-        run: |
-          set -euo pipefail
-          cd dist
-          sha256sum -c SHA256SUMS.txt
-
-      # SMOKE 1 — the built binaries actually run and carry the right baked
-      # version + complete baked public config (linux-x64 runs natively on the
-      # runner). `logout` loads config without making a network request, so it
-      # catches a missed/misspelled static WEGO_BUILD_* read before publication.
-      - name: Smoke test built binaries
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-          # These binaries are newer than the channel they'd read, so the
-          # new-version notice would stay quiet on its own — but relying on that
-          # makes a comparison rule load-bearing for CI. Switch it off outright so
-          # this step never depends on it, and never reaches the network.
-          WEGO_CLI_NO_UPDATE_NOTICE: "1"
-        run: |
-          set -euo pipefail
-          # One binary, one name (#74 rung 7): a second name here would mean a
-          # second build.
-          binary="./dist/wego-linux-x64"
-          chmod +x "$binary"
-          got=$("$binary" version)
-          echo "wego version -> $got"
-          [ "$got" = "$VERSION" ] || { echo "version mismatch: expected $VERSION, got $got" >&2; exit 1; }
-          WEGO_CREDENTIALS_PATH="${RUNNER_TEMP}/wego-missing-credentials.json" "$binary" logout
-
-      # THE EARLIEST POSSIBLE GATE ON THE v1.2.0 CLASS OF BUG, and deliberately
-      # placed before the FIRST store write of the run.
-      #
-      # `apps/api`'s legacy bridge pin (wego/foundations#132) keys on one thing: a
-      # `?dl=` request for ring `stable` whose user agent starts with `Bun/` is a
-      # pre-relay 1.0.x install and is answered from the frozen `cli/cli-v1.1.0/`
-      # bridge. The rule is ALLOW-BY-DEFAULT, so a build that fails to identify
-      # itself is treated as legacy - and v1.2.0 shipped exactly that way, having
-      # passed every check this lane had (wego/cli#25).
-      #
-      # The same measurement runs in `promote-cli.yml` before `cli/stable` moves.
-      # It is repeated HERE because that was far too late: by then the bad bytes
-      # are the immutable `cli/<tag>/` artifact, `cli/next` is serving them, a
-      # GitHub Release names them, and the only remedy is another release. Asked
-      # at this point, a failure costs a red run and nothing else - no prefix is
-      # written, no pointer moves, no version is burned.
-      #
-      # NEEDS NO RING, which is what makes the early placement possible: the pin's
-      # only input is the agent, and the agent is a property of the binary sitting
-      # in ./dist. The update-outcome smokes further down genuinely cannot move
-      # up - they ask whether a binary can complete an update against `cli/next`,
-      # which cannot be answered until `cli/next` serves this build.
-      #
-      # WEGO_BUILD_VERSION IS DELIBERATELY NOT SET. `update` returns EXIT.OK
-      # without acting for a dev-versioned binary (update.ts:364), so setting it
-      # here would paper over a build that failed to bake its version and leave
-      # the guard below asserting nothing. The step above has already proved
-      # `wego version` reports $VERSION on its own.
-      - name: Require this build to be distinguishable from a pre-relay install
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          url='https://api.wego.com/install'
-          work="$RUNNER_TEMP/agent-probe"; rm -rf "$work"
-          mkdir -p "$work/bin" "$work/home/.config/wego"
-
-          # THE BINARY MUST BE NAMED `wego`: the config directory is derived from
-          # the name it is invoked as, so `wego-linux-x64` would look for
-          # `.config/wego-linux-x64/`, find no install record, and exit without
-          # touching the network - a green check that measured nothing.
-          cp ./dist/wego-linux-x64 "$work/bin/wego"
-          chmod +x "$work/bin/wego"
-
-          # A listener that records the agent and 404s. The 404 is fine: the agent
-          # goes out on the FIRST request, which is all this needs.
-          #
-          # `bun -e`, not a heredoc: a heredoc body inside a YAML block scalar
-          # carries the block's indentation into the file and has to be stripped
-          # back out, which is a silent breakage waiting to happen in a lane
-          # nothing lints.
-          : > "$work/agent.txt"
-          AGENT_FILE="$work/agent.txt" bun -e 'const out=Bun.file(process.env.AGENT_FILE).writer();Bun.serve({hostname:"127.0.0.1",port:8977,fetch(r){out.write((r.headers.get("user-agent")??"")+"\n");out.flush();return new Response("probe",{status:404});}});' &
-          LPID=$!
-          sleep 2
-
-          printf '{"ring":"stable","installUrl":"http://127.0.0.1:8977/install"}\n' \
-            > "$work/home/.config/wego/install.json"
-          set +e
-          out=$(HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
-                WEGO_CLI_TELEMETRY=0 "$work/bin/wego" update -y 2>&1)
-          set -e
-          kill "$LPID" 2>/dev/null || true
-          echo "$out"
-
-          if printf '%s' "$out" | grep -q 'Self-update applies to installed release binaries'; then
-            echo "::error::this build does not consider itself a release binary, so it never made a request and this check measured NOTHING. It was built without WEGO_BUILD_VERSION."
-            exit 1
-          fi
-          agent=$(head -1 "$work/agent.txt" || true)
-          if [ -z "$agent" ]; then
-            echo "::error::this build made no request to the probe, so its user agent could not be measured and this check proved NOTHING. Output above."
-            exit 1
-          fi
-          echo "$VERSION's binary sends: $agent"
-
-          # The pin's own predicate, applied to the measured value.
-          if printf '%s' "$agent" | grep -qiE '^bun/'; then
-            echo "::error::this build sends '$agent', which apps/api's legacy bridge pin treats as a pre-relay 1.0.x install. Every install of it would be pinned to the frozen bridge, whose record it cannot verify - it could never update again. That is what v1.2.0 shipped (wego/cli#25). Refusing before anything is published."
-            exit 1
-          fi
-
-          # And the real route's actual decision, which is the claim that matters.
-          loc=$(curl -sI -A "$agent" "$url?dl=SHA256SUMS.txt&ring=stable" \
-                  | grep -i '^location:' || true)
-          if printf '%s' "$loc" | grep -q '/cli/cli-v1.1.0/'; then
-            echo "::error::api.wego.com serves this build ('$agent') from the legacy bridge on ring stable: '$loc'. Publishing it would strand every install of it."
-            exit 1
-          fi
-          echo "ok: this build is not claimed by the pin. $loc"
-
-      # Publish to the IMMUTABLE cli/<tag>/ ONLY (--freeze). cli/next is NOT
-      # moved here — it advances only after SMOKE-2 verifies these exact bytes,
-      # so a transport-corrupted upload can never become the served candidate.
-      # REQUIRE_PUBLISH makes a deliberate release FAIL if the token is missing
-      # (no silent "green but published nothing"); the tag-push path keeps the
-      # graceful pre-go-live skip.
-      #
-      # Every release requires it: a run that quietly published nothing would report
-      # green while `cli/next` still served the previous build, and the promote that
-      # followed would move `cli/stable` onto bytes nobody meant to ship.
-      #
-      # No guard here against two runs colliding on one tag, and none is needed: a tag
-      # names the commit whoever created it chose, and both entrypoints arrive with it
-      # already created. The immutable prefix protects itself regardless of who writes
-      # it - `putImmutableAssets` puts with `allowOverwrite: false`, and the
-      # `cli/<tag>/COMMIT` sidecar refuses a resume from a different commit
-      # (`upload-release-blob.ts`).
+      # The four pre-publication checks, one definition, in
+      # `.github/actions/verify-build`.
+      - name: Verify this build before publishing (wego-linux-x64)
+        uses: ./.github/actions/verify-build
+        with:
+          asset: wego-linux-x64
+          version: ${{ needs.prepare.outputs.version }}
 
       - name: Publish immutable artifact (cli/<tag>)
         id: publish
@@ -708,12 +655,10 @@ jobs:
       # SMOKE 3 below FAILS rather than degrading to a same-version check -
       # `--require-replace` will not pass a test that proved nothing.
       #
-      # That is the right outcome, and it is the rule the rest of the lane already
-      # enforces: the remedy for a failed release is a NEW VERSION, not a rerun.
-      # `upload-release-blob.ts`'s COMMIT sidecar refuses a cross-commit resume in
-      # the same words - "bump the version instead of re-releasing this tag".
-      # Observed on v1.2.6 (run 34940104462, attempt 2), whose first attempt had
-      # already advanced `cli/next`.
+      # That is the right outcome, not a regression: it is the one-way model stated
+      # in full at `Advance cli/next` below, which also carries what a rerun does
+      # from each failure position. Observed on v1.2.6 (run 34940104462, attempt 2),
+      # whose first attempt had already advanced `cli/next`.
       #
       # `VERSION` is read alongside the bytes so the summary can NAME the release
       # being updated from. A skipped hop-2 test and a passing one must not look
@@ -724,6 +669,15 @@ jobs:
         env:
           BASE: ${{ steps.publish.outputs.store_origin }}/cli/next
           ASSET: wego-linux-x64
+          # SMOKE 3's darwin twin runs on `replace-macos`, which starts after this
+          # job and therefore after `Advance cli/next` — by which point the ring
+          # serves THIS release and the predecessor is unreachable. The pre-advance
+          # window exists only here, so the darwin predecessor is captured here too
+          # and handed over as an artifact. It is NOT read from the immutable
+          # `cli/<prev-tag>/` prefix for the reason the block above gives: the tag
+          # and store namespaces disagree across the wego-ai handover, and a
+          # composed prefix that never existed 404s into a SILENT skip.
+          ASSET_MAC: wego-darwin-arm64
         run: |
           set -eu
           dir="${RUNNER_TEMP}/prev-channel"
@@ -738,13 +692,14 @@ jobs:
           # Any OTHER status stays fatal: a 403 or a 500 says the store is
           # misbehaving, which is not something to shrug at.
           usable=1
-          for obj in "$ASSET" SHA256SUMS.txt VERSION; do
+          missing=""
+          for obj in "$ASSET" "$ASSET_MAC" SHA256SUMS.txt VERSION; do
             code=$(curl -sSL --connect-timeout 15 --max-time 600 \
                      -w '%{http_code}' -o "$dir/$obj" "$BASE/$obj") \
               || { echo "::error::transport failure fetching $BASE/$obj (curl exit $?)." >&2; exit 1; }
             case "$code" in
               200) ;;
-              404) usable=0; break ;;
+              404) usable=0; missing="$obj"; break ;;
               *) echo "::error::unexpected HTTP $code for $BASE/$obj." >&2; exit 1 ;;
             esac
           done
@@ -752,8 +707,13 @@ jobs:
             # Drop the partial directory so nothing downstream can mistake a 404
             # body for a captured binary.
             rm -rf "$dir"
-            echo "::notice::cli/next is empty (404) - SMOKE 3 skipped. This release is unaffected."
-            echo "SMOKE 3 skipped: cli/next is empty, nothing to update from." >> "$GITHUB_STEP_SUMMARY"
+            # NAMES the object that 404'd. With four probes rather than one, "empty
+            # ring" and "ring missing just the darwin asset" are different findings
+            # and must not print the same line: the first is the ordinary first-release
+            # case, the second would mean a release published an incomplete set, which
+            # `verify-published.sh all` should have refused before the pointer moved.
+            echo "::notice::cli/next is not serving a complete release ($missing returned 404) - SMOKE 3 skipped on BOTH platforms. This release is unaffected."
+            echo "SMOKE 3 skipped: cli/next has no $missing, nothing to update from." >> "$GITHUB_STEP_SUMMARY"
           else
             prev_version=$(tr -d '\r\n' < "$dir/VERSION")
             echo "predecessor $prev_version from cli/next" >> "$GITHUB_STEP_SUMMARY"
@@ -761,6 +721,38 @@ jobs:
             echo "prev_version=$prev_version" >> "$GITHUB_OUTPUT"
           fi
           echo "usable=$usable" >> "$GITHUB_OUTPUT"
+
+      # HAND THE DARWIN PREDECESSOR TO `replace-macos`. The bytes above live in this
+      # runner's RUNNER_TEMP, which no other runner can see, and the URL they came
+      # from stops serving them at the very next step. An artifact is the only way
+      # across.
+      #
+      # BEFORE THE ADVANCE IS A CHOICE HERE, NOT A NECESSITY. The capture above has
+      # no other window - the pointer moves and the bytes stop being served. This
+      # step has no such constraint: it ships bytes that are already local, and would
+      # work anywhere after the capture. It sits here because this is the position
+      # with the best RECOVERY: ABOVE the commit point, where a failure leaves
+      # `cli/next` untouched and a plain rerun goes green - the `cli/<tag>/COMMIT`
+      # sidecar permits a same-commit resume. One step LATER is the other side of
+      # that line, and the failure table at `Advance cli/next` says what that costs:
+      # a whole new version, for a transient upload blip. Do not move this down.
+      #
+      # THE DARWIN ASSET ONLY. The linux predecessor never leaves this job - it is
+      # consumed by the SMOKE 3 step below, a few steps down - so shipping it here
+      # would double the transfer to buy nothing. SHA256SUMS.txt and VERSION come
+      # along because the consumer re-verifies fail-closed before executing and names
+      # the version it updated FROM; both are a few hundred bytes.
+      - name: Hand the darwin predecessor to the macOS leg
+        if: steps.publish.outputs.store_origin != '' && steps.prev_channel.outputs.usable == '1'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-predecessor
+          path: |
+            ${{ runner.temp }}/prev-channel/wego-darwin-arm64
+            ${{ runner.temp }}/prev-channel/SHA256SUMS.txt
+            ${{ runner.temp }}/prev-channel/VERSION
+          if-no-files-found: error
+          retention-days: 1
 
       # Advance `cli/next` by server-side copying the verified cli/<tag> bytes (#74
       # rung 7). `cli/stable` and `cli/edge` are never touched here: stable is a human
@@ -776,6 +768,80 @@ jobs:
       # verified fail-closed by SMOKE-2 on cli/<tag> and re-verified on the pointer
       # below. A Smoke-3 failure therefore means "consumers on the previous build
       # cannot self-update", which un-advancing the pointer would not fix.
+      #
+      # ────────────────────────────────────────────────────────────────────────
+      # THIS STEP IS THE COMMIT POINT OF A RELEASE. The lane is ONE-WAY, and this
+      # is where that becomes true. Stated once, here; every other step that has to
+      # act on it points back rather than re-arguing it.
+      #
+      # THE CONSTRAINT UNDERNEATH: a published CLI binary cannot be recalled. Once
+      # a machine has updated, nothing this lane does reaches it again. So
+      # un-advancing a pointer is not a remedy - it is theatre, and it cannot help
+      # the installs that already moved. The only thing that reaches an installed
+      # machine is NEW BYTES IT WILL MOVE ONTO. Every design choice below follows
+      # from that one fact.
+      #
+      #   BYTES     immutable and append-only. `cli/<tag>/` is written with
+      #             `allowOverwrite: false` (first writer wins) behind a `COMMIT`
+      #             sidecar that refuses a resume from a different commit. A tag's
+      #             content can never be rewritten - which is WHY the remedy is
+      #             always a new version number.
+      #   POINTERS  only ever ASSIGNED onto some tag's frozen bytes. There is no
+      #             revert operation anywhere in the system; advance and promote
+      #             are the same server-side copy.
+      #   VERSIONS  monotonic and one-shot. release-please derives them from the
+      #             commits and pushes the tag, and a `v*` tag push is this lane's
+      #             only entry point.
+      #
+      # SO "ROLLBACK" IS NOT AN UNDO. `promote-cli.yml` moves `cli/stable` onto an
+      # OLDER tag's frozen bytes, and installs follow because `update` compares
+      # CHECKSUMS, not versions - which is what makes a downgrade mechanically
+      # identical to an upgrade. The ring's `VERSION` then advertises the older
+      # release, which is correct: that IS what stable serves. That lane owns the
+      # rollback story in full; this one only ever moves forward.
+      #
+      # AND `cli/next` HAS NO BACKWARD PATH AT ALL. No workflow can move it onto an
+      # older tag - `promote-cli.yml` only ever targets `--to stable`. The tooling
+      # would accept `--promote <older> --to next`; nothing exposes it. Reading:
+      # `next` is a candidate ring whose fix is simply the next candidate, arriving
+      # on the ordinary cadence, while `stable` is what everyone receives and so
+      # gets an emergency lever. (That last sentence is a reading of the shape, not
+      # a rule written down anywhere - treat it as such.)
+      # ────────────────────────────────────────────────────────────────────────
+      #
+      # IF THIS STEP ITSELF FAILS, the state it leaves depends on how far it got,
+      # because the advance is a NON-ATOMIC multi-object copy with a designed
+      # commit point (`upload-release-blob.ts`): every binary first, then the
+      # signed record, then SHA256SUMS.txt - THE commit point - then a consistency
+      # wait, then VERSION last. Every copy is `allowOverwrite: true`, so
+      # re-advancing is idempotent.
+      #
+      #   died BEFORE any copy        `cli/next` untouched, consumers unaffected.
+      #   (token, gate refusal)       A rerun captures the correct predecessor and
+      #                               goes fully green. THE ONLY CLEAN RERUN.
+      #
+      #   died MID-COPY, before       `cli/next` serves new binaries under the OLD
+      #   the manifest                manifest. Fail-closed by design - a verifying
+      #                               consumer cross-checks the two and REFUSES -
+      #                               so nothing installs wrong, but `update` is
+      #                               BROKEN for next-ring consumers until it
+      #                               completes. A rerun re-runs this step and
+      #                               HEALS the ring, then fails at "Verify
+      #                               predecessor checksum" because the capture
+      #                               above read the mixed state. The red rerun is
+      #                               NOT wasted: it repaired the only thing with
+      #                               consumer impact before it failed.
+      #
+      #   died AFTER the commit       Ring correct and serving this release; only
+      #   point (during VERSION)      VERSION advertises the old one, which reaches
+      #                               the version notice but not `update` (it
+      #                               compares checksums). A rerun dies at SMOKE 3.
+      #
+      # THE RECIPE: rerun ONCE regardless. Green means it was the first case and
+      # you are done. Red means the ring is now consistent and the remedy is the
+      # standing one - a new version. A second rerun cannot help: `cli/next` now
+      # serves this release, so the capture takes it as its own predecessor and
+      # `--require-replace` correctly refuses a test that would prove nothing.
       - name: Advance cli/next
         if: steps.publish.outputs.store_origin != ''
         env:
@@ -795,119 +861,56 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: sh scripts/verify-published.sh "$BASE" "$VERSION" native
 
-      # Verify-then-execute. SMOKE 3 executes the predecessor as `wego update`, so its
-      # bytes are checksum-verified fail-closed first: the capture step above only
-      # downloads the binary and its SHA256SUMS.txt, and this step checks one against
-      # the other before anything is chmod'd or run. Separate from the capture so the
-      # verification is a step in its own right rather than a branch inside a download.
-      # Gated on `usable`, because an empty `cli/next` leaves no binary to verify.
-      - name: Verify predecessor checksum
-        if: steps.publish.outputs.store_origin != '' && steps.prev_channel.outputs.usable == '1'
-        env:
-          DIR: ${{ runner.temp }}/prev-channel
-          ASSET: wego-linux-x64
-        run: |
-          set -eu
-          bin="$DIR/$ASSET"
-          sums="$DIR/SHA256SUMS.txt"
-          [ -f "$sums" ] || { echo "predecessor SHA256SUMS.txt missing — cannot verify before execution, failing." >&2; exit 1; }
-          exp="$(awk -v f="$ASSET" '$2==f {print $1}' "$sums")"
-          [ -n "$exp" ] || { echo "predecessor $ASSET not listed in SHA256SUMS.txt — failing." >&2; exit 1; }
-          act="$(sha256sum "$bin" | awk '{print $1}')"
-          [ "$exp" = "$act" ] || { echo "predecessor checksum mismatch (expected $exp, got $act) — failing before execution." >&2; exit 1; }
-          chmod +x "$bin"
-          echo "Predecessor verified fail-closed against SHA256SUMS.txt (capture or restore): $("$bin" version)"
-
-      # SMOKE 3 — the REAL consumer self-update, end-to-end, on WHICHEVER channel
-      # this release advanced. Run the predecessor binary for that channel (an
-      # actual older published build, captured or restored above) through its own
-      # `wego update -y`: it fetches the just-advanced pointer over real HTTPS,
-      # verifies the checksum fail-closed, and atomically swaps itself in place —
-      # the byte-for-byte path a user's `wego update` takes. Asserts the binary now
-      # reports this release's version.
+      # SMOKE 2.5 — THE INSTALL BASE, ASKED FIRST.
       #
-      # Before the flavour channels were split, only cli/staging was
-      # ever advanced mid-job, so the prod `wego update` path was exercised solely
-      # through its staging twin. Now there is one binary and one ring here: every
-      # release smokes `wego` against cli/next, so no release ships an unexercised
-      # self-update, and what `stable` later receives is these same verified bytes.
+      # POSITION IS THE POINT. This is the EARLIEST step in this lane that can ask
+      # its question at all, and it is placed ahead of SMOKE 3 and 4 deliberately:
+      # it is the only one whose failure means "this build strands people", so it
+      # must not wait behind two slower smokes that answer narrower questions.
       #
-      # --require-replace is ALWAYS on: a real byte-swap must occur, so a run that
-      # measured nothing can never report a working self-update.
+      # It cannot run before `Advance cli/next` above. A real binary reaches bytes
+      # only through a ring the deploy knows - `?dl=…&ring=<name>` resolves `edge`,
+      # `next` and `stable` and falls back to `stable` for anything else, so the
+      # immutable `cli/<tag>/` prefix published two steps earlier is not addressable
+      # by a predecessor at all. The first instant these bytes are reachable by a
+      # 1.1.0 binary is the instant `cli/next` names them, and that is here.
       #
-      # THE PREDECESSOR IS THE `cli/next` POINTER, not an immutable `cli/<prev-tag>/`
-      # prefix. The capture step above reads the ring ONCE, before the advance, and
-      # carries the fidelity argument for doing so. This comment claimed the
-      # immutable prefix, and promised that "every attempt reads the same genuine
-      # older bytes rather than the pointer this job just advanced", for a while
-      # after the source had moved to the ring. It was the stale half of a
-      # contradiction with the capture step, and it is why the rerun failure below
-      # read as a bug rather than as the designed outcome.
+      # IT TESTS `next` AND IT IS ABOUT `stable`. A promote is a server-side COPY
+      # of the frozen `cli/<tag>` blobs, and it refuses to run unless `cli/next`
+      # already serves the tag (`--require-serving next`), so the bytes this step
+      # drives a 1.1.0 binary onto ARE the bytes `cli/stable` will later be pointed
+      # at. `promote-cli.yml` re-asks the same question immediately before it moves
+      # that pointer; this asks it days earlier, while the answer is still free.
       #
-      # ON A RERUN past `Advance cli/next` the captured predecessor IS this release,
-      # no real swap is possible, and this step fails. Correct: the remedy for a
-      # failed release here is a NEW VERSION, never a rerun. See the capture step.
-      # Skipped on a channel's first release (no predecessor), when that predecessor
-      # published no objects (`usable != 1`), or when it predates the baked update
-      # channel (the script SKIPs, exit 0). Predecessor is linux-x64
-      # (this runner); the macOS-only quarantine-clear is the sole path not exercised
-      # here.
-      - name: Smoke test real self-update (cli/next)
-        if: steps.publish.outputs.store_origin != '' && steps.prev_channel.outputs.usable == '1'
-        env:
-          OLD_BINARY: ${{ runner.temp }}/prev-channel/wego-linux-x64
-          VERSION: ${{ needs.prepare.outputs.version }}
-          # The ring this channel IS. A predecessor from foundations#74 rung 3 or
-          # later follows the ring its INSTALLER recorded and refuses to guess one,
-          # so the smoke — which places a binary rather than installing it — has to
-          # name the ring it is smoking.
-          RING: next
-        # No install-URL override: the smoke reads WHERE it was installed from out of
-        # the predecessor's own reinstall hint, which is what wego-ai always did.
-        # An earlier phase overrode that with a loopback resolver so `/install` could
-        # be pointed at a non-production store rather than production; with the lane
-        # publishing to the real store there is nothing left to redirect.
-        #
-        # The exec bit is already restored by the verify step above (and update-smoke.sh
-        # chmods its own working copy regardless), so no chmod is needed here.
-        run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING"
-
-      # SMOKE 4: the binary THIS RUN BUILT must be able to update itself.
+      # WHY 1.1.0 IS THE ONE THAT MATTERS. SMOKE 3 drives the PREVIOUS release onto
+      # these bytes, and that predecessor moves forward with every release - so the
+      # distance it covers shrinks to one version while the install base stays put.
+      # Nobody is one version behind. The oldest machines still updating are 1.0.x
+      # and 1.1.0, and a 1.0.x machine's route runs THROUGH 1.1.0: the legacy bridge
+      # pin (wego/foundations#132) serves it the frozen `cli/cli-v1.1.0/` prefix
+      # first, and only its SECOND `update` reads the live pointer. So 1.1.0 is the
+      # hinge - if a 1.1.0 binary cannot verify and install what this release
+      # publishes, every install at or below it is stranded, 1.0.x included.
       #
-      # SMOKE 3 above updates the PREDECESSOR onto these bytes - it proves
-      # machines can ARRIVE at this version. Nothing proved one could LEAVE it.
-      # v1.2.0 shipped a binary whose update path set no user agent and which
-      # could therefore never update again (wego/cli#25); every check in this
-      # lane passed, because none of them ran `wego update` from the artifact.
+      # THE PREDECESSOR IS PINNED, NOT DERIVED. SMOKE 3 takes whatever the channel
+      # held before; this takes the same immutable `cli/cli-v1.1.0/` artifact on
+      # every run, forever. That is the point: it is the only gate in this lane
+      # whose coverage does not erode as versions accumulate.
       #
-      # `cli/next` now serves exactly these bytes, so the correct outcome is
-      # "already up to date" - asserted, so a run that silently replaced itself
-      # with something else is a failure rather than a pass.
-      #
-      # This CANNOT see the legacy bridge pin: the pin is `stable`-only, and
-      # this lane only ever touches `next`. The promote lane carries the check
-      # that does. This one proves the update path functions at all, before a
-      # tag exists to clean up.
-      #
-      # The install URL is FIXED, not read from `SMOKE_INSTALL_URL`. That
-      # variable was the Phase 1 override switch and its last consumers went with
-      # the resolver; honouring it here would leave this gate
-      # pointable at a loopback shim, where it would pass having proved nothing
-      # about the real route - the exact class of failure it exists to catch.
-      - name: Smoke test self-update from the new binary (cli/next)
+      # 1.0.1 IS NOT DRIVEN HERE, and its absence is deliberate. Its baked trust set
+      # names wego-ai only, so it refuses anything `wego/cli` signs and cannot reach
+      # ring `next` at all (exit 6, correctly). Its route exists solely on `stable`,
+      # behind the pin - so `promote-cli.yml` owns it, where the pin is also checked
+      # before the pointer moves.
+      - name: Prove the replace path (linux-x64)
         if: steps.publish.outputs.store_origin != ''
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          # WEGO_BUILD_VERSION matters: `update` returns EXIT.OK without doing
-          # anything for a dev-versioned binary, so a gate handed one would go
-          # green having tested nothing. assert-self-update.ts refuses that case
-          # outright, and this keeps it from arising.
-          WEGO_BUILD_VERSION="$VERSION" \
-            bun run scripts/assert-self-update.ts \
-              ./dist/wego-linux-x64 https://api.wego.com/install next \
-              --expect "$VERSION" --expect-unchanged
+        uses: ./.github/actions/verify-replace
+        with:
+          asset: wego-linux-x64
+          version: ${{ needs.prepare.outputs.version }}
+          predecessor-dir: ${{ runner.temp }}/prev-channel
+          prev-usable: ${{ steps.prev_channel.outputs.usable }}
+          store-origin: ${{ steps.publish.outputs.store_origin }}
 
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new
@@ -1001,6 +1004,176 @@ jobs:
               data: fs.readFileSync("dist/SHA256SUMS.txt"),
             });
             core.info(`Release ${tag} ready (SHA256SUMS.txt attached).`);
+
+  # SMOKES 3, 4 AND 5 (macOS leg) - THE DARWIN COLUMN, AT PARITY WITH LINUX-X64.
+  #
+  # Every claim the `release` job makes on linux-x64, made here on darwin-arm64: a
+  # machine can ARRIVE at this release (3), it can LEAVE it (4), and the replace code
+  # THIS BUILD SHIPS actually runs (5).
+  #
+  # PARITY LIVES IN ONE JOB, NOT THREE, and the measured reason is worth recording
+  # because it is the opposite of the intuition. On v1.2.7 (run 34945217938) SMOKE 3
+  # took 2 SECONDS and SMOKE 4 took 1. The whole release lane is ~3 minutes. What
+  # costs on macOS is the runner boot, the checkout, the Bun install and the artifact
+  # transfer - fixed overhead, paid in full the moment this job exists at all, and
+  # paid once however many legs hang off it. So splitting the legs across jobs to run
+  # them "in parallel" would spend a minute of boot to save two seconds, and the
+  # marginal cost of going from one darwin claim to three is the predecessor download
+  # plus about three seconds. Add legs here; do not add jobs.
+  #
+  # SMOKE 5 is the leg no Linux runner can substitute for, and it is why the job was
+  # created at all. The replace code
+  # is compiled per platform, and one line of it exists only on darwin:
+  #
+  #     if (os === "darwin") await deps.clearQuarantine(tmp);      src/update.ts
+  #
+  # and with it everything the swap is made of AS macOS RUNS IT: fetch, gunzip,
+  # sha256, chmod, atomic rename over `process.execPath` - the `xattr` binary
+  # being there or not, Gatekeeper's opinion of a freshly written file, the
+  # rename semantics. A darwin-only bug in any of that ships GREEN, which is the
+  # wego/cli#25 shape exactly: that release also passed every check in this lane,
+  # because none of them ran the thing that was broken.
+  #
+  # Note what a linux-x64 runner cannot substitute for here even in principle.
+  # SMOKE 3 at the NEXT release does eventually execute this build's replace code
+  # - one release late, which is the timing gap its linux twin closes - but the
+  # copy it executes is the LINUX build of it. The branch above is never reached
+  # by any release, early or late, on any existing gate.
+  #
+  # `--force-replace` is what makes this testable at all. The ring serves the same
+  # bytes this job is holding, so only `--force` gets past the up-to-date branch
+  # and through the whole replace; the bytes landing IDENTICAL afterwards is then
+  # itself an assertion - the ring is serving the artifact this run built. See
+  # `assert-self-update.ts` for the claim in full.
+  #
+  # AFTER THE POINTER MOVES, like SMOKE 3 and 4, and for the same reason: it
+  # updates from `cli/next`, so the ring has to be advanced first. A red run here
+  # therefore means "macOS consumers may not be able to update off this build",
+  # and the remedy is the lane's standing one (`Advance cli/next`): a new version.
+  # Note this job is a LEAF - it writes nothing, so re-running it alone is always
+  # safe and is what flips a run red only by this leg back to success, which is
+  # what `promote-cli.yml`'s successful-run gate reads.
+  #
+  # `macos-latest` is Apple silicon, so the asset is `wego-darwin-arm64`. The
+  # darwin-x64, linux-arm64 and Windows binaries are still built and never run;
+  # this narrows the untested set, it does not empty it.
+  #
+  # A SEPARATE JOB rather than a step, because the publisher is ubuntu-only - and
+  # a cheap separation to keep: this job holds NEITHER capability the lane is
+  # careful about. No `environment`, so no store token; no `id-token`, so nothing
+  # to exchange for a certificate. It downloads the artifact, checks it against
+  # the signed manifest before executing it (the lane's verify-then-execute rule),
+  # and runs it against the public route any user's `wego update` takes.
+  replace-macos:
+    name: Prove the replace path on macOS
+    needs: [prepare, release]
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # Runs the keyed prod binary; without this the run posts CI events as product data.
+      WEGO_CLI_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-bun
+
+      # The same two halves the publisher reassembles: the binaries from `build`,
+      # the manifest and VERSION from `build`'s second artifact. The signature
+      # bundle is NOT needed here - this job verifies bytes against the manifest,
+      # and the manifest's own signature was checked before publication.
+      - name: Download built binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-binaries
+          path: dist
+
+      - name: Download the manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-checksums
+          path: dist
+
+      # SMOKE 3 (macOS leg) - A MACHINE CAN ARRIVE AT THIS RELEASE, ON DARWIN.
+      #
+      # The predecessor could not be fetched here. It lives at `cli/next` only until
+      # the `release` job advances that pointer, and this job starts after that job
+      # ENDS - so by the time anything here could curl it, the ring serves this very
+      # release and there is no predecessor left to update from. The capture happens
+      # in the one pre-advance window that exists, on the publisher, and crosses over
+      # as an artifact.
+      #
+      # Gated on the SAME `usable` flag as the linux leg, deliberately: first release,
+      # or a ring not serving a complete set, and BOTH legs skip together. A darwin
+      # leg that quietly invented a predecessor where linux skipped would be worse
+      # than no leg.
+      #
+      # What this proves is narrower than SMOKE 5 and worth stating so nobody reads
+      # more into a green run: the code doing the work here is the PREDECESSOR's -
+      # old, frozen, already in production. A failure means macOS consumers on the
+      # previous build cannot reach this one, which is a real thing to learn and not
+      # something this release introduced.
+      - name: Download the darwin predecessor
+        if: needs.release.outputs.prev_usable == '1'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-predecessor
+          path: ${{ runner.temp }}/prev-channel
+
+      # Verify-then-execute, the rule this lane applies to every binary it runs. The
+      # artifact hop is integrity-checked by GitHub, but the manifest check is what
+      # the rule is actually about and it costs milliseconds on 64 MB.
+      #
+      # `shasum -a 256`, not `sha256sum`: the linux twin of this step can assume
+      # coreutils and this one cannot. Same manifest, same format, same awk.
+      # The same four proofs as the linux leg, from the same definition. This job
+      # exists because `clearQuarantine` is compiled in per platform and a linux
+      # runner can never reach it — not because the checks differ.
+      - name: Prove the replace path (darwin-arm64)
+        # Same guard as the linux leg. Without it the two platforms disagree about
+        # WHEN they run: if nothing was published there is no ring serving this
+        # build, so linux skipped these and macOS ran them into a failure. That
+        # asymmetry predates this branch; parity of the checks is worth little if
+        # the conditions differ.
+        if: needs.release.outputs.store_origin != ''
+        uses: ./.github/actions/verify-replace
+        with:
+          asset: wego-darwin-arm64
+          version: ${{ needs.prepare.outputs.version }}
+          predecessor-dir: ${{ runner.temp }}/prev-channel
+          prev-usable: ${{ needs.release.outputs.prev_usable }}
+          store-origin: ${{ needs.release.outputs.store_origin }}
+
+      # THE SAME PATH, TAKEN THE WAY A USER TAKES IT - the one claim this job
+      # could not make until now.
+      #
+      # The step above forces the replace over bytes IDENTICAL to the ones already
+      # on disk, which is what lets it exercise this release's own asset. The cost
+      # of that choice is that the end state is byte-identical either way, so it
+      # cannot tell a replace that landed on the running binary from one that
+      # landed somewhere else and reported success. `execPath` resolution is
+      # exactly what goes quietly wrong on macOS - a Homebrew prefix, a symlink,
+      # /opt/homebrew against /usr/local - and the replace half is compiled per
+      # target, so no Linux runner reaches the darwin answer.
+      #
+      # So this one points at `cli/stable`, which still serves the OUTGOING
+      # release and which this lane never touches. The hashes genuinely differ, so
+      # `update` takes the ordinary branch with no `--force` at all: byte for byte
+      # the path a user's upgrade takes, and the version it reports afterwards has
+      # to actually move. Downgrading is not a strange thing to ask of it -
+      # `update` compares CHECKSUMS, not versions, and has no notion of forward.
+      #
+      # ADDITIVE, NOT A REPLACEMENT, and neither claim subsumes the other: the
+      # forced step fetches the NEW asset and would catch a naming or compression
+      # change that this one misses (pointed at stable it would find the old
+      # format and fall back happily); this one takes the REAL branch and would
+      # catch a mis-landed replace the forced one cannot see. Dropping either
+      # loses a failure class.
+
 
   # NO POST-RELEASE SMOKE JOB HERE (#74 rung 7).
   #
