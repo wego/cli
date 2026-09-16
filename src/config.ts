@@ -98,8 +98,13 @@ function configRoot(env: NodeJS.ProcessEnv): string {
  * label stopped deciding it, the name the binary was invoked as, so a copy named
  * `wego-next` wrote `~/.config/wego-next/`. Both axes are retired: there is one
  * build, published under one name, and the second-install case the name rule
- * served is served by `XDG_CONFIG_HOME`, which is the standard answer and needs
- * no rule of ours.
+ * served is served by `XDG_CONFIG_HOME` alone — one knob, not a rule of ours.
+ * That works because the INSTALL SCRIPT computes its record path from the same
+ * variable (`${XDG_CONFIG_HOME:-$HOME/.config}/$BIN_NAME`, `BIN_NAME` defaulting
+ * to `wego`), so pointing an extra install at its own root makes the script write
+ * precisely where this file reads. README's side-by-side recipe is that and a
+ * launcher to supply the variable; `config.test.ts` pins both halves, because
+ * they live in different repositories.
  *
  * A constant is not a smaller version of that rule, it is a different guarantee:
  * renaming or copying the binary can no longer move a user's credentials, ring

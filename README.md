@@ -64,6 +64,106 @@ Later releases arrive through the CLI itself. `wego update` replaces the binary
 with the latest release from the ring this install follows, verifies the checksum
 before swapping it in, and `wego update --check` only reports.
 
+### Release rings
+
+Three pointers, each serving a different build of the same CLI:
+
+| Ring | Who it is for | Moves |
+| --- | --- | --- |
+| `stable` | everyone; the default install | on each release promote |
+| `next` | early adopters, opt-in | ahead of `stable` |
+| `edge` | engineers working on the CLI | every merge to `main` |
+
+Install one by naming it, and you are done — the installer records the ring and
+`wego update` follows it from then on:
+
+```bash
+curl -fsSL 'https://api.wego.com/install?ring=next' | bash
+```
+
+That is all most people ever need. Running **more than one at once** is a
+developer setup, and has its own section below.
+
+## Running stable, next and edge together
+
+You only need this if you want two or three rings installed on one machine at the
+same time — normally because you develop the CLI and also use it. One install per
+machine needs none of it.
+
+Every per-install file — the ring record, your login, your settings, your
+telemetry choice — lives in one directory, `$XDG_CONFIG_HOME/wego/` (default
+`~/.config/wego/`). So giving an extra install its own `XDG_CONFIG_HOME` is the
+whole act of isolating it, and there is nothing else to set. The install script
+honours that variable too, and computes the same path from it, so the record it
+writes is exactly the one that install reads back.
+
+Keep one install as the normal one, installed the usual way, and add the others.
+Paste this as-is:
+
+```bash
+for ring in next edge; do
+  root="$HOME/.wego/$ring"
+
+  # The binary and its whole config directory, kept to themselves.
+  XDG_CONFIG_HOME="$root/config" \
+  WEGO_CLI_INSTALL_DIR="$root/bin" \
+  WEGO_CLI_INSTALL_SKILL=0 \
+    sh -c "curl -fsSL 'https://api.wego.com/install?ring=$ring' | sh"
+
+  # A launcher on your PATH, so you never have to remember the variable.
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/bin/sh\nexec env XDG_CONFIG_HOME=%s "%s" "$@"\n' \
+    "$root/config" "$root/bin/wego" > "$HOME/.local/bin/wego-$ring"
+  chmod +x "$HOME/.local/bin/wego-$ring"
+done
+```
+
+Then use them by name, exactly like `wego`:
+
+```bash
+wego version         # your normal install
+wego-next version
+wego-edge version
+wego-edge update     # updates only the edge install, from the edge ring
+```
+
+What that leaves on disk:
+
+```
+~/.config/wego/            ← your normal install: ring record, login, settings
+~/.wego/next/bin/wego      ← the next binary
+~/.wego/next/config/wego/  ← and its own ring record, login, settings, telemetry
+~/.wego/edge/bin/wego
+~/.wego/edge/config/wego/
+~/.local/bin/wego-next     ← the launchers you actually type
+~/.local/bin/wego-edge
+```
+
+Notes worth knowing:
+
+- **Leave `WEGO_CLI_BIN` alone.** Each binary keeps its default name, `wego`,
+  inside its own directory; the launcher supplies the name you type. Renaming the
+  binary instead would file the installer's record under `<root>/<that name>/`
+  while the CLI reads `<root>/wego/`, so the install would come up with no ring
+  record at all and `update` would refuse.
+- **Always go through the launcher.** Running `~/.wego/edge/bin/wego` directly,
+  with no `XDG_CONFIG_HOME`, makes it read your normal install's directory — so
+  `update` would pull that ring's build into your edge binary. `wego update` names
+  the ring it is following on the confirm and again on success, so you can see it
+  happen, but `update -y` skips the confirm.
+- **Each install logs in separately**, because each owns its own
+  `credentials.json`. That is what a genuinely separate install costs.
+- **Messages name the binary, not the launcher.** `wego-edge login` ends with
+  "Run `wego whoami` to verify", because the file under the launcher really is
+  called `wego`.
+- **Removing one** is `rm -r ~/.wego/edge ~/.local/bin/wego-edge`. Your normal
+  install is untouched.
+- **`wego skill install` writes one skill directory** (`~/.claude/skills/wego`)
+  whichever install runs it — hence `WEGO_CLI_INSTALL_SKILL=0` above, which keeps
+  an extra install from taking ownership of it during install. The ownership
+  marker records which ring wrote the skill, and a ring that does not own it
+  leaves it alone.
+
 ## What the CLI covers
 
 - `wego login` / `whoami` / `logout` — browser-based OAuth + PKCE, no access token
@@ -185,6 +285,7 @@ The environment variables the CLI reads at run time:
 | `WEGO_CLI_REDIRECT_PORT` | Fixed local port for the login callback. |
 | `WEGO_CLI_NO_UPDATE_NOTICE` | Silences the "a newer version exists" notice. |
 | `WEGO_API_URL` | Points the CLI at another API — including one on your own machine. |
+| `XDG_CONFIG_HOME` | The root of this install's config directory (default `~/.config`). Setting it is how a second install gets a store of its own — see [Running stable, next and edge together](#running-stable-next-and-edge-together). |
 
 `WEGO_TARGET` used to take a third value, `local`. It is gone: set `WEGO_API_URL`
 instead, which reaches an API on your own machine from the default `prod` target.

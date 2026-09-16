@@ -289,6 +289,48 @@ describe("the config scope", () => {
     expect(creds).toBe("/x/cfg/wego/credentials.json");
   });
 
+  it("puts a per-ring install exactly where the INSTALL SCRIPT writes it", () => {
+    // Cross-repo contract. The install script (`wego-ai`,
+    // `apps/api/src/routes/install.ts`) computes its record path as
+    //
+    //     record_dir="${XDG_CONFIG_HOME:-$HOME/.config}/$BIN_NAME"
+    //
+    // and `BIN_NAME` defaults to the flavor, the literal `wego`. That is the same
+    // arithmetic as below, which is what lets README's side-by-side recipe work
+    // with no change to the installer and no ring knob in the CLI: give each extra
+    // install its own XDG_CONFIG_HOME and the two sides meet on one path.
+    //
+    // Pinned here because the two live in different repositories. When this file's
+    // rule was keyed to the command name, a `WEGO_CLI_BIN=wego-next` install wrote
+    // to `~/.config/wego-next/` and read from `~/.config/wego/`: the ring record
+    // was simply invisible and `update` refused. A test that spells out the
+    // installer's own formula is the cheapest place to notice that again.
+    const root = "/home/u/.wego/edge/config";
+    const installerBinName = "wego"; // what the script uses when WEGO_CLI_BIN is unset
+    const writes = `${root}/${installerBinName}/install.json`;
+    // Read back the way the launcher invokes it: XDG_CONFIG_HOME and nothing else.
+    const reads = asCommand("wego", () =>
+      defaultInstallRecordPath({ XDG_CONFIG_HOME: root }),
+    );
+    expect(reads).toBe(writes);
+    expect(reads).toBe("/home/u/.wego/edge/config/wego/install.json");
+  });
+
+  it("keeps two per-ring installs from sharing anything", () => {
+    const next = { XDG_CONFIG_HOME: "/home/u/.wego/next/config" };
+    const edge = { XDG_CONFIG_HOME: "/home/u/.wego/edge/config" };
+    expect(defaultInstallRecordPath(next)).not.toBe(
+      defaultInstallRecordPath(edge),
+    );
+    expect(defaultCredentialsPath(next)).not.toBe(defaultCredentialsPath(edge));
+    // …and neither is the plain install's, which sets no XDG_CONFIG_HOME at all.
+    for (const perRing of [next, edge]) {
+      expect(defaultInstallRecordPath({})).not.toBe(
+        defaultInstallRecordPath(perRing),
+      );
+    }
+  });
+
   it("is unaffected by a Windows .exe suffix", () => {
     expect(
       asCommand("wego.exe", () =>
