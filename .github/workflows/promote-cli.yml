@@ -159,6 +159,55 @@ jobs:
           esac
           echo "ok: $TAG is a plain release version."
 
+      # THE ROLLBACK TARGET, READ BEFORE IT IS OVERWRITTEN.
+      #
+      # Every failure message below this point tells an operator how to undo the
+      # move, and the right answer is ALWAYS "put back what was there" - which is
+      # knowable only now, because the move is what destroys it.
+      #
+      # THIS USED TO BE A HARDCODED `cli-v1.1.0` and that was a fossil. It was
+      # correct exactly once: at the relay cutover, when 1.1.0 WAS what `stable`
+      # served. Left as a literal it quietly became advice to downgrade the entire
+      # install base across every release since, for no reason - and to do it
+      # through the OTHER repository's lane.
+      #
+      # 1.1.0 IS NOT A UNIVERSAL FLOOR, which is the reasoning that made the
+      # literal look safe. A pre-relay 1.0.x machine never reads this pointer at
+      # all: the legacy bridge pin serves it the frozen `cli/cli-v1.1.0/` prefix
+      # whatever `stable` names. So the population a rollback reaches is 1.1.0 and
+      # newer, every member of which can verify any `wego/cli` release - and the
+      # least disruptive target for them is simply the one they were already on.
+      #
+      # WHICH LANE OWNS THE TAG follows from the version, because the tag GRAMMAR
+      # changed at the relay: wego-ai published `cli-vX.Y.Z` up to 1.1.0, wego/cli
+      # publishes `vX.Y.Z` from 1.2.0 on. This repository's promote would refuse a
+      # `cli-v` tag twice over - `validate-release-tag.ts` rejects the shape, and
+      # the release-run check queries THIS repository - so a message naming the
+      # wrong lane costs an operator the one thing they do not have.
+      - name: Record the rollback target (what cli/stable serves today)
+        id: outgoing
+        run: |
+          set -euo pipefail
+          version=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' 2>/dev/null || true)
+          version=$(printf '%s' "$version" | tr -d '\r\n')
+          if [ -z "$version" ]; then
+            # First promote onto an empty ring, or the store is unreachable. Neither
+            # is a reason to stop - but every rollback line below must then say so
+            # rather than name a tag that does not exist.
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "how=NO ROLLBACK TARGET: cli/stable serves nothing today, so there is no previous build to put back." >> "$GITHUB_OUTPUT"
+            echo "::warning::cli/stable currently serves no VERSION - rollback guidance in this run will say so."
+            exit 0
+          fi
+          case "$version" in
+            1.0.*|1.1.*) tag="cli-v$version"; lane="wego-ai's promote-cli.yml" ;;
+            *)           tag="v$version";     lane="this repository's promote-cli.yml" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "how=ROLL BACK: run $lane with tag=$tag and allow_not_next=true (that flag is required - cli/next will be serving the new build, not this one)." >> "$GITHUB_OUTPUT"
+          echo "rollback target: $tag via $lane"
+
       # A tag can exist - and `cli/<tag>/` can even be half-written - without the
       # release lane ever having FINISHED. Promoting that would put bytes no release
       # run ever verified in front of every install, which is the whole install base.
@@ -300,6 +349,52 @@ jobs:
           fi
           echo "::error::the legacy bridge pin is NOT live: a Bun/ user agent asking for stable is answered with '${loc:-no location header}', which does not name /cli/cli-v1.1.0/. Moving cli/stable now would strand every 1.0.0 and 1.0.1 install that follows it, permanently and unrecoverably. Publish the bridge and set CLI_LEGACY_BRIDGE_RING + CLI_LEGACY_BRIDGE_TAG on the production apps/api deploy first (wego/foundations#132)."
           exit 1
+
+      # THE SAME CLAIM, ACTUALLY WALKED - still before the move.
+      #
+      # The probe above reads ONE HEADER. It proves the pin points somewhere, not
+      # that anything is there: it never downloads the frozen prefix, never checks
+      # the wego-ai-signed record beside it, and never runs a binary. A collected
+      # object or an expired certificate passes it and strands every 1.0.x install.
+      #
+      # HOP 1 IS FROZEN AT BOTH ENDS, which is what makes this hoistable. A 1.0.1
+      # binary asking ring `stable` is intercepted by the pin before `stable` is
+      # ever consulted, so where that pointer happens to be aimed is irrelevant to
+      # the hop - and a real walk of it does not need the promote to have happened.
+      # There is no reason to learn this after the move, and every reason not to.
+      #
+      # THE DESTINATION IS THE OUTGOING RELEASE, deliberately. The walk runs the
+      # WHOLE 1.0.x route - pin, frozen prefix, then the live pointer - against the
+      # ring as it stands right now, so it converges on what `stable` serves today
+      # (recorded at `Record the rollback target`). It therefore proves the route's
+      # MECHANICS are sound; that the route's second hop can carry the NEW bytes is
+      # what `Require the install base to be able to reach this tag` proves against
+      # `cli/next`. Between them every part is covered before the pointer moves, and
+      # only their COMPOSITION against the new pointer is left for after.
+      #
+      # Skipped when `stable` serves nothing - a first promote onto an empty ring
+      # has no route to walk and nothing to converge on.
+      - name: Walk the pre-relay route before moving anything
+        if: steps.outgoing.outputs.version != ''
+        env:
+          OUTGOING: ${{ steps.outgoing.outputs.version }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          loc=$(curl -sI 'https://api.wego.com/install?dl=SHA256SUMS.txt&ring=stable' \
+                | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+          origin=${loc%/cli/stable/SHA256SUMS.txt}
+          if [ -z "$origin" ] || [ "$origin" = "$loc" ]; then
+            echo "::error::could not read the store origin out of the install route's redirect: '$loc'. Refusing to move cli/stable on an unverified route."
+            exit 1
+          fi
+          if ! sh scripts/upgrade-path.sh \
+                 "$origin/cli/cli-v1.0.1/wego-linux-x64" stable "$OUTGOING" \
+                 --via 1.1.0 --max-hops 2; then
+            echo "::error::the pre-relay route is broken as it stands TODAY, against the release cli/stable already serves ($OUTGOING) - so this is not about $TAG. Either the bridge pin no longer delivers a usable frozen prefix, or the hop off 1.1.0 does not work. NOTHING HAS MOVED YET. Fix apps/api or restore cli/cli-v1.1.0 before promoting: moving the pointer now would add a second, independent failure on top of one that already strands every 1.0.x install."
+            exit 1
+          fi
+          echo "ok: the full 1.0.1 -> 1.1.0 -> stable route works against the outgoing release."
 
       # THE COMPLEMENT OF THE PROBE ABOVE, and the check whose absence shipped
       # v1.2.0 (wego/cli#25).
@@ -449,6 +544,169 @@ jobs:
           fi
           echo "ok: $TAG's binary completes a real update against cli/next and reports itself current."
 
+      # THE LAST GATE BEFORE THE POINTER MOVES, and the one the install base
+      # depends on. Everything above asks what THIS TAG'S BINARY can do. This asks
+      # the opposite and more important question: can the binaries people are
+      # ALREADY RUNNING arrive at it.
+      #
+      # IT MUST BE HERE, NOT BELOW. Advancing `cli/stable` is the irreversible act
+      # in this lane - the moment it lands, every install following that pointer is
+      # offered these bytes, and a machine that updates before anyone notices has
+      # already left. A rollback re-points the ring; it cannot un-update a laptop.
+      # So the question has to be answered while the answer can still stop the move.
+      #
+      # 1.1.0 IS THE WHOLE INSTALL BASE, in one binary. Every machine at or below
+      # it converges through 1.1.0: a pre-relay 1.0.x asking `stable` is claimed by
+      # the legacy bridge pin (wego/foundations#132), served the frozen
+      # `cli/cli-v1.1.0/` prefix, and becomes 1.1.0 before it ever reads the live
+      # pointer. So 1.0.1's second hop IS this test, and its first hop is asserted
+      # by `Require the legacy bridge pin to be live` above - also before the move.
+      # Between them the full 1.0.1 -> 1.1.0 -> stable chain is proven while
+      # `cli/stable` still points at the old release.
+      #
+      # IT DRIVES `next` BECAUSE `next` IS ALREADY THESE BYTES. The promote below
+      # refuses to run unless `cli/next` serves this tag (`--require-serving next`),
+      # and the byte-identity proof after it confirms the copy changed nothing. So
+      # `cli/next` right now holds exactly what `cli/stable` is about to hold -
+      # which is the only way to test the destination before it exists.
+      #
+      # The predecessor is the immutable `cli/cli-v1.1.0/` artifact, so a re-run
+      # always starts from the same genuine 1.1.0 and can never drift forward to
+      # meet the destination and pass having exercised nothing.
+      # WHAT WE TEST MUST BE WHAT LANDS, AND IT MUST BE COMPLETE.
+      #
+      # Two assumptions were being made silently, and both are the difference
+      # between prevention and luck.
+      #
+      # ONE: the gate below drives a real binary, and a real binary can only reach
+      # bytes through a ring the deploy resolves - so it necessarily tests
+      # `cli/next`. But the promote copies `cli/<tag>/`. Those are different
+      # objects, and `--require-serving next` compares VERSION STRINGS, not bytes.
+      # Normally they are identical, because `cli/next` was itself copied from
+      # `cli/<tag>/` - but "normally" is exactly what a gate is supposed to stop
+      # relying on. Proving the two manifests equal here makes the walk below
+      # transitively a test of the bytes that will actually be copied onto stable.
+      #
+      # TWO: nothing anywhere asserts WHICH platforms a release contains.
+      # `verify-published.sh all` checksums "every asset listed in SHA256SUMS.txt"
+      # - so a build matrix that silently stopped emitting, say, darwin-arm64 would
+      # produce a shorter manifest, pass every existing check, promote cleanly, and
+      # strand every Apple-silicon install with no asset to download. The set is
+      # pinned here, and a NEW platform fails this too: adding one should be a
+      # deliberate edit, not something a ring discovers on the way past.
+      #
+      # Both run BEFORE the move, so either failure costs a re-run, not a rollback.
+      - name: Require the bytes that will land to be the bytes under test
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          loc=$(curl -sI 'https://api.wego.com/install?dl=SHA256SUMS.txt&ring=next' \
+                | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+          origin=${loc%/cli/next/SHA256SUMS.txt}
+          if [ -z "$origin" ] || [ "$origin" = "$loc" ]; then
+            echo "::error::could not read the store origin out of the install route's redirect for ring next: '$loc'."
+            exit 1
+          fi
+
+          curl -fsSL "$origin/cli/$TAG/SHA256SUMS.txt" > "$RUNNER_TEMP/tag.sums"
+          curl -fsSL "$origin/cli/next/SHA256SUMS.txt" > "$RUNNER_TEMP/next.sums"
+
+          # Sorted: both manifests come from separate `sha256sum *` runs and the
+          # glob's order is not a promise. The SET of name→digest pairs is the claim.
+          if ! diff -u <(sort "$RUNNER_TEMP/next.sums") <(sort "$RUNNER_TEMP/tag.sums"); then
+            echo "::error::cli/$TAG and cli/next do not hold identical bytes. The gate below tests cli/next, but the promote copies cli/$TAG - so promoting now would ship bytes nothing has exercised. cli/next was supposed to BE this tag; find out what republished one of them."
+            exit 1
+          fi
+          echo "ok: cli/next is byte-identical to cli/$TAG, so testing next tests what will be copied."
+
+          # Every platform this project ships, raw and gzipped, plus VERSION.
+          # Kept as a literal on purpose: it is the assertion, not a derivation
+          # from the thing being asserted.
+          expected='VERSION
+          wego-darwin-arm64
+          wego-darwin-arm64.gz
+          wego-darwin-x64
+          wego-darwin-x64.gz
+          wego-linux-arm64
+          wego-linux-arm64.gz
+          wego-linux-x64
+          wego-linux-x64.gz
+          wego-windows-x64.exe
+          wego-windows-x64.exe.gz'
+          printf '%s\n' "$expected" | sed 's/^ *//' | sort > "$RUNNER_TEMP/expected.names"
+          awk '{print $2}' "$RUNNER_TEMP/tag.sums" | sort > "$RUNNER_TEMP/actual.names"
+          if ! diff -u "$RUNNER_TEMP/expected.names" "$RUNNER_TEMP/actual.names"; then
+            echo "::error::cli/$TAG does not carry exactly the expected asset set (- expected, + found above). A MISSING asset strands every install on that platform: it would be offered a download that 404s, forever, and no existing check would have said so. An EXTRA asset means a new platform shipped without this gate being updated. Fix the build, or update the expected set here deliberately."
+            exit 1
+          fi
+          echo "ok: cli/$TAG carries every expected platform, raw and gzipped."
+
+      # THE ANTI-BRICK GATE, RE-ASKED AT THE STABLE DECISION.
+      #
+      # `release-cli.yml` proved this binary can really replace itself before it
+      # published anything. The bytes have not changed since - the tag prefix is
+      # immutable - but the WORLD has: `apps/api` may have deployed, a signing
+      # certificate may have aged out, an object may have been collected. The
+      # release gate proved the build; this proves the build AND today's route,
+      # at the last moment before every install is pointed at it.
+      #
+      # `cli/stable` still serves the outgoing release, so pointing this tag's
+      # binary at it exercises the full download-decompress-verify-replace path
+      # for real, exactly as the release lane did. A build that cannot leave must
+      # never become `stable`: those machines cannot be rescued by a rollback,
+      # because a binary that cannot update cannot take one.
+      - name: Require this tag's binary to be able to update itself for real
+        env:
+          TAG: ${{ inputs.tag }}
+          OUTGOING: ${{ steps.outgoing.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [ -z "$OUTGOING" ]; then
+            echo "::error::cli/stable serves no VERSION, so this binary's replace path cannot be exercised against it. Refusing to point every install at a build whose ability to leave is unproven here."
+            exit 1
+          fi
+          if [ "$OUTGOING" = "$version" ]; then
+            echo "::error::cli/stable already serves $version - this tag is already promoted, so no byte swap can be exercised and this gate would prove nothing."
+            exit 1
+          fi
+          loc=$(curl -sI 'https://api.wego.com/install?dl=SHA256SUMS.txt&ring=next' \
+                | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+          origin=${loc%/cli/next/SHA256SUMS.txt}
+          if [ -z "$origin" ] || [ "$origin" = "$loc" ]; then
+            echo "::error::could not read the store origin out of the install route's redirect for ring next: '$loc'."
+            exit 1
+          fi
+          if ! sh scripts/upgrade-path.sh \
+                 "$origin/cli/$TAG/wego-linux-x64" stable "$OUTGOING" --max-hops 1; then
+            echo "::error::$TAG's binary CANNOT UPDATE ITSELF against the live route. Pointing cli/stable at it would brick every machine that takes it, and a rollback would not reach them - a binary that cannot update cannot take one. NOTHING HAS MOVED YET. This passed in the release lane, so what changed is the route or the store, not the build: check apps/api and the signing certificates. See wego/cli#25."
+            exit 1
+          fi
+          echo "ok: $TAG's binary performs a real self-replace against today's route - it can leave."
+
+      - name: Require the install base to be able to reach this tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          # The origin is read from the deploy rather than hardcoded, exactly as
+          # the pin probe above does: nothing in this lane names a store host.
+          loc=$(curl -sI 'https://api.wego.com/install?dl=SHA256SUMS.txt&ring=next' \
+                | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
+          origin=${loc%/cli/next/SHA256SUMS.txt}
+          if [ -z "$origin" ] || [ "$origin" = "$loc" ]; then
+            echo "::error::could not read the store origin out of the install route's redirect for ring next: '$loc'. Refusing to move cli/stable on an unverified route."
+            exit 1
+          fi
+          if ! sh scripts/upgrade-path.sh \
+                 "$origin/cli/cli-v1.1.0/wego-linux-x64" next "$version" --max-hops 1; then
+            echo "::error::a 1.1.0 install cannot reach $version on cli/next, which serves the exact bytes this promote is about to copy onto cli/stable. Moving the pointer would strand every install at or below 1.1.0 - and every 1.0.x machine with it, since the bridge pin lands those on 1.1.0 first. NOTHING HAS MOVED YET: fix the build and re-run. Exit 6 means a signed record 1.1.0 does not accept."
+            exit 1
+          fi
+          echo "ok: a 1.1.0 install reaches $version on the bytes cli/stable is about to serve."
+
       # THE MOVE. A server-side copy of the frozen cli/<tag> blobs onto cli/stable.
       # REQUIRE_PUBLISH: an absent token must FAIL here rather than exit 0 having
       # promoted nothing - a "successful" promote that moved no pointer would read as
@@ -520,6 +778,7 @@ jobs:
         if: steps.promote.outputs.store_origin != ''
         env:
           TAG: ${{ inputs.tag }}
+          ROLLBACK: ${{ steps.outgoing.outputs.how }}
         run: |
           set -euo pipefail
           url='https://api.wego.com/install'
@@ -538,7 +797,7 @@ jobs:
           echo "$out"
 
           if [ "$code" -ne 0 ]; then
-            echo "::error::a binary taken from cli/stable cannot update itself (exit $code). cli/stable now serves $TAG and every install following it is affected. Roll back with wego-ai's promote-cli.yml (tag=cli-v1.1.0, allow_not_next=true) and see wego/cli#25."
+            echo "::error::a binary taken from cli/stable cannot update itself (exit $code). cli/stable now serves $TAG and every install following it is affected. $ROLLBACK See wego/cli#25. Note that a rollback cannot reach a machine that already took these bytes AND cannot update - it has to be reinstalled."
             exit 1
           fi
           if ! printf '%s' "$out" | grep -qi 'up to date'; then
@@ -546,6 +805,63 @@ jobs:
             exit 1
           fi
           echo "ok: a binary from cli/stable asks stable and is told it is current."
+
+      # THE REAL ROUTE, WALKED ONCE THE DESTINATION EXISTS.
+      #
+      # VERIFICATION, NOT A GATE - the gate is `Require the install base to be able
+      # to reach this tag`, which ran before the move and could still stop it. This
+      # is the same claim re-asked against the thing itself rather than its
+      # stand-in: the gate drove `cli/next`, which HOLDS these bytes; this drives
+      # `cli/stable`, which IS the pointer every install follows, through the
+      # legacy bridge pin that only exists on that ring.
+      #
+      # So this is the one and only place 1.0.1's actual two-hop journey runs end
+      # to end: pin -> frozen `cli/cli-v1.1.0/` -> live pointer. It cannot run
+      # earlier, because 1.0.1 refuses every `wego/cli` signature and so can reach
+      # no ring but the pinned one, and that ring did not serve this tag until the
+      # step above moved it.
+      #
+      # `--via 1.1.0` pins the ROUTE, not just the arrival. A 1.0.1 that reached
+      # the new version by some other path would converge and pass silently, and
+      # the path is the thing under test: if the pin ever stops claiming a
+      # pre-relay agent, this is what says so.
+      #
+      # A failure here means the pre-move gate was satisfied and the post-move
+      # reality is not - so the fault is in the move itself or in the pin, not in
+      # the build. The rollback line comes from `Record the rollback target`,
+      # which read what `stable` served BEFORE this run overwrote it; see that
+      # step for why the target is the previous release and not a fixed version.
+      - name: Verify the install base can reach this promote
+        if: steps.promote.outputs.store_origin != ''
+        env:
+          ORIGIN: ${{ steps.promote.outputs.store_origin }}
+          TAG: ${{ inputs.tag }}
+          ROLLBACK: ${{ steps.outgoing.outputs.how }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+
+          # 1.1.0 - the relay release. One hop: it trusts `wego/cli`'s signing
+          # identities, so it reads the live pointer directly.
+          if ! sh scripts/upgrade-path.sh \
+                 "$ORIGIN/cli/cli-v1.1.0/wego-linux-x64" stable "$version" --max-hops 1; then
+            echo "::error::a 1.1.0 install cannot reach $TAG on cli/stable. Every install at or below 1.1.0 - including every 1.0.x machine, which lands on 1.1.0 first - is now stranded on the pointer this promote just moved. $ROLLBACK"
+            exit 1
+          fi
+
+          # 1.0.1 - pre-relay. Two hops, through the frozen bridge.
+          #
+          # A rollback does NOT rescue this one. A 1.0.x machine never reads this
+          # pointer - the pin serves it the frozen prefix whatever `stable` names -
+          # so if this fails, the fault is the pin or the frozen prefix, and putting
+          # the old release back changes nothing for the machines affected.
+          if ! sh scripts/upgrade-path.sh \
+                 "$ORIGIN/cli/cli-v1.0.1/wego-linux-x64" stable "$version" \
+                 --via 1.1.0 --max-hops 2; then
+            echo "::error::a 1.0.1 install cannot reach $TAG on cli/stable in two hops via the frozen bridge. Either the legacy bridge pin no longer claims a pre-relay agent, or the second hop off 1.1.0 is broken. A ROLLBACK WILL NOT FIX THIS: a 1.0.x machine is pinned to cli/cli-v1.1.0 and never reads this pointer, so repoint apps/api or restore the frozen prefix instead. (If the second hop is what broke, $ROLLBACK)"
+            exit 1
+          fi
+          echo "ok: both 1.0.1 and 1.1.0 installs converge on $version."
 
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new

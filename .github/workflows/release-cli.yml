@@ -648,8 +648,72 @@ jobs:
       # names the commit whoever created it chose, and both entrypoints arrive with it
       # already created. The immutable prefix protects itself regardless of who writes
       # it - `putImmutableAssets` puts with `allowOverwrite: false`, and the
-      # `cli/<tag>/COMMIT` sidecar refuses a resume from a different commit
-      # (`upload-release-blob.ts`).
+      # THE ANTI-BRICK GATE: this binary must be able to LEAVE, proven by making
+      # it actually leave. Nothing has been published and no pointer has moved.
+      #
+      # THE FAILURE IT EXISTS FOR IS THE WORST ONE THIS PROJECT HAS. A build that
+      # cannot `wego update` bricks every machine that takes it, and a rollback
+      # does not rescue them: they already hold the broken binary, and a binary
+      # that cannot update cannot take the rollback either. Reinstall by hand is
+      # the only exit. v1.2.0 shipped exactly this (wego/cli#25).
+      #
+      # SMOKE 4 BELOW ALREADY ASKS THE QUESTION AND ACCEPTS A WEAKER ANSWER. It
+      # runs this binary against `cli/next`, which by then serves these very bytes,
+      # so the correct outcome is "already up to date" - and that is precisely
+      # where `update` STOPS. The hashes match, so it never downloads, never
+      # gunzips, never verifies a payload, never renames anything over itself. The
+      # request path is covered; the REPLACE path ships unexercised. v1.2.0's bug
+      # happened to be in the request, which is why that check was enough once and
+      # is not enough in general.
+      #
+      # SO THIS ONE MAKES IT DO THE WHOLE THING. Pointed at `cli/stable` - which
+      # still serves the OUTGOING release and which this lane never touches - the
+      # new binary must fetch, decompress, checksum and atomically replace itself
+      # in place. Downgrading is not a strange thing to ask of it: `update`
+      # compares CHECKSUMS, not versions, so this is byte-for-byte the code path a
+      # user's upgrade takes.
+      #
+      # IT NEEDS NOTHING PUBLISHED, which is why it sits here rather than after
+      # the publish: the binary is in `dist/` and `cli/stable` is already live. A
+      # failure costs a re-run and nobody outside this job has seen the build.
+      #
+      # COVERS linux-x64 ONLY, and for THIS direction that limit bites: the code
+      # doing the work is the NEW code, freshly compiled per platform, and macOS
+      # has a branch nothing here executes (the quarantine clear). See the release
+      # notes/README before widening - a macos-latest leg would close it.
+      - name: Require this build to be able to update itself for real
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          bin=./dist/wego-linux-x64
+          chmod +x "$bin"
+
+          # A dev-versioned binary makes `update` return OK without acting, so a
+          # gate handed one would go green having tested nothing. Assert the build
+          # baked its version rather than hoping it did.
+          got=$("$bin" version)
+          if [ "$got" != "$VERSION" ]; then
+            echo "::error::./dist/wego-linux-x64 reports '$got', not '$VERSION'. It was built without WEGO_BUILD_VERSION baked, so 'wego update' would exit OK without doing anything and this gate would prove nothing."
+            exit 1
+          fi
+
+          outgoing=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' | tr -d '\r\n')
+          if [ -z "$outgoing" ]; then
+            echo "::error::cli/stable serves no VERSION, so there is nothing for this build to update ONTO and its replace path cannot be exercised. Refusing to publish a build whose ability to leave is unproven."
+            exit 1
+          fi
+          if [ "$outgoing" = "$VERSION" ]; then
+            echo "::error::cli/stable already serves $VERSION, so pointing this build at it would exercise no byte swap. Re-releasing a version that is already stable leaves the replace path untested - cut a new version instead."
+            exit 1
+          fi
+
+          echo "making the new $VERSION binary install stable's $outgoing over itself..."
+          if ! sh scripts/upgrade-path.sh "$bin" stable "$outgoing" --max-hops 1; then
+            echo "::error::the $VERSION binary CANNOT UPDATE ITSELF. Publishing it would brick every machine that takes it - and a rollback would not reach them, because a binary that cannot update cannot take one either. This is wego/cli#25. Nothing has been published; fix the update path and re-tag. Exit 6 means a signed record this build refuses (check USER_AGENT and identitiesForRing); anything else is in the download, decompress, checksum or replace path."
+            exit 1
+          fi
+          echo "ok: the $VERSION binary performs a real self-replace - it can leave."
 
       - name: Publish immutable artifact (cli/<tag>)
         id: publish
@@ -921,6 +985,60 @@ jobs:
           BASE: ${{ steps.publish.outputs.store_origin }}/cli/next
           VERSION: ${{ needs.prepare.outputs.version }}
         run: sh scripts/verify-published.sh "$BASE" "$VERSION" native
+
+      # SMOKE 2.5 — THE INSTALL BASE, ASKED FIRST.
+      #
+      # POSITION IS THE POINT. This is the EARLIEST step in this lane that can ask
+      # its question at all, and it is placed ahead of SMOKE 3 and 4 deliberately:
+      # it is the only one whose failure means "this build strands people", so it
+      # must not wait behind two slower smokes that answer narrower questions.
+      #
+      # It cannot run before `Advance cli/next` above. A real binary reaches bytes
+      # only through a ring the deploy knows - `?dl=…&ring=<name>` resolves `edge`,
+      # `next` and `stable` and falls back to `stable` for anything else, so the
+      # immutable `cli/<tag>/` prefix published two steps earlier is not addressable
+      # by a predecessor at all. The first instant these bytes are reachable by a
+      # 1.1.0 binary is the instant `cli/next` names them, and that is here.
+      #
+      # IT TESTS `next` AND IT IS ABOUT `stable`. A promote is a server-side COPY
+      # of the frozen `cli/<tag>` blobs, and it refuses to run unless `cli/next`
+      # already serves the tag (`--require-serving next`), so the bytes this step
+      # drives a 1.1.0 binary onto ARE the bytes `cli/stable` will later be pointed
+      # at. `promote-cli.yml` re-asks the same question immediately before it moves
+      # that pointer; this asks it days earlier, while the answer is still free.
+      #
+      # WHY 1.1.0 IS THE ONE THAT MATTERS. SMOKE 3 drives the PREVIOUS release onto
+      # these bytes, and that predecessor moves forward with every release - so the
+      # distance it covers shrinks to one version while the install base stays put.
+      # Nobody is one version behind. The oldest machines still updating are 1.0.x
+      # and 1.1.0, and a 1.0.x machine's route runs THROUGH 1.1.0: the legacy bridge
+      # pin (wego/foundations#132) serves it the frozen `cli/cli-v1.1.0/` prefix
+      # first, and only its SECOND `update` reads the live pointer. So 1.1.0 is the
+      # hinge - if a 1.1.0 binary cannot verify and install what this release
+      # publishes, every install at or below it is stranded, 1.0.x included.
+      #
+      # THE PREDECESSOR IS PINNED, NOT DERIVED. SMOKE 3 takes whatever the channel
+      # held before; this takes the same immutable `cli/cli-v1.1.0/` artifact on
+      # every run, forever. That is the point: it is the only gate in this lane
+      # whose coverage does not erode as versions accumulate.
+      #
+      # 1.0.1 IS NOT DRIVEN HERE, and its absence is deliberate. Its baked trust set
+      # names wego-ai only, so it refuses anything `wego/cli` signs and cannot reach
+      # ring `next` at all (exit 6, correctly). Its route exists solely on `stable`,
+      # behind the pin - so `promote-cli.yml` owns it, where the pin is also checked
+      # before the pointer moves.
+      - name: Smoke test the 1.1.0 upgrade path (cli/next)
+        if: steps.publish.outputs.store_origin != ''
+        env:
+          ORIGIN: ${{ steps.publish.outputs.store_origin }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! sh scripts/upgrade-path.sh \
+                 "$ORIGIN/cli/cli-v1.1.0/wego-linux-x64" next "$VERSION" --max-hops 1; then
+            echo "::error::a 1.1.0 install cannot reach $VERSION on cli/next. Promoting this build would strand every install at or below 1.1.0 - and every 1.0.x machine too, since the legacy bridge pin lands it on 1.1.0 first. Exit 6 means a signed record 1.1.0 does not accept (check identitiesForRing and what this lane signed as); anything else is in the route, manifest, download or replace path."
+            exit 1
+          fi
 
       # Verify-then-execute. SMOKE 3 executes the predecessor as `wego update`, so its
       # bytes are checksum-verified fail-closed first: the capture step above only
@@ -1381,6 +1499,62 @@ jobs:
             bun run scripts/assert-self-update.ts \
               ./dist/wego-darwin-arm64 https://api.wego.com/install next \
               --expect "$VERSION" --force-replace
+
+      # THE SAME PATH, TAKEN THE WAY A USER TAKES IT - the one claim this job
+      # could not make until now.
+      #
+      # The step above forces the replace over bytes IDENTICAL to the ones already
+      # on disk, which is what lets it exercise this release's own asset. The cost
+      # of that choice is that the end state is byte-identical either way, so it
+      # cannot tell a replace that landed on the running binary from one that
+      # landed somewhere else and reported success. `execPath` resolution is
+      # exactly what goes quietly wrong on macOS - a Homebrew prefix, a symlink,
+      # /opt/homebrew against /usr/local - and the replace half is compiled per
+      # target, so no Linux runner reaches the darwin answer.
+      #
+      # So this one points at `cli/stable`, which still serves the OUTGOING
+      # release and which this lane never touches. The hashes genuinely differ, so
+      # `update` takes the ordinary branch with no `--force` at all: byte for byte
+      # the path a user's upgrade takes, and the version it reports afterwards has
+      # to actually move. Downgrading is not a strange thing to ask of it -
+      # `update` compares CHECKSUMS, not versions, and has no notion of forward.
+      #
+      # ADDITIVE, NOT A REPLACEMENT, and neither claim subsumes the other: the
+      # forced step fetches the NEW asset and would catch a naming or compression
+      # change that this one misses (pointed at stable it would find the old
+      # format and fall back happily); this one takes the REAL branch and would
+      # catch a mis-landed replace the forced one cannot see. Dropping either
+      # loses a failure class.
+      - name: Smoke test a user-shaped replace on macOS (cli/stable)
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          bin=./dist/wego-darwin-arm64
+          chmod +x "$bin"
+
+          got=$("$bin" version)
+          if [ "$got" != "$VERSION" ]; then
+            echo "::error::wego-darwin-arm64 reports '$got', not '$VERSION' - built without WEGO_BUILD_VERSION baked, so 'wego update' would return having done nothing and this leg would prove nothing."
+            exit 1
+          fi
+
+          outgoing=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' | tr -d '\r\n')
+          if [ -z "$outgoing" ]; then
+            echo "::error::cli/stable serves no VERSION, so there are no differing bytes for this build to replace itself with and the unforced path cannot be exercised."
+            exit 1
+          fi
+          if [ "$outgoing" = "$VERSION" ]; then
+            echo "::error::cli/stable already serves $VERSION, so no byte swap is possible and a pass here would prove nothing. Cut a new version rather than re-releasing one that is already stable."
+            exit 1
+          fi
+
+          if ! sh scripts/upgrade-path.sh "$bin" stable "$outgoing" --max-hops 1; then
+            echo "::error::the darwin-arm64 $VERSION binary cannot replace itself on the ordinary, unforced path. Every Mac that took this build would be stuck on it, and a rollback cannot reach them - accepting one needs the update path that is broken. The forced step above passed, so fetch/decompress/checksum/quarantine/rename all run: what fails here is the binary landing somewhere other than where it runs from, or the unforced branch itself."
+            exit 1
+          fi
+          echo "ok: the darwin-arm64 binary replaces itself the way a user's upgrade does."
+
 
   # NO POST-RELEASE SMOKE JOB HERE (#74 rung 7).
   #
