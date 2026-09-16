@@ -1,0 +1,133 @@
+name: Verify the replace path
+description: >-
+  One platform's proof that a machine can ARRIVE at this release and LEAVE it
+  again, plus the install contract. Every step here ran twice before this action
+  existed — inline in `release` for linux-x64, and copied into `replace-macos`
+  for darwin-arm64 — so the two legs could drift without anything noticing. They
+  differed only by the asset name and by `sha256sum` vs `shasum -a 256`, which
+  is exactly the kind of difference a copy accumulates.
+
+inputs:
+  asset:
+    description: The built binary for this platform, e.g. wego-linux-x64.
+    required: true
+  version:
+    description: The version this run is publishing.
+    required: true
+  predecessor-dir:
+    description: Directory holding the previously-published binary and its SHA256SUMS.txt.
+    required: true
+  prev-usable:
+    description: >-
+      '1' when the ring held a usable predecessor. An empty ring is a clean skip,
+      not a failure — there is simply nothing older to update FROM.
+    required: true
+  ring:
+    description: The ring this release advanced, and the one the smokes read from.
+    required: false
+    default: next
+  install-url:
+    description: >-
+      Fixed, never read from a caller's override. A gate that can be pointed at a
+      loopback shim passes having proved nothing about the real route.
+    required: false
+    default: https://api.wego.com/install
+
+runs:
+  using: composite
+  steps:
+    # Verify-then-execute. The next step runs the predecessor as `wego update`, so
+    # its bytes are checked against the SHA256SUMS.txt captured beside it first —
+    # fail-closed, before anything is chmod'd or run.
+    - name: Verify predecessor checksum (${{ inputs.asset }})
+      if: inputs.prev-usable == '1'
+      shell: sh
+      env:
+        DIR: ${{ inputs.predecessor-dir }}
+        ASSET: ${{ inputs.asset }}
+      run: |
+        set -eu
+        bin="$DIR/$ASSET"
+        sums="$DIR/SHA256SUMS.txt"
+        [ -f "$sums" ] || { echo "predecessor SHA256SUMS.txt missing — cannot verify before execution, failing." >&2; exit 1; }
+        exp="$(awk -v f="$ASSET" '$2==f {print $1}' "$sums")"
+        [ -n "$exp" ] || { echo "predecessor $ASSET not listed in SHA256SUMS.txt — failing." >&2; exit 1; }
+        # One helper for both runners: linux has sha256sum, macOS has shasum. The
+        # two copies this replaces each hardcoded their own, which is a difference
+        # that could only ever grow.
+        if command -v sha256sum >/dev/null 2>&1; then
+          act="$(sha256sum "$bin" | awk '{print $1}')"
+        else
+          act="$(shasum -a 256 "$bin" | awk '{print $1}')"
+        fi
+        [ "$exp" = "$act" ] || { echo "predecessor checksum mismatch (expected $exp, got $act) — failing before execution." >&2; exit 1; }
+        # The artifact hop does not carry the exec bit.
+        chmod +x "$bin"
+        echo "Predecessor verified fail-closed against SHA256SUMS.txt: $("$bin" version)"
+
+    # SMOKE 3 — machines can ARRIVE. A real previously-published binary runs its
+    # own real `update -y` against the ring this release just advanced.
+    # `--require-replace` fails instead of passing when the predecessor is already
+    # the expected version, so a release RERUN cannot greenwash.
+    - name: SMOKE 3 · predecessor self-updates onto this release (${{ inputs.asset }})
+      if: inputs.prev-usable == '1'
+      shell: sh
+      env:
+        OLD_BINARY: ${{ inputs.predecessor-dir }}/${{ inputs.asset }}
+        VERSION: ${{ inputs.version }}
+        RING: ${{ inputs.ring }}
+      run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING"
+
+    # SMOKE 4 — machines can LEAVE, the comparison half. The ring serves exactly
+    # these bytes, so the correct outcome is "already up to date" — asserted, so a
+    # run that silently replaced itself with something else fails.
+    #
+    # WEGO_BUILD_VERSION matters: `update` returns EXIT.OK without doing anything
+    # for a dev-versioned binary, so a gate handed one would go green having tested
+    # nothing. assert-self-update.ts refuses that case outright, and this keeps it
+    # from arising.
+    - name: SMOKE 4 · this build reports up to date against ${{ inputs.ring }} (${{ inputs.asset }})
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        ASSET: ${{ inputs.asset }}
+        URL: ${{ inputs.install-url }}
+        RING: ${{ inputs.ring }}
+      run: |
+        set -euo pipefail
+        WEGO_BUILD_VERSION="$VERSION" \
+          bun run scripts/assert-self-update.ts \
+            "./dist/$ASSET" "$URL" "$RING" \
+            --expect "$VERSION" --expect-unchanged
+
+    # SMOKE 5 — machines can LEAVE, the replace half, ACTUALLY EXECUTED. SMOKE 4
+    # returns on the up-to-date branch, above `downloadAndReplace`, so the fetch,
+    # checksum, chmod and atomic rename in THIS build's code never run there.
+    # `--force-replace` is what reaches them. Without it the replace half of every
+    # build shipped one full release ahead of its first execution.
+    - name: SMOKE 5 · forced in-place replace, this build's own code (${{ inputs.asset }})
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        ASSET: ${{ inputs.asset }}
+        URL: ${{ inputs.install-url }}
+        RING: ${{ inputs.ring }}
+      run: |
+        set -euo pipefail
+        WEGO_BUILD_VERSION="$VERSION" \
+          bun run scripts/assert-self-update.ts \
+            "./dist/$ASSET" "$URL" "$RING" \
+            --expect "$VERSION" --force-replace
+
+    # SMOKE 6 — the install contract, which nothing in either repository executes.
+    # SMOKES 3-5 all hand-place a binary and arrange its record; this one installs
+    # for real and asserts the record lands where the installed binary reads it.
+    # Platform-relevant on both legs: the script's own `uname` mapping picks the
+    # asset, so darwin and linux take different paths through it.
+    - name: SMOKE 6 · the install script writes where this build reads (${{ inputs.asset }})
+      shell: sh
+      env:
+        VERSION: ${{ inputs.version }}
+        URL: ${{ inputs.install-url }}
+        RING: ${{ inputs.ring }}
+      run: sh scripts/install-smoke.sh "$URL" "$RING" "$VERSION"

@@ -63,6 +63,15 @@ interface Workflow {
 }
 
 const LANE = "release-cli.yml";
+/** The one definition both platform legs call. Before it existed, every gate
+ *  below was written twice — inline for linux-x64 and copied into the macOS job —
+ *  and this file's whole job was to notice when the two copies drifted. They can
+ *  no longer drift, so the assertions now follow the claims into the action and
+ *  ask the same questions of the resolved leg. */
+const ACTION = ".github/actions/verify-replace/action.yml";
+const ACTION_REF = "./.github/actions/verify-replace";
+/** The install contract: the installer writes a record, this build reads it. */
+const INSTALL = "scripts/install-smoke.sh";
 /** The up-to-date / replace gate. Drives `wego update` from a built asset. */
 const GATE = "scripts/assert-self-update.ts";
 /** The arriving gate. Drives a PUBLISHED PREDECESSOR's own `wego update`. */
@@ -71,6 +80,21 @@ const ARRIVE = "scripts/update-smoke.sh";
 const wf = Bun.YAML.parse(
   readFileSync(`.github/workflows/${LANE}`, "utf8"),
 ) as Workflow;
+
+interface Action {
+  inputs?: Record<string, { default?: string }>;
+  runs: { steps?: Step[] };
+}
+const action = Bun.YAML.parse(readFileSync(ACTION, "utf8")) as Action;
+
+/** Substitute a calling step's `with:` (falling back to the action's declared
+ *  defaults) into an action step's text, so a resolved leg reads exactly as the
+ *  inline copy it replaced — `wego-darwin-arm64`, not `${{ inputs.asset }}`. */
+function resolveInputs(text: string, withs: Record<string, unknown>): string {
+  return text.replace(/\$\{\{\s*inputs\.([a-z-]+)\s*\}\}/g, (_m, key: string) =>
+    String(withs[key] ?? action.inputs?.[key]?.default ?? ""),
+  );
+}
 
 interface Leg {
   job: string;
@@ -88,17 +112,29 @@ interface Leg {
  */
 function legs(tool: string): Leg[] {
   return Object.entries(wf.jobs).flatMap(([job, j]) =>
-    (j.steps ?? [])
-      .filter((s) => (s.run ?? "").includes(tool))
-      .map((step) => ({
-        job,
-        runs: j["runs-on"] ?? "",
-        step,
-        // env is part of the body on purpose: the arriving legs name their asset in
-        // `OLD_BINARY` rather than inline, so a run-only search would report a leg
-        // pointed at the wrong platform's binary as correct.
-        body: [step.run ?? "", ...Object.values(step.env ?? {})].join("\n"),
-      })),
+    (j.steps ?? []).flatMap((s) => {
+      // A step that delegates to the action stands for the action's own steps,
+      // attributed to the job that called it — which is what keeps "does the
+      // darwin leg prove SMOKE 5" a question about the lane and not about a file.
+      const steps: Step[] =
+        s.uses === ACTION_REF ? (action.runs.steps ?? []) : [s];
+      const withs = (s.with ?? {}) as Record<string, unknown>;
+      const resolve = (t: string) =>
+        s.uses === ACTION_REF ? resolveInputs(t, withs) : t;
+      return steps
+        .filter((step) => resolve(step.run ?? "").includes(tool))
+        .map((step) => ({
+          job,
+          runs: j["runs-on"] ?? "",
+          step,
+          // env is part of the body on purpose: the arriving legs name their asset
+          // in `OLD_BINARY` rather than inline, so a run-only search would report a
+          // leg pointed at the wrong platform's binary as correct.
+          body: [step.run ?? "", ...Object.values(step.env ?? {})]
+            .map((t) => resolve(String(t)))
+            .join("\n"),
+        }));
+    }),
   );
 }
 
@@ -228,6 +264,60 @@ describe(`${LANE}: linux-x64 and darwin-arm64 make the same claims`, () => {
       expect(job.permissions?.["id-token"]).toBeUndefined();
       expect(job.environment).toBeUndefined();
       expect(JSON.stringify(job)).not.toContain("BLOB_READ_WRITE_TOKEN");
+    }
+  });
+});
+
+describe(`${ACTION}: one definition, so the legs cannot drift`, () => {
+  const callers = Object.entries(wf.jobs).flatMap(([job, j]) =>
+    (j.steps ?? [])
+      .filter((s) => s.uses === ACTION_REF)
+      .map((s) => ({ job, runs: j["runs-on"] ?? "", with: s.with ?? {} })),
+  );
+
+  it("is called by both platform legs and by nothing else", () => {
+    expect(callers.length).toBe(2);
+    expect(callers.some((c) => c.runs.startsWith("ubuntu-"))).toBe(true);
+    expect(callers.some((c) => c.runs.startsWith("macos-"))).toBe(true);
+  });
+
+  it("is called for a different asset on each leg", () => {
+    const assets = callers.map((c) => String(c.with.asset));
+    expect(new Set(assets).size).toBe(2);
+    expect(assets).toContain("wego-linux-x64");
+    expect(assets.some((a) => DARWIN.test(a))).toBe(true);
+  });
+
+  it("carries every gate, so neither leg can be missing one", () => {
+    const bodies = (action.runs.steps ?? []).map((s) => s.run ?? "").join("\n");
+    for (const tool of [ARRIVE, GATE, INSTALL]) {
+      expect(bodies).toContain(tool);
+    }
+  });
+
+  it("executes the install contract on both platforms (SMOKE 6)", () => {
+    // The installer's own `uname` mapping picks the asset, so darwin and linux
+    // take different paths through the script it serves. Running it on one leg
+    // would leave the other's install path as untested as it was before.
+    expect(legs(INSTALL).length).toBe(2);
+    expect(legs(INSTALL).some(onLinux)).toBe(true);
+    expect(legs(INSTALL).some(onMac)).toBe(true);
+  });
+
+  it("skips only the arriving gate when there is no predecessor", () => {
+    // SMOKE 3 needs an older build to update FROM; 4, 5 and 6 do not. Gating the
+    // whole action on the predecessor would silently drop three proofs on a first
+    // release, which is exactly when a lane most wants them.
+    const gated = (action.runs.steps ?? []).filter((s) =>
+      (s.if ?? "").includes("prev-usable"),
+    );
+    // Two, and they are the arriving pair: verify the predecessor's checksum, then
+    // run it. With no predecessor there is nothing to verify and nothing to run.
+    expect(gated.length).toBe(2);
+    expect(gated.some((s) => (s.run ?? "").includes(ARRIVE))).toBe(true);
+    // The three that do not need one stay ungated.
+    for (const tool of [GATE, INSTALL]) {
+      expect(gated.some((s) => (s.run ?? "").includes(tool))).toBe(false);
     }
   });
 });

@@ -928,162 +928,17 @@ jobs:
       # the other before anything is chmod'd or run. Separate from the capture so the
       # verification is a step in its own right rather than a branch inside a download.
       # Gated on `usable`, because an empty `cli/next` leaves no binary to verify.
-      - name: Verify predecessor checksum
-        if: steps.publish.outputs.store_origin != '' && steps.prev_channel.outputs.usable == '1'
-        env:
-          DIR: ${{ runner.temp }}/prev-channel
-          ASSET: wego-linux-x64
-        run: |
-          set -eu
-          bin="$DIR/$ASSET"
-          sums="$DIR/SHA256SUMS.txt"
-          [ -f "$sums" ] || { echo "predecessor SHA256SUMS.txt missing — cannot verify before execution, failing." >&2; exit 1; }
-          exp="$(awk -v f="$ASSET" '$2==f {print $1}' "$sums")"
-          [ -n "$exp" ] || { echo "predecessor $ASSET not listed in SHA256SUMS.txt — failing." >&2; exit 1; }
-          act="$(sha256sum "$bin" | awk '{print $1}')"
-          [ "$exp" = "$act" ] || { echo "predecessor checksum mismatch (expected $exp, got $act) — failing before execution." >&2; exit 1; }
-          chmod +x "$bin"
-          echo "Predecessor verified fail-closed against SHA256SUMS.txt (capture or restore): $("$bin" version)"
-
-      # SMOKE 3 — the REAL consumer self-update, end-to-end, on WHICHEVER channel
-      # this release advanced. Run the predecessor binary for that channel (an
-      # actual older published build, captured or restored above) through its own
-      # `wego update -y`: it fetches the just-advanced pointer over real HTTPS,
-      # verifies the checksum fail-closed, and atomically swaps itself in place —
-      # the byte-for-byte path a user's `wego update` takes. Asserts the binary now
-      # reports this release's version.
-      #
-      # Before the flavour channels were split, only cli/staging was
-      # ever advanced mid-job, so the prod `wego update` path was exercised solely
-      # through its staging twin. Now there is one binary and one ring here: every
-      # release smokes `wego` against cli/next, so no release ships an unexercised
-      # self-update, and what `stable` later receives is these same verified bytes.
-      #
-      # --require-replace is ALWAYS on: a real byte-swap must occur, so a run that
-      # measured nothing can never report a working self-update.
-      #
-      # THE PREDECESSOR IS THE `cli/next` POINTER, not an immutable `cli/<prev-tag>/`
-      # prefix. The capture step above reads the ring ONCE, before the advance, and
-      # carries the fidelity argument for doing so. This comment claimed the
-      # immutable prefix, and promised that "every attempt reads the same genuine
-      # older bytes rather than the pointer this job just advanced", for a while
-      # after the source had moved to the ring. It was the stale half of a
-      # contradiction with the capture step, and it is why the rerun failure below
-      # read as a bug rather than as the designed outcome.
-      #
-      # ON A RERUN past `Advance cli/next` the captured predecessor IS this release,
-      # no real swap is possible, and this step fails. Correct, and not a rerun
-      # bug: see `Advance cli/next` above for why the lane only moves forward, and
-      # for what a rerun does from each failure position.
-      # Skipped on a channel's first release (no predecessor), when that predecessor
-      # published no objects (`usable != 1`), or when it predates the baked update
-      # channel (the script SKIPs, exit 0). Predecessor is linux-x64 (this runner),
-      # and that is harmless HERE: the code doing the swap is the predecessor's —
-      # old, frozen, proven by everyone already running it — so nothing this release
-      # changed about `update` is under test in this step either way. The direction
-      # where the platform DOES matter is the outbound one, and it is SMOKE 5's
-      # (`replace-macos`, below).
-      - name: Smoke test real self-update (cli/next)
-        if: steps.publish.outputs.store_origin != '' && steps.prev_channel.outputs.usable == '1'
-        env:
-          OLD_BINARY: ${{ runner.temp }}/prev-channel/wego-linux-x64
-          VERSION: ${{ needs.prepare.outputs.version }}
-          # The ring this channel IS. A predecessor from foundations#74 rung 3 or
-          # later follows the ring its INSTALLER recorded and refuses to guess one,
-          # so the smoke — which places a binary rather than installing it — has to
-          # name the ring it is smoking.
-          RING: next
-        # No install-URL override: the smoke reads WHERE it was installed from out of
-        # the predecessor's own reinstall hint, which is what wego-ai always did.
-        # Phase 1 overrode that with a loopback resolver, because a rehearsal had to
-        # resolve `/install` into the rehearsal store rather than production; with
-        # the lane publishing to the real store there is nothing left to redirect.
-        #
-        # The exec bit is already restored by the verify step above (and update-smoke.sh
-        # chmods its own working copy regardless), so no chmod is needed here.
-        run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING"
-
-      # SMOKE 4: the binary THIS RUN BUILT must be able to update itself.
-      #
-      # SMOKE 3 above updates the PREDECESSOR onto these bytes - it proves
-      # machines can ARRIVE at this version. Nothing proved one could LEAVE it.
-      # v1.2.0 shipped a binary whose update path set no user agent and which
-      # could therefore never update again (wego/cli#25); every check in this
-      # lane passed, because none of them ran `wego update` from the artifact.
-      #
-      # `cli/next` now serves exactly these bytes, so the correct outcome is
-      # "already up to date" - asserted, so a run that silently replaced itself
-      # with something else is a failure rather than a pass.
-      #
-      # WHICH MEANS THIS STOPS SHORT OF THE REPLACE. `update` returns on the
-      # up-to-date branch, above `downloadAndReplace`, so the fetch, checksum,
-      # chmod and atomic rename in THIS build's code are not executed here.
-      # Reaching them takes `--force`: SMOKE 5, immediately below, which is why
-      # these are two steps and not one. Both claims are wanted, and only one of
-      # them can be made per run: this step proves `update`'s own COMPARISON
-      # concluded "already current" against the ring, which a forced run skips by
-      # construction.
-      #
-      # This CANNOT see the legacy bridge pin: the pin is `stable`-only, and
-      # this lane only ever touches `next`. The promote lane carries the check
-      # that does. This one proves the update path functions at all, before a
-      # tag exists to clean up.
-      #
-      # The install URL is FIXED, not read from `SMOKE_INSTALL_URL`. That
-      # variable was the Phase 1 rehearsal switch and its last consumers go with
-      # the resolver in this same change; honouring it here would leave this gate
-      # pointable at a loopback shim, where it would pass having proved nothing
-      # about the real route - the exact class of failure it exists to catch.
-      - name: Smoke test self-update from the new binary (cli/next)
+      # SMOKES 3-6 for linux-x64. Every step behind this `uses:` used to sit
+      # here inline and again, copied, in `replace-macos` — see the action for what
+      # the two copies had already started to differ by.
+      - name: Prove the replace path (linux-x64)
         if: steps.publish.outputs.store_origin != ''
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          # WEGO_BUILD_VERSION matters: `update` returns EXIT.OK without doing
-          # anything for a dev-versioned binary, so a gate handed one would go
-          # green having tested nothing. assert-self-update.ts refuses that case
-          # outright, and this keeps it from arising.
-          WEGO_BUILD_VERSION="$VERSION" \
-            bun run scripts/assert-self-update.ts \
-              ./dist/wego-linux-x64 https://api.wego.com/install next \
-              --expect "$VERSION" --expect-unchanged
-
-      # SMOKE 5 (linux-x64) - THE REPLACE PATH IN THIS BUILD, ACTUALLY EXECUTED.
-      #
-      # The gap this closes is TIMING, and it is not macOS-specific. Until now no
-      # release ever ran the `downloadAndReplace` it was shipping:
-      #
-      #   release vN    SMOKE 3: v(N-1) replaces itself -> runs v(N-1)'s code
-      #                 SMOKE 4: vN reports up to date  -> runs nothing
-      #   release vN+1  SMOKE 3: vN replaces itself     -> runs vN's code, at last
-      #
-      # So the replace half of every build shipped one full release ahead of its
-      # first execution, and whoever got there first - a consumer on `cli/next`,
-      # or the NEXT release's SMOKE 3 - found the bug after publication. That is
-      # the standing caveat in `assert-self-update.ts`'s header ("a regression
-      # that only appears on the NEXT release rather than this one"), and it costs
-      # ~20 seconds on a runner that already holds the binary to stop paying it.
-      #
-      # `--force` is what makes it possible: the ring serves exactly these bytes,
-      # so only a forced run gets past the up-to-date branch and through the fetch,
-      # the checksum, the chmod and the atomic rename. The bytes landing IDENTICAL
-      # afterwards is then itself an assertion - the ring is serving the artifact
-      # this run built.
-      #
-      # The macOS leg (`replace-macos`) makes the SAME claim on the other platform
-      # this lane gates, and only a macOS runner can: `clearQuarantine` is compiled
-      # in per platform and this step can never reach it.
-      - name: Smoke test a real in-place replace (cli/next)
-        if: steps.publish.outputs.store_origin != ''
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          WEGO_BUILD_VERSION="$VERSION" \
-            bun run scripts/assert-self-update.ts \
-              ./dist/wego-linux-x64 https://api.wego.com/install next \
-              --expect "$VERSION" --force-replace
+        uses: ./.github/actions/verify-replace
+        with:
+          asset: wego-linux-x64
+          version: ${{ needs.prepare.outputs.version }}
+          predecessor-dir: ${{ runner.temp }}/prev-channel
+          prev-usable: ${{ steps.prev_channel.outputs.usable }}
 
       # NO skill steps. The skill channel did not move to this repository: the
       # SKILL.md ships embedded in the binary, and `update` re-runs the new
@@ -1313,74 +1168,16 @@ jobs:
       #
       # `shasum -a 256`, not `sha256sum`: the linux twin of this step can assume
       # coreutils and this one cannot. Same manifest, same format, same awk.
-      - name: Verify the darwin predecessor checksum
-        if: needs.release.outputs.prev_usable == '1'
-        env:
-          DIR: ${{ runner.temp }}/prev-channel
-          ASSET: wego-darwin-arm64
-        run: |
-          set -eu
-          bin="$DIR/$ASSET"
-          sums="$DIR/SHA256SUMS.txt"
-          [ -f "$sums" ] || { echo "predecessor SHA256SUMS.txt missing — cannot verify before execution, failing." >&2; exit 1; }
-          exp="$(awk -v f="$ASSET" '$2==f {print $1}' "$sums")"
-          [ -n "$exp" ] || { echo "predecessor $ASSET not listed in SHA256SUMS.txt — failing." >&2; exit 1; }
-          act="$(shasum -a 256 "$bin" | awk '{print $1}')"
-          [ "$exp" = "$act" ] || { echo "predecessor checksum mismatch (expected $exp, got $act) — failing before execution." >&2; exit 1; }
-          # The artifact hop does not carry the exec bit.
-          chmod +x "$bin"
-          echo "Predecessor verified fail-closed against SHA256SUMS.txt: $("$bin" version)"
-
-      - name: Smoke test real self-update on macOS (cli/next)
-        if: needs.release.outputs.prev_usable == '1'
-        env:
-          OLD_BINARY: ${{ runner.temp }}/prev-channel/wego-darwin-arm64
-          VERSION: ${{ needs.prepare.outputs.version }}
-          # Same reason the linux leg names it: a predecessor new enough to require
-          # an install record refuses to guess a ring, and this smoke hand-places a
-          # binary rather than installing it.
-          RING: next
-        # `update-smoke.sh` is already macOS-clean - it prefers `sha256sum` and falls
-        # back to `shasum -a 256`, and its own header names `wego-darwin-arm64` on
-        # Apple silicon as a supported invocation. No porting was needed.
-        run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING"
-
-      # SMOKE 4 (macOS leg) - AND A MACHINE CAN LEAVE IT.
-      #
-      # NOT redundant with SMOKE 5 below, and the distinction is the whole reason
-      # both steps exist on linux too. A forced run skips `update`'s own comparison
-      # BY CONSTRUCTION: it is told to replace regardless. Only an unforced run
-      # proves the comparison concluded "already current" against the ring. A darwin
-      # version-parse bug that left every up-to-date binary believing it was behind -
-      # re-downloading itself on every invocation - passes SMOKE 5 and fails here.
-      #
-      # `cli/next` serves exactly these bytes by now, so "already up to date" is the
-      # correct outcome and anything else is a failure rather than a pass.
-      - name: Smoke test self-update from the new binary on macOS (cli/next)
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          WEGO_BUILD_VERSION="$VERSION" \
-            bun run scripts/assert-self-update.ts \
-              ./dist/wego-darwin-arm64 https://api.wego.com/install next \
-              --expect "$VERSION" --expect-unchanged
-
-      # The install URL is FIXED here for the same reason it is in SMOKE 4: a gate
-      # pointed at a shim would pass having proved nothing about the real route.
-      - name: Smoke test a real in-place replace on macOS (cli/next)
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          # WEGO_BUILD_VERSION for the same reason as SMOKE 4: a dev-versioned
-          # binary makes `update` return EXIT.OK having done nothing, and a gate
-          # handed one would go green having tested nothing. The script refuses
-          # that case outright; this keeps it from arising.
-          WEGO_BUILD_VERSION="$VERSION" \
-            bun run scripts/assert-self-update.ts \
-              ./dist/wego-darwin-arm64 https://api.wego.com/install next \
-              --expect "$VERSION" --force-replace
+      # The same four proofs as the linux leg, from the same definition. This job
+      # exists because `clearQuarantine` is compiled in per platform and a linux
+      # runner can never reach it — not because the checks differ.
+      - name: Prove the replace path (darwin-arm64)
+        uses: ./.github/actions/verify-replace
+        with:
+          asset: wego-darwin-arm64
+          version: ${{ needs.prepare.outputs.version }}
+          predecessor-dir: ${{ runner.temp }}/prev-channel
+          prev-usable: ${{ needs.release.outputs.prev_usable }}
 
   # NO POST-RELEASE SMOKE JOB HERE (#74 rung 7).
   #
