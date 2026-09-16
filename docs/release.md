@@ -218,7 +218,12 @@ checks and everything else runs after the pointer moves:
 | Can machines on the bad build reach this rollback | no | The question nothing else in the repo asks — see below |
 | Verify `cli/stable` | no | Every asset hash-checked against the manifest just committed |
 
-About ten seconds from dispatch to every install being served the old bytes.
+**About half a minute from dispatch to every install being served the old bytes**,
+against 5–15 minutes for a promote. Measured on a real `plan_only` rehearsal: 21s
+to run every check and stop before the move, of which the checks themselves are a
+few seconds — the rest is runner provisioning, checkout and `bun install`. The move
+adds ~5s. Only the move genuinely needs bun, so that tail is trimmable if it ever
+matters.
 
 **The promote battery is not repeated.** A rollback target is bytes that already
 served `cli/stable` — stronger evidence than any gate can manufacture, since it
