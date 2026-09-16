@@ -1258,3 +1258,88 @@ describe("the ring stamp and the edit baseline share one marker file", () => {
     expect(markerSource(marker)).toBe("embedded");
   });
 });
+
+describe("skill install --owned-only with NO channel configured (the shipped wiring)", () => {
+  // The post-update refresh: `update` spawns the NEW binary's
+  // `skill install --owned-only -y`, and `index.ts` supplies neither `skillUrl`
+  // nor `fetchRemoteSkill`. Every test above injects a channel, so the shape the
+  // binary actually ships in had no coverage at all — which is how #24 shipped:
+  // `verified` was `canonical !== null`, permanently false without a channel, so
+  // rule 3 declined on every machine that already had the skill and the refresh
+  // could never write.
+  const STALE = "# stale\n";
+  const FRESH = "# this binary's embed\n";
+
+  /** An owned dir holding `body`, with a marker baseline recording `wrote`
+   *  (defaults to `body` — i.e. untouched since wego wrote it). */
+  async function ownedDir(body: string, wrote = body): Promise<string> {
+    const dir = join(home, ".claude", "skills", "wego");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "SKILL.md"), body);
+    const h = new Bun.CryptoHasher("sha256");
+    h.update(wrote);
+    await writeFile(join(dir, ".wego-skill-owner"), h.digest("hex"));
+    return dir;
+  }
+
+  it("refreshes a stale, pristine body to this binary's embed", async () => {
+    await ownedDir(STALE);
+    const { deps } = makeDeps({ body: FRESH });
+
+    expect(await skill(["install", "--owned-only", "-y"], deps)).toBe(0);
+    expect(await readFile(userSkillFile(), "utf8")).toBe(FRESH);
+  });
+
+  it("says it updated rather than declining to verify", async () => {
+    await ownedDir(STALE);
+    const { deps, out } = makeDeps({ body: FRESH });
+
+    await skill(["install", "--owned-only", "-y"], deps);
+    expect(out.join("\n")).toMatch(/Updated wego skill/);
+    expect(out.join("\n")).not.toMatch(/could not verify/);
+  });
+
+  it("still leaves a locally modified body alone (rule 1 is unaffected)", async () => {
+    const EDITED = "# stale\n\nMy team's extra house rule.\n";
+    await ownedDir(EDITED, STALE);
+    const { deps, out } = makeDeps({ body: FRESH });
+
+    expect(await skill(["install", "--owned-only", "-y"], deps)).toBe(0);
+    expect(await readFile(userSkillFile(), "utf8")).toBe(EDITED);
+    expect(out.join("\n")).toMatch(/local modifications/);
+  });
+
+  it("still leaves a pre-baseline install alone (rule 2 is unaffected)", async () => {
+    const dir = join(home, ".claude", "skills", "wego");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "SKILL.md"), "# hand edited\n");
+    await writeFile(join(dir, ".wego-skill-owner"), ""); // pre-baseline
+    const { deps } = makeDeps({ body: FRESH });
+
+    expect(await skill(["install", "--owned-only", "-y"], deps)).toBe(0);
+    expect(await readFile(userSkillFile(), "utf8")).toBe("# hand edited\n");
+  });
+
+  it("still creates nothing in a dir wego does not own", async () => {
+    const unowned = join(home, ".claude", "skills", "wego");
+    await mkdir(unowned, { recursive: true });
+    const { deps } = makeDeps({ body: FRESH });
+
+    expect(await skill(["install", "--owned-only", "-y"], deps)).toBe(0);
+    expect(await exists(join(unowned, "SKILL.md"))).toBe(false);
+    expect(await exists(join(unowned, ".wego-skill-owner"))).toBe(false);
+  });
+
+  it("a CONFIGURED but unreachable channel still declines (the guard is scoped, not deleted)", async () => {
+    await ownedDir(STALE);
+    const { deps, out } = makeDeps({
+      body: FRESH,
+      skillUrl: "https://blob.example/skill/stable",
+      fetchRemoteSkill: () => Promise.resolve(null),
+    });
+
+    expect(await skill(["install", "--owned-only", "-y"], deps)).toBe(0);
+    expect(await readFile(userSkillFile(), "utf8")).toBe(STALE);
+    expect(out.join("\n")).toMatch(/could not verify/);
+  });
+});

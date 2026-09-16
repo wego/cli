@@ -771,15 +771,28 @@ function unattendedSkipReason(
     return `${file} predates the content baseline – left alone. Run \`${programName()} skill install\` to adopt it.`;
   }
 
-  // 3. Not an edit at all, but writing would still lose content: the body is the
-  //    binary's embed rather than a verified remote one, and a file is already
-  //    there. An earlier refresh may have installed a published body postdating
-  //    this build, so writing would DOWNGRADE it. `requireRemote` gives the
-  //    refresh this all-or-nothing, which the installer cannot take — on a clean
-  //    machine it must still create from nothing — hence the per-target decision
-  //    off `resolveInstallBody`'s `verified`. The edit guard above does not cover
-  //    this: the installed body matches its baseline, so it is not an edit.
-  if (!verified) {
+  // 3. Not an edit at all, but writing would still lose content: a channel is
+  //    configured, its fetch did not land, and the fallback body is the binary's
+  //    embed with a file already there. An earlier refresh may have installed a
+  //    published body postdating this build, so writing would DOWNGRADE it.
+  //    `requireRemote` gives the refresh this all-or-nothing, which the installer
+  //    cannot take — on a clean machine it must still create from nothing — hence
+  //    the per-target decision off `resolveInstallBody`'s `verified`. The edit
+  //    guard above does not cover this: the installed body matches its baseline,
+  //    so it is not an edit.
+  //
+  //    Scoped to a CONFIGURED channel, and that scoping is the whole of #24.
+  //    `verified` does double duty — it also labels the marker's provenance — and
+  //    is false whenever the body is the embed, including when there is no other
+  //    source it could have come from. This repository ships exactly that wiring:
+  //    the skill channel is gone and `index.ts` supplies neither `skillUrl` nor
+  //    `fetchRemoteSkill`, so the rule fired on every machine that already had
+  //    the skill and the post-update refresh could never write. With no channel
+  //    nothing on disk can postdate this binary's embed, so there is no newer
+  //    body to lose and the premise the rule is written on does not hold.
+  const channelConfigured =
+    deps.skillUrl !== undefined && deps.fetchRemoteSkill !== undefined;
+  if (!verified && channelConfigured) {
     return `${file} left unchanged – could not verify the published copy, and the installed one may be newer than this binary's built-in copy.`;
   }
   return null;
