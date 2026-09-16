@@ -7,7 +7,7 @@
   "include-v-in-tag": true,
   "tag-separator": "-",
   "pull-request-title-pattern": "chore(cli): release ${version}",
-  "pull-request-header": "The release PR for the `wego` CLI. Merging it is what releases: release-please computes the version from the commits below, writes the changelog, and tags `vX.Y.Z`. That tag starts `release-cli.yml`, which builds and publishes the binaries. Nobody types a version.",
+  "pull-request-header": "The release PR for the `wego` CLI. Merging it is what releases: release-please computes the version from the commits below and tags `vX.Y.Z`. That tag starts `release-cli.yml`, which builds and publishes the binaries. Nobody types a version. No changelog file is written (`skip-changelog`); the commit list below and the GitHub Release notes are the record.",
   "changelog-sections": [
     { "type": "feat", "section": "Features" },
     { "type": "fix", "section": "Fixes" },

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   interpretUpdate,
   refusedAsUnreleased,
+  reportedReplaced,
   reportedUnchanged,
 } from "./assert-self-update";
 
@@ -73,5 +74,46 @@ describe("the gate refuses to pass on a binary that tests nothing", () => {
         "Updated wego from ring next -> /home/u/.local/bin/wego.",
       ),
     ).toBe(false);
+  });
+});
+
+describe("the replace-path claim (--force-replace, the macOS leg)", () => {
+  // The success line `downloadAndReplace` prints, arrow and all. Matched loosely
+  // enough to survive a reworded path suffix, tightly enough that the up-to-date
+  // line can never satisfy it.
+  it("reads a real swap out of the success line", () => {
+    expect(
+      reportedReplaced(
+        "Updated wego from ring next → /Users/runner/work/wego. Run `wego version` to confirm.",
+      ),
+    ).toBe(true);
+  });
+
+  it("is not satisfied by the up-to-date short circuit", () => {
+    // The whole point: with --force this line means the force flag never took
+    // and the quarantine clear went unrun, which must be a red run, not a green.
+    expect(reportedReplaced("Already up to date (1.2.7, ring next).")).toBe(
+      false,
+    );
+  });
+
+  it("is not satisfied by a refusal that merely mentions the ring", () => {
+    expect(
+      reportedReplaced(
+        "SHA256SUMS.txt on ring next is not vouched for - refusing it",
+      ),
+    ).toBe(false);
+  });
+
+  it("stays the exact complement of the unchanged report", () => {
+    const swapped = "Updated wego from ring next → /home/u/.local/bin/wego.";
+    const unchanged = "Already up to date (1.2.7, ring next).";
+    expect([reportedReplaced(swapped), reportedUnchanged(swapped)]).toEqual([
+      true,
+      false,
+    ]);
+    expect([reportedReplaced(unchanged), reportedUnchanged(unchanged)]).toEqual(
+      [false, true],
+    );
   });
 });

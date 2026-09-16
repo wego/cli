@@ -10,15 +10,20 @@ name: edge-cli
 #   - "a broken edge build blocks nothing": it runs post-merge, so it can never
 #     gate a pull request, and it is not a required status check.
 #
-# EXPECTED TO BE RED ON THE FIRST MERGE INTO THIS REPOSITORY, at the identity
-# gate, and that red run is the input to wego/foundations#128's follow-up (1b).
-# `publish-edge-blob.ts` verifies the record it just signed against
-# `identitiesForRing("edge")`, and `src/release-signing/identity.ts` still names
-# wego-ai's workflow:
-#   https://github.com/wego/wego-ai/.github/workflows/edge-cli.yml@refs/heads/main
-# cosign here asserts `wego/cli`'s, so the verify fails - correctly, and
-# fail-closed. The wego/cli identities are added in 1b from the real certificate
-# records that run produces, never typed by hand.
+# THE IDENTITY GATE IS SATISFIED AND THIS LANE PUBLISHES GREEN. It was expected to
+# be red on the first merge into this repository - `publish-edge-blob.ts` verifies
+# the record it just signed against `identitiesForRing("edge")`, which named only
+# wego-ai's workflow, while cosign here asserts `wego/cli`'s. That gap was closed
+# by wego/foundations#128's follow-up (1b), which added
+#   https://github.com/wego/cli/.github/workflows/edge-cli.yml@refs/heads/main
+# to `src/release-signing/identity.ts` (`CLI_EDGE_SIGNING_IDENTITY`) from the real
+# certificate records that run produced, never typed by hand. The wego-ai rule is
+# still listed beside it for the migration; `identitiesForRing("edge")` returns
+# both.
+#
+# This note is kept rather than deleted because "the edge lane is red at the
+# identity gate" is the one failure here that is correct behaviour rather than a
+# bug, and the next person to see it should recognise it.
 #
 # THREE JOBS, AND THE SPLIT IS THE POINT (see `sign` below). `build` makes the
 # bytes, `sign` vouches for them, `publish` writes them to the store. No job holds

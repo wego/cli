@@ -9,7 +9,7 @@
  * Every binary is also published as a `<asset>.gz` copy (issue #1235).
  *
  * ONE build, not two flavors (foundations#74 rung 7): the binary bakes the PROD
- * endpoints and `--target staging|local` swaps the whole auth bundle at run time
+ * endpoints and `--target staging` swaps the whole auth bundle at run time
  * (`src/target.ts`), so "which backend" is no longer a property of the artifact.
  *
  * The prod endpoints + the public PKCE client_id + the release version
@@ -60,7 +60,7 @@ if (process.argv[2]) {
   console.error(
     `build-release.ts takes no arguments (got "${process.argv[2]}"). The wegostaging ` +
       "flavor is gone: one `wego-*` build is produced, and the backend is chosen at " +
-      "run time with `--target prod|staging|local` (or WEGO_TARGET).",
+      "run time with `--target prod|staging` (or WEGO_TARGET).",
   );
   process.exit(1);
 }

@@ -12,7 +12,6 @@ import { EXIT } from "./error-report";
 import {
   DEFAULT_TARGET,
   isProdTarget,
-  LOCAL_API_URL_FALLBACK,
   parseTarget,
   resolveTarget,
   stripTargetFlag,
@@ -36,13 +35,9 @@ import { maybeSendTelemetry, type TelemetryDeps } from "./telemetry";
  *
  *  - **staging as the default** → "prod when nothing says otherwise" and "prod is
  *    the default in a loaded config" both fail.
- *  - **removing the telemetry condition** → "a staging run sends nothing" and its
- *    `local` twin fail, and "a prod run does send" is the guard that keeps them
- *    from passing vacuously.
- *
- * `apps/cli/live/target.ts` resolves the same three names for the tier-C harness
- * and deliberately defaults to `local` — a harness with no argument should not
- * reach production. The product default is the opposite, for the same reason.
+ *  - **removing the telemetry condition** → "a staging run sends nothing" fails,
+ *    and "a prod run does send" is the guard that keeps it from passing
+ *    vacuously.
  */
 
 /** A prod release's baked bundle. Deliberately carries NO staging values: the
@@ -75,8 +70,8 @@ function config(over: { argv?: string[]; env?: Record<string, string> } = {}) {
 }
 
 describe("the target axis", () => {
-  it("is exactly prod, staging and local", () => {
-    expect([...TARGETS]).toEqual(["prod", "staging", "local"]);
+  it("is exactly prod and staging", () => {
+    expect([...TARGETS]).toEqual(["prod", "staging"]);
   });
 
   it("is prod when nothing says otherwise", () => {
@@ -91,8 +86,8 @@ describe("the target axis", () => {
     expect(resolveTarget(argv("--target", "staging"), undefined).target).toBe(
       "staging",
     );
-    expect(resolveTarget(argv("--target=local"), undefined).target).toBe(
-      "local",
+    expect(resolveTarget(argv("--target=staging"), undefined).target).toBe(
+      "staging",
     );
     // A global switch, so it must work after the subcommand too — that is where
     // a person actually types it.
@@ -126,7 +121,7 @@ describe("the target axis", () => {
     // The whole point of the axis: a typo must be loud. A silent fallback would
     // send a tester's traffic to production.
     expect(() => resolveTarget(argv("--target", "stagng"), undefined)).toThrow(
-      /--target must be one of prod\|staging\|local; got "stagng"/,
+      /--target must be one of prod\|staging; got "stagng"/,
     );
     expect(() => resolveTarget([], "produciton")).toThrow(/WEGO_TARGET/);
     expect(() => parseTarget("nope", "--target")).toThrow(/nope/);
@@ -142,9 +137,9 @@ describe("the target axis", () => {
     expect(
       stripTargetFlag(argv("places", "--target", "staging", "dubai")),
     ).toEqual(argv("places", "dubai"));
-    expect(stripTargetFlag(argv("places", "--target=local", "dubai"))).toEqual(
-      argv("places", "dubai"),
-    );
+    expect(
+      stripTargetFlag(argv("places", "--target=staging", "dubai")),
+    ).toEqual(argv("places", "dubai"));
     expect(stripTargetFlag(argv("places", "dubai"))).toEqual(
       argv("places", "dubai"),
     );
@@ -163,7 +158,6 @@ describe("the target axis", () => {
   it("classifies only prod as prod", () => {
     expect(isProdTarget("prod")).toBe(true);
     expect(isProdTarget("staging")).toBe(false);
-    expect(isProdTarget("local")).toBe(false);
   });
 });
 
@@ -205,54 +199,29 @@ describe("one binary, every backend", () => {
   });
 
   it("imposes nothing on prod, so the existing precedence is untouched", () => {
-    expect(targetEndpointOverrides("prod", undefined)).toEqual({});
+    expect(targetEndpointOverrides("prod")).toEqual({});
     const c = config({ env: { WEGO_API_URL: "https://api.localhost" } });
     expect(c.apiBaseUrl).toBe("https://api.localhost");
   });
 
-  it("points local at this machine, authenticated against staging", () => {
-    const bare = config({ argv: argv("--target", "local") });
-    expect(bare.apiBaseUrl).toBe(LOCAL_API_URL_FALLBACK);
-    expect(new URL(bare.authorizeUrl).host).toBe(STAGING_AUTH_HOST);
-    // Portless names the URL per worktree, so it cannot be a literal: for
-    // `local` alone, the env var is the authority.
-    const named = config({
-      argv: argv("--target", "local"),
-      env: { WEGO_API_URL: "https://api.localhost" },
-    });
-    expect(named.apiBaseUrl).toBe("https://api.localhost");
-    // A branch-prefixed portless name is the same case.
-    expect(
-      config({
-        argv: argv("--target", "local"),
-        env: { WEGO_API_URL: "https://rung2-api.localhost" },
-      }).apiBaseUrl,
-    ).toBe("https://rung2-api.localhost");
-    // And a plain loopback port, which is what `bun dev` and the tier-C harness
-    // actually hand it.
-    expect(
-      config({
-        argv: argv("--target", "local"),
-        env: { WEGO_API_URL: "http://127.0.0.1:4321" },
-      }).apiBaseUrl,
-    ).toBe("http://127.0.0.1:4321");
+  it("reaches an API on this machine through WEGO_API_URL, with no target of its own", () => {
+    // This is the whole replacement for the retired `local` target, so it is
+    // tested at the shapes a developer actually has: the plain `bun dev` port,
+    // portless's `api.localhost`, and a linked worktree's branch-prefixed name
+    // under the same suffix — over plaintext `http`, which is the case a rule
+    // that knew only `localhost` would have rejected.
+    for (const url of [
+      "http://localhost:3001",
+      "http://127.0.0.1:4321",
+      "http://api.localhost",
+      "http://rung2-api.localhost",
+      "https://api.localhost",
+    ]) {
+      expect(config({ env: { WEGO_API_URL: url } }).apiBaseUrl).toBe(url);
+    }
   });
 
-  it("refuses a local target whose WEGO_API_URL is not on this machine", () => {
-    // Found by smoke-testing the real binary: adopting the ambient value made
-    // `--target local` print `local` while pointing at api.wego.com. Refusing is
-    // the only answer that neither lies nor silently retargets.
-    expect(() =>
-      config({
-        argv: argv("--target", "local"),
-        env: { WEGO_API_URL: "https://api.wego.com" },
-      }),
-    ).toThrow(/not a host on this machine/);
-    expect(() =>
-      targetEndpointOverrides("local", "https://api.wego.com"),
-    ).toThrow(/--target local/);
-    // Staging is unaffected: it imposes its own API URL, so there is nothing to
-    // contradict.
+  it("lets staging impose its own API URL over an ambient WEGO_API_URL", () => {
     expect(
       config({
         argv: argv("--target", "staging"),
@@ -269,7 +238,7 @@ describe("one binary, every backend", () => {
     );
     const declared = (key: string): string | undefined =>
       example.match(new RegExp(`^${key}=(.*)$`, "m"))?.[1]?.trim();
-    const staging = targetEndpointOverrides("staging", undefined);
+    const staging = targetEndpointOverrides("staging");
     expect(declared("WEGO_AUTH_AUTHORIZE_URL")).toBe(staging.authorizeUrl);
     expect(declared("WEGO_AUTH_TOKEN_URL")).toBe(staging.tokenUrl);
   });
@@ -440,12 +409,6 @@ describe("a non-prod target sends no telemetry", () => {
     expect(deps.sent).toEqual([]);
   });
 
-  it("sends nothing on local", async () => {
-    const deps = telemetryDeps({ target: "local" });
-    expect(await maybeSendTelemetry(deps)).toBe("skipped-non-prod-target");
-    expect(deps.sent).toEqual([]);
-  });
-
   it("still sends on prod — so the two above are not vacuous", async () => {
     const deps = telemetryDeps();
     expect(await maybeSendTelemetry(deps)).toBe("sent");
@@ -481,12 +444,15 @@ describe("credentials keyed by the resolved host", () => {
     expect(staging.credentialsPath).not.toBe(config().credentialsPath);
   });
 
-  it("gives staging and local one store, because one login serves both", () => {
-    // Keyed by the ISSUER, not the API host: a local `apps/api` verifies staging
-    // tokens, so splitting them would demand a second, pointless login.
-    expect(config({ argv: argv("--target", "local") }).credentialsPath).toBe(
-      config({ argv: argv("--target", "staging") }).credentialsPath,
-    );
+  it("keys by the issuer, not the API host, so one login serves both", () => {
+    // A local `apps/api` verifies staging tokens, so an install pointed at it
+    // with WEGO_API_URL must keep reading the store staging issued into.
+    expect(
+      config({
+        argv: argv("--target", "staging"),
+        env: { WEGO_API_URL: "http://localhost:3001" },
+      }).credentialsPath,
+    ).toBe(config({ argv: argv("--target", "staging") }).credentialsPath);
   });
 
   it("still lets WEGO_CREDENTIALS_PATH name the file outright", () => {

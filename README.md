@@ -31,7 +31,7 @@ A single self-contained binary per platform, with no runtime to install:
 | Linux | `x64`, `arm64` |
 | Windows | `x64` |
 
-One binary serves every backend. `--target prod|staging|local` picks one at run
+One binary serves every backend. `--target prod|staging` picks one at run
 time, and `prod` is what you get when you say nothing — a default that could be
 non-production is how someone reads test inventory believing it is real.
 
@@ -172,12 +172,22 @@ The environment variables the CLI reads at run time:
 
 | Variable | Effect |
 | --- | --- |
-| `WEGO_TARGET` | `prod`, `staging` or `local`. Same axis as `--target`, which wins over it. |
+| `WEGO_TARGET` | `prod` or `staging`. Same axis as `--target`, which wins over it. |
 | `WEGO_CREDENTIALS_PATH` | Where the login is stored. Default `~/.config/wego/credentials.json`. |
 | `WEGO_CLI_TELEMETRY` | `on`, `off` or `log`, for one run. |
 | `WEGO_CLI_NO_SESSION` | `1` drops the API session header. |
 | `WEGO_CLI_REDIRECT_PORT` | Fixed local port for the login callback. |
 | `WEGO_CLI_NO_UPDATE_NOTICE` | Silences the "a newer version exists" notice. |
+| `WEGO_API_URL` | Points the CLI at another API — including one on your own machine. |
+
+`WEGO_TARGET` used to take a third value, `local`. It is gone: set `WEGO_API_URL`
+instead, which reaches an API on your own machine from the default `prod` target.
+**If you have `WEGO_TARGET=local` exported, unset it before you upgrade** — an
+unknown target is refused at startup, so every command, `wego update` included,
+would exit 2 until you do. The error names the values it accepts, and `unset
+WEGO_TARGET` is the whole fix. Only an exported variable reaches a released
+binary; a `.env.local` is read from beside the source, so a compiled `wego`
+never sees one.
 
 Running from source needs the public endpoint and client configuration as well;
 `.env.local.example` documents every value and is the complete list.
@@ -200,7 +210,10 @@ Running from source needs the public endpoint and client configuration as well;
   guessing where its bytes should come from.
 - `prod` is the default target, always. Naming a non-production target keys the
   stored credentials by the auth host it logged in against, and sends no usage
-  event. `--target local` refuses a remote API URL.
+  event. To reach an API on your own machine, set `WEGO_API_URL`: a plaintext
+  `http` endpoint is accepted for loopback (`localhost`, `127.0.0.1`, `[::1]`
+  and the reserved `.localhost` suffix) and refused everywhere else, because the
+  access token travels to whatever that URL names.
 - Every priced read names its currency and which setting chose that currency.
 - Creating a search is metered, because the API is a research preview. The CLI
   tells you when it reaches a limit, including a limit it waited out.
