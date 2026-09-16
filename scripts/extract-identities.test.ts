@@ -11,8 +11,8 @@ import {
   sanFromBundle,
 } from "./extract-identities";
 
-/** The two SANs the rehearsal lanes really sign, harvested from the records in the
- *  rehearsal store. Written here as literals ON PURPOSE and only here: these are
+/** The two SANs the lanes really sign, harvested from published records.
+ *  Written here as literals ON PURPOSE and only here: these are
  *  the expectations the script is checked against, not the values it emits. */
 const EDGE_SAN =
   "https://github.com/wego/cli/.github/workflows/edge-cli.yml@refs/heads/main";

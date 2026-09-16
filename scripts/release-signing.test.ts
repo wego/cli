@@ -158,7 +158,7 @@ describe("the pinned signing identity", () => {
   });
 
   // The two rules harvested by `scripts/extract-identities.ts` from the records
-  // the rehearsal lanes published. Pinned here so a hand-edit of `identity.ts`
+  // the lanes published. Pinned here so a hand-edit of `identity.ts`
   // that widens either one reds, rather than silently enlarging the trust set.
   it("pins the wego/cli identities the extraction script harvested", () => {
     expect(CLI_EDGE_SIGNING_IDENTITY).toBe(

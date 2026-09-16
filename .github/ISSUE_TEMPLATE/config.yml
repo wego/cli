@@ -1,0 +1,15 @@
+# Routes people somewhere useful before they open a blank issue.
+# There is deliberately no general support address here: how-to questions go to
+# the docs, defects and proposals go through an issue, and vulnerabilities go to
+# the private channel in SECURITY.md.
+blank_issues_enabled: true
+contact_links:
+  - name: Using the CLI, or the Wego API
+    url: https://docs.wego.com/cli
+    about: Command reference, quickstart and the HTTP contract. Start here for how-to questions.
+  - name: Proposing a change
+    url: https://github.com/wego/cli/blob/main/CONTRIBUTING.md
+    about: Read this first. We ask for an issue before any pull request, and a change may be declined because it conflicts with our roadmap.
+  - name: Report a security vulnerability
+    url: https://github.com/wego/cli/security/policy
+    about: Please report privately by email. Do not open a public issue for a suspected vulnerability.

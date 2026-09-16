@@ -37,8 +37,9 @@
 # is the right default: it keeps the smoke host-agnostic and asserts the predecessor
 # agrees about its own origin. But it also means the predecessor decides the store,
 # and a predecessor built against production names production. Passing the flag is
-# how a REHEARSAL run points the self-update at a rehearsal store through a preview
-# API instead of following the `api.wego.com` hint baked into the old binary.
+# how a run against a non-production store points the self-update at that store
+# through a preview API instead of following the `api.wego.com` hint baked into the
+# old binary.
 # Everything else about the run is unchanged.
 #
 # <old-binary> is a local path or an http(s) URL (downloaded to a temp file). It
