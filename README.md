@@ -158,11 +158,18 @@ Notes worth knowing:
   called `wego`.
 - **Removing one** is `rm -r ~/.wego/edge ~/.local/bin/wego-edge`. Your normal
   install is untouched.
-- **`wego skill install` writes one skill directory** (`~/.claude/skills/wego`)
-  whichever install runs it — hence `WEGO_CLI_INSTALL_SKILL=0` above, which keeps
-  an extra install from taking ownership of it during install. The ownership
-  marker records which ring wrote the skill, and a ring that does not own it
-  leaves it alone.
+- **The agent skill is shared, and the config root does not isolate it.** `wego
+  skill install` writes `~/.claude/skills/wego` (plus any other agent directory it
+  detects) whichever install runs it, because that lives under `$HOME`. The body
+  names `wego` throughout, so your agent keeps driving your normal install no
+  matter which ring wrote the file — what differs is *which build's* commands the
+  file describes. Two things overwrite it: running `skill install` from another
+  install, and `update`, which re-installs the skill from the binary it just
+  swapped in. `WEGO_CLI_INSTALL_SKILL=0` above covers the first at install time,
+  not the second — so after a `wego-edge update`, run `wego skill install` to put
+  your agent back on the body that matches the binary it actually runs. The
+  ownership marker records which ring wrote the skill, but nothing compares it
+  yet, so the last writer wins.
 
 ## What the CLI covers
 
