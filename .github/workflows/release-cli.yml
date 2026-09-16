@@ -1134,6 +1134,12 @@ jobs:
       # exists because `clearQuarantine` is compiled in per platform and a linux
       # runner can never reach it — not because the checks differ.
       - name: Prove the replace path (darwin-arm64)
+        # Same guard as the linux leg. Without it the two platforms disagree about
+        # WHEN they run: if nothing was published there is no ring serving this
+        # build, so linux skipped these and macOS ran them into a failure. That
+        # asymmetry predates this branch; parity of the checks is worth little if
+        # the conditions differ.
+        if: needs.release.outputs.store_origin != ''
         uses: ./.github/actions/verify-replace
         with:
           asset: wego-darwin-arm64

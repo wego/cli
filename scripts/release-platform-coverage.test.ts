@@ -581,3 +581,49 @@ describe("composite actions: one interpreter, on every runner", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe(`${LANE}: the platforms agree on WHEN a check runs, not only that it does`, () => {
+  /** Whether a call site is guarded on something having been published. */
+  const publishedGuard = (cond: string) =>
+    /store_origin\s*!=\s*''/.test(cond) ? "guarded-on-published" : "unguarded";
+
+  it("guards each action the same way on both platforms", () => {
+    // Parity of presence and stage is worth little if the CONDITIONS differ: a
+    // check that silently skips on one platform is not a check on that platform.
+    // This was genuinely unequal before — linux guarded its post-advance smokes on
+    // `store_origin != ''` and macOS ran them unconditionally, so a run that
+    // published nothing skipped them on one leg and failed them on the other.
+    for (const ref of [ACTION_REF, BUILD_REF]) {
+      const byPlat = new Map<string, string[]>();
+      for (const j of Object.values(wf.jobs)) {
+        const runner = j["runs-on"] ?? "";
+        const plat = runner.startsWith("ubuntu-")
+          ? "linux"
+          : runner.startsWith("macos-")
+            ? "macos"
+            : null;
+        if (!plat) continue;
+        for (const st of j.steps ?? []) {
+          if (st.uses !== ref) continue;
+          if (!byPlat.has(plat)) byPlat.set(plat, []);
+          byPlat.get(plat)?.push(publishedGuard(st.if ?? ""));
+        }
+      }
+      expect(byPlat.get("linux")).toEqual(byPlat.get("macos"));
+    }
+  });
+
+  it("lets neither call site override the URL or the ring", () => {
+    // Both are defaulted inside the action: the production install endpoint and
+    // `next`. A caller that overrode either would move what the gate measures
+    // without moving the gate — the same rule the smokes' install URL is held to.
+    for (const j of Object.values(wf.jobs)) {
+      for (const st of j.steps ?? []) {
+        if (!actionFor(st.uses)) continue;
+        const withs = (st.with ?? {}) as Record<string, unknown>;
+        expect(withs["install-url"]).toBeUndefined();
+        expect(withs.ring).toBeUndefined();
+      }
+    }
+  });
+});
