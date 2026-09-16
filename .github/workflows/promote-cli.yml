@@ -751,6 +751,63 @@ jobs:
           echo "ok: cli/next and cli/stable serve byte-identical artifacts."
           cat "$RUNNER_TEMP/stable.sums"
 
+      # THE BARRIER THIS LANE NEVER HAD - and whose absence rolled back a good
+      # v1.3.0 (run 35108775349).
+      #
+      # `upload-release-blob.ts` copies the signed record and then the manifest as
+      # two adjacent writes, and `waitChannelConsistent` polls ONLY `cli/<ring>`:
+      # it settles the manifest and every binary and never reads `cli-sig/<ring>`
+      # at all. So `--promote` reports the channel advanced while the record can
+      # still be served from an edge holding the PREVIOUS tag's copy for the rest
+      # of its 60s `cacheControlMaxAge`. A client that fetches the new manifest
+      # next to the old record refuses - correctly, and fail-closed - and the step
+      # below read that refusal as a reason to roll back a release that was fine.
+      #
+      # BYTES, NOT CRYPTO. The claim is "does the route serve, for `stable`, what
+      # the frozen `cli/<tag>` prefix holds" - a plain `cmp`. Re-deriving the
+      # record's digest binding here would be a second implementation of
+      # `release-signing/signature.ts` in shell, untested and free to drift the
+      # moment the bundle shape does. The tag prefix's own internal consistency is
+      # already proven by the release lane, so byte-equality with it is enough.
+      #
+      # THROUGH `/install`, not the store origin, because that is the route the
+      # step below drives and the one every install resolves through: it covers
+      # `apps/api`'s own layer, which a direct-to-store poll does not.
+      #
+      # REMOVE THIS, and the retry below, once ring resolution moves into
+      # `apps/api` - a ring becomes ONE pointer at an immutable `cli/<tag>`
+      # prefix, there is no second object to settle, and nothing here to wait for.
+      - name: Wait for cli/stable to be coherent through the install route
+        if: steps.promote.outputs.store_origin != ''
+        env:
+          ORIGIN: ${{ steps.promote.outputs.store_origin }}
+          TAG: ${{ inputs.tag }}
+          ROLLBACK: ${{ steps.outgoing.outputs.how }}
+        run: |
+          set -euo pipefail
+          url='https://api.wego.com/install'
+          curl -fsSL "$ORIGIN/cli/$TAG/SHA256SUMS.txt" > "$RUNNER_TEMP/tag.sums"
+          curl -fsSL "$ORIGIN/cli-sig/$TAG/SHA256SUMS.txt.sigstore.json" \
+            > "$RUNNER_TEMP/tag.sig"
+
+          for attempt in $(seq 1 12); do
+            curl -fsSL "$url?dl=SHA256SUMS.txt&ring=stable" \
+              > "$RUNNER_TEMP/served.sums"
+            curl -fsSL "$url?dl=SHA256SUMS.txt.sigstore.json&ring=stable&sig=1" \
+              > "$RUNNER_TEMP/served.sig"
+            cmp -s "$RUNNER_TEMP/tag.sums" "$RUNNER_TEMP/served.sums" && m=ok || m=stale
+            cmp -s "$RUNNER_TEMP/tag.sig"  "$RUNNER_TEMP/served.sig"  && r=ok || r=stale
+            if [ "$m" = ok ] && [ "$r" = ok ]; then
+              echo "ok: the install route serves $TAG's manifest AND its signed record for ring stable."
+              exit 0
+            fi
+            echo "... settling [$attempt/12]: manifest=$m record=$r"
+            if [ "$attempt" -lt 12 ]; then sleep 10; fi
+          done
+
+          echo "::error::cli/stable did not become coherent through the install route within 120s: the manifest and the signed record it serves for ring stable do not both match the frozen $TAG prefix. Every client that fetches them together will refuse to install, fail-closed. $ROLLBACK"
+          exit 1
+
       # THE "LEAVING" TEST. The pre-move gate proved this binary can update
       # against the OUTGOING stable. This proves the state we just created is
       # self-consistent: a binary of the version now on `stable`, asking
