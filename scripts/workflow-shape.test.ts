@@ -64,6 +64,9 @@ const PUBLISHING_LANES: string[] = [...SIGNING_LANES, "promote-cli.yml"];
 
 const STORE_TOKEN = "BLOB_READ_WRITE_TOKEN";
 
+/** The build-time variable that decides whether a binary can post telemetry. */
+const POSTHOG_VAR = "WEGO_CLI_POSTHOG_PROJECT_KEY";
+
 /** The composite action both lanes sign with; a local path, never a package. */
 const SIGN_ACTION = ".github/actions/sign-manifest";
 
@@ -107,6 +110,24 @@ function storeWriters(wf: Workflow): string[] {
   return Object.entries(wf.jobs)
     .filter(([, job]) => JSON.stringify(job).includes(STORE_TOKEN))
     .map(([name]) => name);
+}
+
+/**
+ * Steps that PASS the PostHog key to a build, by parsed `env:` key — not by text.
+ *
+ * Text matching would be wrong in both directions here: `edge-cli.yml` names the
+ * variable in a comment explaining why it must not pass it, and a comment is
+ * exactly what this suite exists to stop relying on.
+ */
+function keyedSteps(wf: Workflow): string[] {
+  const found: string[] = [];
+  for (const [name, job] of Object.entries(wf.jobs)) {
+    if (job.env && POSTHOG_VAR in job.env) found.push(`${name} (job env)`);
+    for (const [i, step] of (job.steps ?? []).entries()) {
+      if (step.env && POSTHOG_VAR in step.env) found.push(`${name} step ${i}`);
+    }
+  }
+  return found;
 }
 
 /** Jobs invoking the signing composite action. */
@@ -180,5 +201,68 @@ describe.each(SIGNING_LANES)("%s: the signing identity", (file) => {
       (s.uses ?? "").includes(SIGN_ACTION),
     );
     expect(step?.uses).toStartWith("./");
+  });
+});
+
+/**
+ * THE TELEMETRY KEY: which lane may bake it, asserted rather than commented.
+ *
+ * Same failure shape as everything above — one line, and the release stays green.
+ * Both directions have already shipped:
+ *
+ *   - NOT PASSED in the release lane. `WEGO_CLI_POSTHOG_PROJECT_KEY` did not survive
+ *     the wego-ai -> wego/cli cutover, so v1.1.0 through v1.2.1 baked an empty key,
+ *     returned "skipped-unbaked" and sent nothing for two weeks (c0685ff). The key
+ *     is optional by design (`release-config.ts` does `|| undefined`), so every
+ *     build was green. It was found from outside, by asking PostHog why no 1.2.x
+ *     events existed.
+ *
+ *   - PASSED in the edge lane. Edge builds are dogfood and must never count as
+ *     product telemetry, but they emitted into the production project from
+ *     2026-08-27 to 09-07 (203 events, 4 devices) and polluted it. The variable now
+ *     sits at REPO level, so it is visible to `edge-cli.yml`'s job whatever its
+ *     `environment:` says: NOT PASSING IT IS THE ENTIRE MECHANISM.
+ *
+ * The two claims are one claim, which is why they are one block: exactly one lane
+ * bakes this key. `verify-build`'s SMOKE 1 asserts the other end — that the binary
+ * the release lane produced actually carries one.
+ */
+describe("the telemetry key capability", () => {
+  it("bakes the key in the release lane, in exactly one place", () => {
+    expect(keyedSteps(lane("release-cli.yml"))).toHaveLength(1);
+  });
+
+  it("never bakes it in the edge lane, whose builds are dogfood", () => {
+    expect(keyedSteps(lane("edge-cli.yml"))).toEqual([]);
+  });
+
+  it("never bakes it in the promote lane, which rebuilds nothing", () => {
+    expect(keyedSteps(lane("promote-cli.yml"))).toEqual([]);
+  });
+
+  it("passes it from vars, never from secrets", () => {
+    // A `secrets.` reference would be the tell that someone treated it as one and
+    // scoped it to an environment - which is invisible to the build job, because
+    // that job deliberately carries no `environment:`. That is precisely how the
+    // two-week blackout happened.
+    const wf = lane("release-cli.yml");
+    const values = Object.values(wf.jobs).flatMap((job) => [
+      job.env?.[POSTHOG_VAR],
+      ...(job.steps ?? []).map((s) => s.env?.[POSTHOG_VAR]),
+    ]);
+    const passed = values.filter((v) => v !== undefined);
+    expect(passed).toHaveLength(1);
+    expect(String(passed[0])).toContain(`vars.${POSTHOG_VAR}`);
+    expect(String(passed[0])).not.toContain("secrets.");
+  });
+
+  it("keeps the key out of any job that can write the store", () => {
+    // Same split as signing: a build must not be able to publish, so the job that
+    // holds this must not be a store writer either.
+    const wf = lane("release-cli.yml");
+    const writers = new Set(storeWriters(wf));
+    for (const where of keyedSteps(wf)) {
+      expect(writers.has(where.split(" ")[0] as string)).toBe(false);
+    }
   });
 });

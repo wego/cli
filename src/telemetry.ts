@@ -1,7 +1,24 @@
 import { EXIT } from "./error-report";
 import { isProdTarget, type Target } from "./target";
 
-/** One `cli_command_ran` event per invocation. See `docs/telemetry.md`. */
+/**
+ * One `cli_command_ran` event per invocation. User-facing disclosure and the
+ * opt-out live in README.md's Telemetry section.
+ *
+ * WHERE THE EVENTS GO, stated here because nothing else in the tree says it and
+ * the last thing that did was deleted with `docs/` (d678250): PostHog project
+ * **521561** ("api & cli", Wego org, US cloud) —
+ * https://us.posthog.com/project/521561. The same project receives the `apps/api`
+ * funnel events, deliberately: PostHog cannot join across projects, so a separate
+ * one would split a single person in two and permanently prevent following them
+ * from the command they typed to the request the API served. The saved views are
+ * named `[CLI] …` there.
+ *
+ * Costing that omission once was enough. Finding out which project a released
+ * binary posts to took a walk across two organizations and fourteen projects, and
+ * the answer is not recoverable from the baked key — it is write-only and reads
+ * nothing, including its own project's name.
+ */
 
 export const TELEMETRY_EVENT = "cli_command_ran";
 export const TELEMETRY_HOST = "https://us.i.posthog.com";
@@ -423,7 +440,7 @@ export async function maybeSendTelemetry(
 
   // Minted once and persisted, so it survives `logout` deleting the credentials.
   // At most one write per machine, ever: a concurrent `telemetry disable` racing
-  // it is accepted, and `disable` again fixes it for good (see docs/telemetry.md).
+  // it is accepted, and `disable` again fixes it for good (see README.md).
   let deviceId = state?.deviceId;
   if (deviceId === undefined) {
     const minted = deps.randomUUID();

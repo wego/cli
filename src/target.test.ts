@@ -50,6 +50,10 @@ const PROD_BUILD = {
   flavor: "wego",
 };
 
+/** Shaped like the real thing (`phc_` + base62), so nothing here passes on a value
+ *  `scripts/release-config.ts` would refuse to bake. */
+const KEY = "phc_ABCdef0123456789ABCdef0123456789ABC";
+
 const STAGING_AUTH_HOST = "auth.wegostaging.com";
 const STAGING_API_URL = "https://api.wegostaging.com";
 
@@ -60,11 +64,20 @@ function argv(...args: string[]): string[] {
 
 /** A config as a real run would build it: baked prod bundle, an XDG root so the
  *  credentials path is assertable, and argv passed explicitly — never
- *  `process.argv`, which under `bun test` carries the test runner's own flags. */
-function config(over: { argv?: string[]; env?: Record<string, string> } = {}) {
+ *  `process.argv`, which under `bun test` carries the test runner's own flags.
+ *
+ *  `posthogKey` absent ⇒ `undefined` ⇒ an unkeyed build, which is the default here
+ *  precisely because that is the state that shipped unnoticed. */
+function config(
+  over: {
+    argv?: string[];
+    env?: Record<string, string>;
+    posthogKey?: string;
+  } = {},
+) {
   return loadCliConfig(
     { XDG_CONFIG_HOME: "/tmp/xdg", ...over.env } as NodeJS.ProcessEnv,
-    PROD_BUILD,
+    { ...PROD_BUILD, posthogKey: over.posthogKey },
     over.argv ?? argv("whoami"),
   );
 }
@@ -342,18 +355,68 @@ describe("a non-prod target is visible", () => {
       tokenUrl: `https://${STAGING_AUTH_HOST}/user-auth/v2/users/oauth/token`,
       credentialsPath: `/tmp/xdg/wego/${STAGING_AUTH_HOST}/credentials.json`,
       telemetrySuppressed: true,
+      telemetryKeyBaked: false,
     });
   });
 
   it("reports a prod run as prod, and not suppressed", () => {
-    const report = buildTargetReport(config());
+    const report = buildTargetReport(config({ posthogKey: KEY }));
     expect(report).toMatchObject({
       target: "prod",
       source: "default",
       apiUrl: PROD_BUILD.apiBaseUrl,
       telemetrySuppressed: false,
+      telemetryKeyBaked: true,
     });
     expect(formatTargetReport(report)).toContain("as configured");
+  });
+
+  // THE v1.1.0-v1.2.1 BLACKOUT, MADE VISIBLE (c0685ff). `WEGO_CLI_POSTHOG_PROJECT_KEY`
+  // did not survive the repo cutover, so every release for two weeks baked an empty
+  // key, returned "skipped-unbaked" and sent nothing. Nothing failed, and nothing
+  // could have: the key is optional by design, so the build was green and the binary
+  // worked. This field is the one observable that separates that build from a
+  // working one, and `verify-build`'s SMOKE 1 asserts it before publishing.
+  describe("telemetryKeyBaked", () => {
+    it("is false on a build that baked no key, while everything else looks healthy", () => {
+      const report = buildTargetReport(config());
+      expect(report.telemetrySuppressed).toBe(false);
+      expect(report.telemetryKeyBaked).toBe(false);
+      expect(formatTargetReport(report)).toContain("unkeyed");
+    });
+
+    it("reads the build defaults, never the ambient environment", () => {
+      // Half of why the release gate cannot be turned green by the environment it
+      // runs in; the other half is `--compile --env 'WEGO_BUILD_*'` inlining the
+      // read to a literal, so a published binary has no env var left to consult.
+      const report = buildTargetReport(
+        config({ env: { WEGO_BUILD_POSTHOG_PROJECT_KEY: KEY } }),
+      );
+      expect(report.telemetryKeyBaked).toBe(false);
+    });
+
+    it("treats the empty string build-release.ts bakes as unkeyed", () => {
+      // `build-release.ts` writes `spec.posthogKey ?? ""`, so absent arrives as
+      // `""`, not `undefined`.
+      expect(
+        buildTargetReport(config({ posthogKey: "" })).telemetryKeyBaked,
+      ).toBe(false);
+    });
+
+    it("never puts the key itself in the report", () => {
+      const report = buildTargetReport(config({ posthogKey: KEY }));
+      expect(JSON.stringify(report)).not.toContain(KEY);
+    });
+
+    it("says suppressed, not unkeyed, when a non-prod target is the first reason", () => {
+      // The target guard sits above the key check in `maybeSendTelemetry`, so the
+      // row must name the reason that actually fires.
+      const report = buildTargetReport(
+        config({ env: { WEGO_TARGET: "staging" } }),
+      );
+      expect(formatTargetReport(report)).toContain("suppressed");
+      expect(formatTargetReport(report)).not.toContain("unkeyed");
+    });
   });
 
   it("prints its usage on --help and rejects an unknown argument", async () => {

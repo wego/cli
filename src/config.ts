@@ -48,6 +48,14 @@ export interface CliConfig {
   target: Target;
   /** Which of those said it, so a report can name the thing to change. */
   targetSource: TargetSource;
+  /** Whether this build carries a PostHog project key at all — the one telemetry
+   *  precondition nothing else can observe from outside the binary. A release
+   *  built without it runs perfectly and is simply silent, which is exactly how
+   *  v1.1.0–v1.2.1 shipped telemetry-blind for two weeks (c0685ff). `info target`
+   *  surfaces it so the release lane can assert it before publishing.
+   *
+   *  The BOOLEAN, never the key: this is reported by a command any user can run. */
+  telemetryKeyBaked: boolean;
 }
 
 const DEFAULTS = {
@@ -82,6 +90,16 @@ interface BuildDefaults {
    *  so a renamed second install isolates itself. `undefined` from source (falls
    *  back to `"wego"`); same static-read/inline mechanism as the other fields. */
   flavor?: string;
+  /** The baked write-only PostHog key. Read here ONLY to derive
+   *  `telemetryKeyBaked`; nothing this module exports carries the key itself.
+   *  `src/index.ts` keeps its own static read for the value it actually posts
+   *  with — two reads of one variable, because only a STATIC
+   *  `process.env.WEGO_BUILD_*` member access is inlined by
+   *  `bun build --env 'WEGO_BUILD_*'`; a shared dynamic read would not be, and
+   *  would leave a live runtime read a user could inject into. The cost is the
+   *  literal appearing twice in the binary, which discloses nothing: it is
+   *  write-only and already ships in there once. */
+  posthogKey?: string;
 }
 
 const BUILD: BuildDefaults = {
@@ -90,6 +108,7 @@ const BUILD: BuildDefaults = {
   clientId: process.env.WEGO_BUILD_CLIENT_ID,
   apiBaseUrl: process.env.WEGO_BUILD_API_URL,
   flavor: process.env.WEGO_BUILD_FLAVOR,
+  posthogKey: process.env.WEGO_BUILD_POSTHOG_PROJECT_KEY,
 };
 
 /** The config root: `$XDG_CONFIG_HOME` when set, else `~/.config`. */
@@ -380,6 +399,11 @@ export function loadCliConfig(
       ),
     target,
     targetSource: source,
+    // `build`, never `env`: this reports what was COMPILED IN, so a runtime
+    // `WEGO_BUILD_POSTHOG_PROJECT_KEY=x` cannot make an unkeyed build claim to be
+    // keyed and turn the release lane's gate green on a binary that sends nothing.
+    // `build-release.ts` bakes `""` when the variable is unset, so trim.
+    telemetryKeyBaked: (build.posthogKey ?? "").trim() !== "",
   };
 }
 

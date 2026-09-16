@@ -835,7 +835,7 @@ export async function readTelemetrySnapshot(): Promise<{
 }
 
 /** The device id follows the telemetry opt-out; the session id deliberately does
- *  not (docs/telemetry.md). Pure and exported so the consent rule is testable. */
+ *  not (README.md, Telemetry). Pure and exported so the consent rule is testable. */
 export function resolveAnalyticsHeaders(
   snapshot: { deviceId?: string; telemetryEnabled: boolean },
   sessionId: string | undefined,
@@ -966,7 +966,7 @@ if (import.meta.main) {
         .id
     : undefined;
   setAnalyticsHeaders(resolveAnalyticsHeaders(snapshot, sessionId));
-  // Names the caller, so it follows the telemetry opt-out (docs/telemetry.md).
+  // Names the caller, so it follows the telemetry opt-out (README.md, Telemetry).
   setIdentityAssertion(snapshot.idToken, snapshot.telemetryEnabled);
   run(process.argv, buildRealDeps())
     .then(async (code) => {

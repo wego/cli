@@ -739,6 +739,12 @@ export interface TargetReport {
    *  rather than implied, because "no telemetry" is a promise a user is entitled
    *  to see rather than infer. */
   telemetrySuppressed: boolean;
+  /** Whether a PostHog key was compiled into this build. `false` on every source
+   *  run and every edge build, by design — and on a RELEASE build it means that
+   *  release is silent, which is the failure this field exists to make visible
+   *  (see `CliConfig.telemetryKeyBaked`). Orthogonal to `telemetrySuppressed` and
+   *  to the opt-out: those are run-time choices, this is a property of the bytes. */
+  telemetryKeyBaked: boolean;
 }
 
 export function buildTargetReport(config: CliConfig): TargetReport {
@@ -750,7 +756,25 @@ export function buildTargetReport(config: CliConfig): TargetReport {
     tokenUrl: config.tokenUrl,
     credentialsPath: config.credentialsPath,
     telemetrySuppressed: !isProdTarget(config.target),
+    telemetryKeyBaked: config.telemetryKeyBaked,
   };
+}
+
+/**
+ * The telemetry row, in the order `maybeSendTelemetry` actually decides.
+ *
+ * The target guard sits above the key check there, so a non-prod run says
+ * "suppressed" whether or not a key was baked — reporting "unkeyed" for it would
+ * name the second reason a run is silent while hiding the first.
+ */
+function telemetryState(report: TargetReport): string {
+  if (report.telemetrySuppressed) {
+    return "suppressed (non-prod target sends nothing)";
+  }
+  if (!report.telemetryKeyBaked) {
+    return "unkeyed (this build carries no PostHog key and sends nothing)";
+  }
+  return "as configured";
 }
 
 /** The `source` phrased as the thing the reader would edit. */
@@ -767,12 +791,7 @@ export function formatTargetReport(report: TargetReport): string {
     ["authorize", report.authorizeUrl],
     ["token", report.tokenUrl],
     ["credentials", report.credentialsPath],
-    [
-      "telemetry",
-      report.telemetrySuppressed
-        ? "suppressed (non-prod target sends nothing)"
-        : "as configured",
-    ],
+    ["telemetry", telemetryState(report)],
   ];
   const width = Math.max(...rows.map(([label]) => label.length));
   return rows

@@ -301,6 +301,16 @@ or set `WEGO_CLI_TELEMETRY=off` for one run. `wego telemetry status` shows the
 current setting, and `WEGO_CLI_TELEMETRY=log` prints the event instead of sending
 it, if you want to see exactly what leaves your machine.
 
+`wego info target` reports whether this build sends anything at all — a source
+build, an edge build and a non-production target each send nothing, and the row
+says which of those applies.
+
+The events land in PostHog project [521561, "api & cli"](https://us.posthog.com/project/521561)
+(Wego org, US cloud), under the event name `cli_command_ran`; saved views there
+are prefixed `[CLI]`. It is the same project the API's own funnel events go to, so
+one person can be followed from the command they typed to the request it made —
+PostHog cannot join across projects, so a second one would split them in two.
+
 Separately from telemetry, every API request carries a session id header so the
 API can group the commands of one task into a funnel. The opt-out above does not
 remove it; `WEGO_CLI_NO_SESSION=1` does.
