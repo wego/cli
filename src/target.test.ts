@@ -19,7 +19,11 @@ import {
   targetConfigScope,
   targetEndpointOverrides,
 } from "./target";
-import { maybeSendTelemetry, type TelemetryDeps } from "./telemetry";
+import {
+  maybeSendTelemetry,
+  type TelemetryDeps,
+  telemetrySilenceReason,
+} from "./telemetry";
 
 /**
  * The **target** axis — the acceptance test for foundations#74 rung 2.
@@ -47,12 +51,17 @@ const PROD_BUILD = {
   tokenUrl: "https://auth.wego.com/user-auth/v2/users/oauth/token",
   apiBaseUrl: "https://api.wego.com",
   clientId: "public-pkce-client",
-  flavor: "wego",
 };
 
 /** Shaped like the real thing (`phc_` + base62), so nothing here passes on a value
  *  `scripts/release-config.ts` would refuse to bake. */
 const KEY = "phc_ABCdef0123456789ABCdef0123456789ABC";
+
+/** A report as a COMPILED BINARY would build it. `fromSource` is passed explicitly
+ *  because under `bun test` the ambient answer is always `true`, which would make
+ *  every telemetry row below say "running from source" and assert nothing. */
+const binaryReport = (over: Parameters<typeof config>[0] = {}) =>
+  buildTargetReport(config(over), false);
 
 const STAGING_AUTH_HOST = "auth.wegostaging.com";
 const STAGING_API_URL = "https://api.wegostaging.com";
@@ -356,11 +365,15 @@ describe("a non-prod target is visible", () => {
       credentialsPath: `/tmp/xdg/wego/${STAGING_AUTH_HOST}/credentials.json`,
       telemetrySuppressed: true,
       telemetryKeyBaked: false,
+      // `true` here because this goes through the real command path, and the suite
+      // runs under `bun`. The field is in the JSON contract precisely so a consumer
+      // can tell this case apart from an unkeyed release.
+      fromSource: true,
     });
   });
 
   it("reports a prod run as prod, and not suppressed", () => {
-    const report = buildTargetReport(config({ posthogKey: KEY }));
+    const report = binaryReport({ posthogKey: KEY });
     expect(report).toMatchObject({
       target: "prod",
       source: "default",
@@ -371,15 +384,15 @@ describe("a non-prod target is visible", () => {
     expect(formatTargetReport(report)).toContain("as configured");
   });
 
-  // THE v1.1.0-v1.2.1 BLACKOUT, MADE VISIBLE (c0685ff). `WEGO_CLI_POSTHOG_PROJECT_KEY`
-  // did not survive the repo cutover, so every release for two weeks baked an empty
-  // key, returned "skipped-unbaked" and sent nothing. Nothing failed, and nothing
-  // could have: the key is optional by design, so the build was green and the binary
-  // worked. This field is the one observable that separates that build from a
-  // working one, and `verify-build`'s SMOKE 1 asserts it before publishing.
+  // THE v1.1.0–v1.2.1 BLACKOUT, MADE VISIBLE (c0685ff). The key did not survive the
+  // repo cutover, so every release for two weeks baked an empty key and sent
+  // nothing while every check stayed green. `release-config.ts` now refuses to build
+  // such a release at all; this field is the second line — the one observable that
+  // separates those BYTES from a working build, which is what `verify-build`'s
+  // SMOKE 1 asserts before publishing. Input validation cannot prove inlining.
   describe("telemetryKeyBaked", () => {
     it("is false on a build that baked no key, while everything else looks healthy", () => {
-      const report = buildTargetReport(config());
+      const report = binaryReport();
       expect(report.telemetrySuppressed).toBe(false);
       expect(report.telemetryKeyBaked).toBe(false);
       expect(formatTargetReport(report)).toContain("unkeyed");
@@ -389,32 +402,58 @@ describe("a non-prod target is visible", () => {
       // Half of why the release gate cannot be turned green by the environment it
       // runs in; the other half is `--compile --env 'WEGO_BUILD_*'` inlining the
       // read to a literal, so a published binary has no env var left to consult.
-      const report = buildTargetReport(
-        config({ env: { WEGO_BUILD_POSTHOG_PROJECT_KEY: KEY } }),
-      );
+      const report = binaryReport({
+        env: { WEGO_BUILD_POSTHOG_PROJECT_KEY: KEY },
+      });
       expect(report.telemetryKeyBaked).toBe(false);
     });
 
     it("treats the empty string build-release.ts bakes as unkeyed", () => {
       // `build-release.ts` writes `spec.posthogKey ?? ""`, so absent arrives as
       // `""`, not `undefined`.
-      expect(
-        buildTargetReport(config({ posthogKey: "" })).telemetryKeyBaked,
-      ).toBe(false);
+      expect(binaryReport({ posthogKey: "" }).telemetryKeyBaked).toBe(false);
     });
 
     it("never puts the key itself in the report", () => {
-      const report = buildTargetReport(config({ posthogKey: KEY }));
+      const report = binaryReport({ posthogKey: KEY });
       expect(JSON.stringify(report)).not.toContain(KEY);
     });
 
     it("says suppressed, not unkeyed, when a non-prod target is the first reason", () => {
       // The target guard sits above the key check in `maybeSendTelemetry`, so the
       // row must name the reason that actually fires.
-      const report = buildTargetReport(
-        config({ env: { WEGO_TARGET: "staging" } }),
-      );
+      const report = binaryReport({ env: { WEGO_TARGET: "staging" } });
       expect(formatTargetReport(report)).toContain("suppressed");
+      expect(formatTargetReport(report)).not.toContain("unkeyed");
+    });
+
+    // THE PRECEDENCE ITSELF, asserted once rather than trusted twice. The row used
+    // to restate `maybeSendTelemetry`'s guard order by hand and had already drifted:
+    // it modelled two of the three reasons and called a source build "unkeyed".
+    // Both now read `telemetrySilenceReason`, so this pins the shared answer.
+    it("names the FIRST reason a build is silent, in maybeSendTelemetry's order", () => {
+      const cases: [
+        Parameters<typeof telemetrySilenceReason>[0],
+        string | null,
+      ][] = [
+        // A non-prod target outranks everything below it, even unkeyed + from source.
+        [{ target: "staging", fromSource: true, keyBaked: false }, "non-prod"],
+        [{ target: "staging", fromSource: false, keyBaked: true }, "non-prod"],
+        // From source outranks unkeyed — a source run is never "an unkeyed release".
+        [{ target: "prod", fromSource: true, keyBaked: false }, "from-source"],
+        [{ target: "prod", fromSource: false, keyBaked: false }, "unkeyed"],
+        [{ target: "prod", fromSource: false, keyBaked: true }, null],
+      ];
+      for (const [build, expected] of cases) {
+        expect(telemetrySilenceReason(build)).toBe(
+          expected as ReturnType<typeof telemetrySilenceReason>,
+        );
+      }
+    });
+
+    it("explains a source run as source, not as an unkeyed release", () => {
+      const report = buildTargetReport(config({ posthogKey: KEY }), true);
+      expect(formatTargetReport(report)).toContain("running from source");
       expect(formatTargetReport(report)).not.toContain("unkeyed");
     });
   });

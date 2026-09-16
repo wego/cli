@@ -59,7 +59,7 @@ import {
 } from "./oauth";
 import type { PastedCallbackWaiter } from "./paste-callback";
 import { codeChallengeS256, generateCodeVerifier, generateState } from "./pkce";
-import { programName } from "./program-name";
+import { programName, runningFromSource } from "./program-name";
 import {
   DEFAULT_SETTLE_BUDGET,
   type Engine,
@@ -81,6 +81,10 @@ import {
   type Target,
   type TargetSource,
 } from "./target";
+import {
+  type TelemetrySilenceReason,
+  telemetrySilenceReason,
+} from "./telemetry";
 import { type FlagLine, group, usage } from "./usage";
 import { FLIGHTS, HOTELS } from "./verticals";
 
@@ -745,9 +749,19 @@ export interface TargetReport {
    *  (see `CliConfig.telemetryKeyBaked`). Orthogonal to `telemetrySuppressed` and
    *  to the opt-out: those are run-time choices, this is a property of the bytes. */
   telemetryKeyBaked: boolean;
+  /** Running from source rather than a compiled binary. Reported because it is the
+   *  guard BETWEEN the other two in `telemetrySilenceReason`, and a row that omits
+   *  it has to explain a source run as one of its neighbours. */
+  fromSource: boolean;
 }
 
-export function buildTargetReport(config: CliConfig): TargetReport {
+/** `fromSource` is a parameter, not a call, for the same reason every other module
+ *  injects it: under `bun test` the runtime answer is always `true`, so a report
+ *  that read it directly could only ever be asserted in the source case. */
+export function buildTargetReport(
+  config: CliConfig,
+  fromSource: boolean = runningFromSource(),
+): TargetReport {
   return {
     target: config.target,
     source: config.targetSource,
@@ -757,24 +771,28 @@ export function buildTargetReport(config: CliConfig): TargetReport {
     credentialsPath: config.credentialsPath,
     telemetrySuppressed: !isProdTarget(config.target),
     telemetryKeyBaked: config.telemetryKeyBaked,
+    fromSource,
   };
 }
 
 /**
- * The telemetry row, in the order `maybeSendTelemetry` actually decides.
- *
- * The target guard sits above the key check there, so a non-prod run says
- * "suppressed" whether or not a key was baked — reporting "unkeyed" for it would
- * name the second reason a run is silent while hiding the first.
+ * The telemetry row. The precedence is NOT restated here — it is read from
+ * `telemetrySilenceReason`, the same function `maybeSendTelemetry` decides with, so
+ * this row cannot name a reason that isn't the one that actually fires.
  */
+const TELEMETRY_ROW: Record<TelemetrySilenceReason, string> = {
+  "non-prod": "suppressed (non-prod target sends nothing)",
+  "from-source": "suppressed (running from source sends nothing)",
+  unkeyed: "unkeyed (this build carries no PostHog key and sends nothing)",
+};
+
 function telemetryState(report: TargetReport): string {
-  if (report.telemetrySuppressed) {
-    return "suppressed (non-prod target sends nothing)";
-  }
-  if (!report.telemetryKeyBaked) {
-    return "unkeyed (this build carries no PostHog key and sends nothing)";
-  }
-  return "as configured";
+  const reason = telemetrySilenceReason({
+    target: report.target,
+    fromSource: report.fromSource,
+    keyBaked: report.telemetryKeyBaked,
+  });
+  return reason === null ? "as configured" : TELEMETRY_ROW[reason];
 }
 
 /** The `source` phrased as the thing the reader would edit. */

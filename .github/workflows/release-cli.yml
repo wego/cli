@@ -277,18 +277,21 @@ jobs:
           # `scripts/release-config.ts` refuses a value carrying any path - a baked
           # pointer that names a ring is wrong on one side of every promote.
           WEGO_CLI_SKILL_ORIGIN: ${{ vars.WEGO_CLI_SKILL_ORIGIN }}
-          # Optional: the write-only PostHog PROJECT key the binary posts its one
-          # per-invocation event with (issue #1302). Baked as
-          # WEGO_BUILD_POSTHOG_PROJECT_KEY; absent → the binary emits nothing at
-          # all, so the feature stays dead until the var exists in the Environment
-          # (no code change). A `vars` entry, not a secret, deliberately: the key
-          # is write-only and ships inside a public binary, so it is not a secret,
-          # and `readReleaseEnvSpec` refuses anything that is not a `phc_` project
-          # key. A non-prod `--target` sends no usage event at all at run time
-          # (`src/target.ts`), which is what keeps staging traffic out of the project
-          # now that there is no separate silent binary.
+          # REQUIRED on this lane (`--lane release` below): the write-only PostHog
+          # PROJECT key the binary posts its one per-invocation event with (issue
+          # #1302), baked as WEGO_BUILD_POSTHOG_PROJECT_KEY. It must live at
+          # REPOSITORY scope — this job carries no `environment:`, so an
+          # environment-scoped value reaches it as empty, which is how v1.1.0–v1.2.1
+          # shipped silent for two weeks. A `vars` entry, not a secret, deliberately:
+          # the key is write-only and ships inside a public binary, so it is not a
+          # secret, and `readReleaseEnvSpec` refuses anything that is not a `phc_`
+          # project key. A non-prod `--target` sends no usage event at run time
+          # (`src/target.ts`), which keeps staging traffic out of the project.
           WEGO_CLI_POSTHOG_PROJECT_KEY: ${{ vars.WEGO_CLI_POSTHOG_PROJECT_KEY }}
-        run: bun run scripts/build-release.ts
+        # `--lane release`: the build itself now refuses to produce a keyless
+        # release, so the variable going missing costs a red build instead of a
+        # silent fortnight.
+        run: bun run scripts/build-release.ts --lane release
 
       # `VERSION` is written BEFORE the manifest, so it enters SHA256SUMS.txt with
       # everything else and needs no publisher change: `upload-release-blob.ts`

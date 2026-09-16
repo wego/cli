@@ -75,7 +75,8 @@ const DEFAULTS = {
  * They are **build-only** knobs, deliberately NOT part of the runtime-config
  * contract: excluded from `CLI_ENV_VARS`, never declared in `.env.local.example`.
  * A runtime `WEGO_*` env var still overrides the corresponding baked value.
- * All baked values are PUBLIC (host URLs + the public PKCE client_id) — no
+ * All baked values are PUBLIC — host URLs, the public PKCE client_id, and the
+ * write-only PostHog project key, which can post events and read nothing. No
  * secret is ever embedded.
  */
 interface BuildDefaults {

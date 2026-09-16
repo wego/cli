@@ -38,8 +38,8 @@ runs:
     # version + complete baked public config (linux-x64 runs natively on the
     # runner). `logout` loads config without making a network request, so it
     # catches a missed/misspelled static WEGO_BUILD_* read before publication —
-    # every one of them except the PostHog key, which is optional and therefore
-    # silent when missing, so it is asserted explicitly at the end of this step.
+    # every one of them except the PostHog key, whose absence is silent at run
+    # time, so it is asserted explicitly at the end of this step.
     - name: Smoke test built binaries
       env:
         VERSION: ${{ inputs.version }}
@@ -60,31 +60,24 @@ runs:
         [ "$got" = "$VERSION" ] || { echo "version mismatch: expected $VERSION, got $got" >&2; exit 1; }
         WEGO_CREDENTIALS_PATH="${RUNNER_TEMP}/wego-missing-credentials.json" "$binary" logout
 
-        # THE ONE BAKED VALUE THE CHECKS ABOVE CANNOT SEE.
-        #
-        # `logout` proves the endpoint/client reads were inlined, because a missed
-        # one makes it fail. A missed PostHog read does the opposite: the key is
-        # OPTIONAL by design (`release-config.ts` does `|| undefined`), so an empty
-        # one builds, runs and smokes exactly like a working build - it just returns
-        # "skipped-unbaked" forever and posts nothing.
-        #
-        # That is not hypothetical. `WEGO_CLI_POSTHOG_PROJECT_KEY` did not survive
-        # the wego-ai -> wego/cli cutover, and v1.1.0 through v1.2.1 shipped
-        # telemetry-blind for two weeks (c0685ff). Every check in this lane was
-        # green throughout. The gap was found by asking PostHog why no 1.2.x events
-        # existed - i.e. from OUTSIDE, long after publication.
+        # THE BYTES, not the inputs. `release-config.ts --lane release` already
+        # refused to build without a key, so reaching here proves the VARIABLE was
+        # present. It cannot prove `bun build --env 'WEGO_BUILD_*'` inlined it, and
+        # a missed PostHog read fails nothing at run time - the binary just posts
+        # nothing forever. `logout` above catches a missed endpoint read because a
+        # missed one makes it fail; this is the same check for the one value whose
+        # absence is silent.
         #
         # `telemetryKeyBaked` reports the COMPILED-IN value, so the job-level
-        # WEGO_CLI_TELEMETRY=0 above does not affect it and nothing this step could
-        # set can fake it. `info target` builds its report from config and makes no
-        # network request.
-        # `|| true`: under `set -euo pipefail` a non-matching grep would abort the
-        # step before the guard below could say why, turning the clearest failure
-        # this check has (the field is gone) into a bare non-zero exit.
+        # WEGO_CLI_TELEMETRY=0 cannot affect it and nothing this step sets can fake
+        # it. `info target` makes no network request.
+        # `|| true`: under `set -euo pipefail` a non-matching grep would abort before
+        # the guard could say why, turning the clearest failure here (the field is
+        # gone) into a bare non-zero exit.
         baked=$("$binary" info target --json | grep -o '"telemetryKeyBaked":[^,}]*' | tr -d ' ' || true)
         echo "telemetry key -> ${baked:-<field missing>}"
         if [ "$baked" != '"telemetryKeyBaked":true' ]; then
-          echo "::error::${{ inputs.asset }} baked NO PostHog key, so every install of $VERSION would send nothing and nothing downstream would notice. Set WEGO_CLI_POSTHOG_PROJECT_KEY at REPO level (the build job carries no environment:, so an environment-scoped var is invisible to it - that is how c0685ff happened). Refusing before anything is published."
+          echo "::error::${{ inputs.asset }} carries NO baked PostHog key even though the build accepted one, so every install of $VERSION would send nothing. That points at the inlining (--env 'WEGO_BUILD_*' / the static read in config.ts), not at the repo variable. Refusing before anything is published."
           exit 1
         fi
 

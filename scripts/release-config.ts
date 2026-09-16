@@ -1,10 +1,31 @@
+/**
+ * Which lane is building, because the PostHog key's constraint INVERTS between the
+ * two and a build that cannot tell them apart gets one of the incidents below.
+ *
+ * `release` REQUIRES it. Absent, the binary builds, runs, smokes and publishes
+ * perfectly and simply never posts: v1.1.0–v1.2.1 shipped that way for two weeks
+ * after `WEGO_CLI_POSTHOG_PROJECT_KEY` did not survive the wego-ai → wego/cli
+ * cutover (c0685ff), with every check green throughout.
+ *
+ * `edge` FORBIDS it. Edge builds are dogfood and must never count as product
+ * telemetry; they emitted into the production project for eleven days before
+ * anyone noticed.
+ *
+ * Both directions were previously guarded by a COMMENT on the edge lane and by
+ * nothing at all on the release lane. This is the guard instead. `build-release.ts`
+ * is the single call site both lanes reach, so asserting here covers both
+ * directions at once, and does it before a byte is produced.
+ */
+export type BuildLane = "release" | "edge";
+
 export interface ReleaseEnvSpec {
   authorizeUrl: string;
   tokenUrl: string;
   apiUrl: string;
   clientId: string;
-  /** The write-only PostHog key baked as `WEGO_BUILD_POSTHOG_PROJECT_KEY`. **Optional**,
-   *  like the two channel bases: absent → the binary emits nothing. */
+  /** The write-only PostHog key baked as `WEGO_BUILD_POSTHOG_PROJECT_KEY`.
+   *  LANE-SCOPED rather than optional: required on `release`, forbidden on `edge`
+   *  (see `BuildLane`). Absent → the binary emits nothing. */
   posthogKey?: string;
 }
 
@@ -33,6 +54,40 @@ function assertPosthogProjectKey(raw: string, name: string): void {
         "A personal or read-capable key must never be compiled into a public binary.",
     );
   }
+}
+
+/**
+ * The lane rule, asserted at the one call site both lanes pass through.
+ *
+ * Each message carries the diagnosis rather than just the verdict, because both of
+ * these have already cost someone a hunt: the release case names the SCOPE the
+ * variable needs (the build job carries no `environment:`, so an environment-scoped
+ * value is invisible to it — exactly how the blackout happened), and the edge case
+ * names why passing it is wrong rather than merely disallowed.
+ */
+function assertLaneTelemetryKey(
+  posthogKey: string | undefined,
+  lane: BuildLane,
+): void {
+  if (lane === "edge") {
+    if (posthogKey) {
+      throw new Error(
+        "WEGO_CLI_POSTHOG_PROJECT_KEY must NOT be set on the edge lane. Edge builds are " +
+          "dogfood; baking a key makes them post as product telemetry and pollute the " +
+          "production project. Remove it from the edge workflow's build job.",
+      );
+    }
+    return;
+  }
+  if (!posthogKey) {
+    throw new Error(
+      "WEGO_CLI_POSTHOG_PROJECT_KEY is required on the release lane. Without it the binary " +
+        "builds and runs normally and silently posts nothing, which is how v1.1.0–v1.2.1 " +
+        "shipped telemetry-blind for two weeks. Define it at REPOSITORY scope: the build " +
+        "job has no `environment:`, so an environment-scoped value is invisible to it.",
+    );
+  }
+  assertPosthogProjectKey(posthogKey, "WEGO_CLI_POSTHOG_PROJECT_KEY");
 }
 
 function requiredEnv(source: NodeJS.ProcessEnv, name: string): string {
@@ -95,7 +150,10 @@ function assertProductionHost(raw: string, name: string): void {
  * not go: it came back as `assertProductionHost` above, positive instead of
  * two-way. See its comment for why one build makes that stricter, not looser.
  */
-export function readReleaseEnvSpec(source: NodeJS.ProcessEnv): ReleaseEnvSpec {
+export function readReleaseEnvSpec(
+  source: NodeJS.ProcessEnv,
+  lane: BuildLane,
+): ReleaseEnvSpec {
   // Optional: absent → the built binary's `skill install` degrades to the
   // embedded copy.
   //
@@ -123,8 +181,6 @@ export function readReleaseEnvSpec(source: NodeJS.ProcessEnv): ReleaseEnvSpec {
   assertProductionHost(spec.authorizeUrl, "WEGO_AUTH_AUTHORIZE_URL");
   assertProductionHost(spec.tokenUrl, "WEGO_AUTH_TOKEN_URL");
   assertProductionHost(spec.apiUrl, "WEGO_API_URL");
-  if (posthogKey) {
-    assertPosthogProjectKey(posthogKey, "WEGO_CLI_POSTHOG_PROJECT_KEY");
-  }
+  assertLaneTelemetryKey(posthogKey, lane);
   return spec;
 }

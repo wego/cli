@@ -241,7 +241,7 @@ cannot read any of it – which is why the `build` job does not declare it.
 | `WEGO_AUTH_AUTHORIZE_URL` | OAuth authorize endpoint baked into the binary. Same assertions |
 | `WEGO_AUTH_TOKEN_URL` | OAuth token endpoint baked into the binary. Same assertions |
 | `WEGO_CLI_CLIENT_ID` | The public OAuth client id. The CLI is a public + PKCE client and holds no secret |
-| `WEGO_CLI_POSTHOG_PROJECT_KEY` | Write-only analytics key. **Optional**, and it belongs at **repository** scope, not here: the `build` job has no `environment:`, so setting it on the environment bakes an empty value and fails nothing |
+| `WEGO_CLI_POSTHOG_PROJECT_KEY` | Write-only analytics key. **Required** on the release lane — `build-release.ts --lane release` refuses to build without it — and **forbidden** on the edge lane, whose dogfood builds must not post as product telemetry. It belongs at **repository** scope, not here: the `build` job has no `environment:`, so setting it on the environment resolves to empty |
 | `SKILLS_PUBLISH_ENABLED` | Turns the plugin publish on. When on, the promote refuses a tag whose tree cannot publish |
 | `SKILLS_PUBLISH_APP_CLIENT_ID` | Client id paired with the App key above |
 | `RELEASE_PLEASE_APP_ID` | App id paired with the release-please key above |

@@ -52,13 +52,23 @@ const TARGETS: { target: string; suffix: string }[] = [
   { target: "bun-windows-x64", suffix: "windows-x64.exe" },
 ];
 
+// `--lane release|edge` is REQUIRED and has no default, because the two lanes want
+// opposite things from the PostHog key (see `BuildLane`) and the safe default does
+// not exist: defaulting to `release` makes a mis-wired edge build pollute the
+// production project, defaulting to `edge` makes a mis-wired release ship silent.
+// Both have happened. Making the caller say which lane it is turns the choice into
+// something a workflow diff shows.
+//
 // A leftover `staging` / `prod` argument from the pre-cutover two-flavor builder
 // must ERROR rather than be ignored: a caller passing it believes it is selecting
 // a backend, and silently building the one prod-baked binary would hand them a
 // binary that talks to production. The backend is a run-time choice now.
-if (process.argv[2]) {
+const laneArg = process.argv.slice(2);
+const lane = laneArg[0] === "--lane" ? laneArg[1] : undefined;
+if (lane !== "release" && lane !== "edge") {
   console.error(
-    `build-release.ts takes no arguments (got "${process.argv[2]}"). The wegostaging ` +
+    `build-release.ts requires --lane release|edge (got "${laneArg.join(" ") || "nothing"}"). ` +
+      "The lane decides whether the PostHog key is required or forbidden. The wegostaging " +
       "flavor is gone: one `wego-*` build is produced, and the backend is chosen at " +
       "run time with `--target prod|staging` (or WEGO_TARGET).",
   );
@@ -67,7 +77,7 @@ if (process.argv[2]) {
 // Validate the complete bundle before deleting or producing any artifacts. A
 // non-empty typo such as `not-a-url` must fail the release before a binary can
 // reach the publish/promote steps.
-const spec: ReleaseEnvSpec = readReleaseEnvSpec(process.env);
+const spec: ReleaseEnvSpec = readReleaseEnvSpec(process.env, lane);
 
 console.log(`Building wego CLI binaries (version ${VERSION})`);
 await $`rm -rf dist && mkdir -p dist`;

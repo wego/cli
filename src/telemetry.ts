@@ -5,19 +5,12 @@ import { isProdTarget, type Target } from "./target";
  * One `cli_command_ran` event per invocation. User-facing disclosure and the
  * opt-out live in README.md's Telemetry section.
  *
- * WHERE THE EVENTS GO, stated here because nothing else in the tree says it and
- * the last thing that did was deleted with `docs/` (d678250): PostHog project
- * **521561** ("api & cli", Wego org, US cloud) —
- * https://us.posthog.com/project/521561. The same project receives the `apps/api`
- * funnel events, deliberately: PostHog cannot join across projects, so a separate
- * one would split a single person in two and permanently prevent following them
- * from the command they typed to the request the API served. The saved views are
- * named `[CLI] …` there.
- *
- * Costing that omission once was enough. Finding out which project a released
- * binary posts to took a walk across two organizations and fourteen projects, and
- * the answer is not recoverable from the baked key — it is write-only and reads
- * nothing, including its own project's name.
+ * WHERE THE EVENTS GO — stated here because the baked key cannot answer it (it is
+ * write-only and reads nothing, including its own project's name): PostHog project
+ * **521561** ("api & cli", Wego org, US cloud), https://us.posthog.com/project/521561,
+ * saved views prefixed `[CLI]`. It also receives the `apps/api` funnel events
+ * deliberately — PostHog cannot join across projects, so a second one would split
+ * one person in two and break following them from command to request.
  */
 
 export const TELEMETRY_EVENT = "cli_command_ran";
@@ -367,6 +360,33 @@ export function buildTelemetryEvent(
   };
 }
 
+/**
+ * Why a build is structurally incapable of posting, in the order `maybeSendTelemetry`
+ * decides — `null` when none of them applies.
+ *
+ * ONE ordering, two consumers. `maybeSendTelemetry` maps it to its outcome strings;
+ * `formatTargetReport` maps it to the human row in `wego info target`. They used to
+ * be two hand-written copies of one precedence, and the copy had already drifted at
+ * birth — the report modelled two of these three and would have called a source
+ * build "unkeyed". Anything that reorders the guards now moves both at once.
+ *
+ * Only the guards that are a property of the BUILD live here. The run-time choices
+ * (`log`, the opt-out, the persisted disable) stay in `maybeSendTelemetry`: a report
+ * about what these bytes can do must not claim to know what this invocation chose.
+ */
+export type TelemetrySilenceReason = "non-prod" | "from-source" | "unkeyed";
+
+export function telemetrySilenceReason(build: {
+  target: Target;
+  fromSource: boolean;
+  keyBaked: boolean;
+}): TelemetrySilenceReason | null {
+  if (!isProdTarget(build.target)) return "non-prod";
+  if (build.fromSource) return "from-source";
+  if (!build.keyBaked) return "unkeyed";
+  return null;
+}
+
 /** Returned rather than logged, so each guard is testable on a silent path. */
 export type TelemetryOutcome =
   | "skipped-sender"
@@ -430,9 +450,14 @@ export async function maybeSendTelemetry(
   // target is resolved from the flag/env, not from the endpoint, so pointing
   // `WEGO_API_URL` at staging is NOT what suppresses the event — naming the
   // target is.
-  if (!isProdTarget(deps.target)) return "skipped-non-prod-target";
-  if (deps.fromSource) return "skipped-from-source";
-  if (!deps.posthogKey) return "skipped-unbaked";
+  const silent = telemetrySilenceReason({
+    target: deps.target,
+    fromSource: deps.fromSource,
+    keyBaked: Boolean(deps.posthogKey),
+  });
+  if (silent === "non-prod") return "skipped-non-prod-target";
+  if (silent === "from-source") return "skipped-from-source";
+  if (silent === "unkeyed") return "skipped-unbaked";
   if (mode === "off") return "skipped-opt-out";
 
   const state = await safely(() => deps.loadState());
