@@ -788,8 +788,19 @@ jobs:
       # HAND THE DARWIN PREDECESSOR TO `replace-macos`. The bytes above live in this
       # runner's RUNNER_TEMP, which no other runner can see, and the URL they came
       # from stops serving them at the very next step. An artifact is the only way
-      # across, and it has to be written BEFORE the advance for the same reason the
-      # capture is.
+      # across.
+      #
+      # BEFORE THE ADVANCE IS A CHOICE HERE, NOT A NECESSITY. The capture above has
+      # no other window - the pointer moves and the bytes stop being served. This
+      # step has no such constraint: it ships bytes that are already local, and would
+      # work anywhere after the capture. It sits here because this is the position
+      # with the best RECOVERY. An artifact-service failure stops the release with
+      # `cli/next` untouched and consumers still on the previous version, and a plain
+      # rerun recovers - the `cli/<tag>/COMMIT` sidecar permits a same-commit resume.
+      # One step LATER the same blip would land the release but leave the run red,
+      # and the lane's rerun rule then applies: a rerun past the advance captures
+      # THIS release as its own predecessor and fails SMOKE 3, so the remedy would be
+      # a whole new version for a transient upload error. Do not move this down.
       #
       # THE DARWIN ASSET ONLY. The linux predecessor never leaves this job - it is
       # consumed by the SMOKE 3 step below, a few steps down - so shipping it here
