@@ -112,7 +112,7 @@ for ring in next edge; do
 
   # A launcher on your PATH, so you never have to remember the variable.
   mkdir -p "$HOME/.local/bin"
-  printf '#!/bin/sh\nexec env XDG_CONFIG_HOME=%s "%s" "$@"\n' \
+  printf '#!/bin/sh\nexec env XDG_CONFIG_HOME=%s WEGO_CLI_NO_UPDATE_NOTICE=1 "%s" "$@"\n' \
     "$root/config" "$root/bin/wego" > "$HOME/.local/bin/wego-$ring"
   chmod +x "$HOME/.local/bin/wego-$ring"
 done
@@ -153,9 +153,14 @@ Notes worth knowing:
   happen, but `update -y` skips the confirm.
 - **Each install logs in separately**, because each owns its own
   `credentials.json`. That is what a genuinely separate install costs.
-- **Messages name the binary, not the launcher.** `wego-edge login` ends with
-  "Run `wego whoami` to verify", because the file under the launcher really is
-  called `wego`.
+- **Messages name the binary, not the launcher** — the file under the launcher
+  really is called `wego`, so `wego-edge login` ends with "Run `wego whoami` to
+  verify". Harmless for most lines, but not for the update notice: it would compare
+  your edge install against the **edge** ring and then tell you to run `wego update
+  -y`, which updates your *normal* install instead and leaves the edge one stale
+  while looking like it worked. That is why the launcher above sets
+  `WEGO_CLI_NO_UPDATE_NOTICE=1`. Ask on demand with `wego-edge update --check`,
+  which is read-only and reports the right ring.
 - **Removing one** is `rm -r ~/.wego/edge ~/.local/bin/wego-edge`. Your normal
   install is untouched.
 - **The agent skill is shared, and the config root does not isolate it.** `wego
