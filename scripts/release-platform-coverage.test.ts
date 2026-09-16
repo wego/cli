@@ -1,8 +1,8 @@
 /**
- * PLATFORM COVERAGE: the release runs the replace code it is shipping, on both
- * platforms this lane gates, asserted.
+ * PLATFORM COVERAGE: linux-x64 and darwin-arm64 make the SAME four claims, asserted.
  *
- * Two failures hide here, and both leave a green lane:
+ * The lane gates two platforms, and until recently it tested one. Three failures
+ * hide in the gap, and every one of them leaves a green release:
  *
  *  1. TIMING, every platform. Until `--force-replace`, no release executed its own
  *     `downloadAndReplace`: SMOKE 3 runs the PREDECESSOR's copy, SMOKE 4 returns on
@@ -12,9 +12,13 @@
  *     `if (os === "darwin") await deps.clearQuarantine(tmp)` - is unreachable from
  *     any Linux runner, at any release. That is the wego/cli#25 shape: every check
  *     passes and none of them runs the thing that breaks.
+ *  3. HALF A COLUMN. The macOS job initially made only the replace claim. A darwin
+ *     version-parse bug that left an up-to-date binary believing it was behind -
+ *     re-downloading itself on every invocation - passes a forced replace and is
+ *     caught only by the unforced comparison, which darwin did not run.
  *
- * Both are closed by a flag and a job, which makes them exactly the kind of thing a
- * later edit removes without meaning to:
+ * All three are closed by flags, steps and a job, which makes them exactly the kind
+ * of thing a later edit removes without meaning to:
  *
  *   - the macOS job dropped ("the release takes 20 minutes and macOS runners bill
  *     at 10x") -> failure 2 is back, and every release still green.
@@ -22,26 +26,36 @@
  *     `--expect-unchanged` ("the ring already serves these bytes, why force?") ->
  *     the step runs, costs the minutes, and returns on the up-to-date branch
  *     without reaching the replace. Green, and proving nothing.
+ *   - a darwin leg deleted as "redundant with the linux one" -> failure 3, on
+ *     whichever claim went.
+ *   - the darwin arriving leg UNGATED from the linux one -> on a first release, or
+ *     a ring not serving a complete set, linux skips SMOKE 3 and darwin invents a
+ *     predecessor. The two must skip together.
  *   - the macOS asset pointed back at a linux binary -> the job cannot even execute
  *     it, which at least fails loudly; asserted anyway, because the failure would
  *     read as a runner problem rather than as a coverage one.
  *
  * ASSERTED BY PROPERTY, NOT BY NAME: nothing here pins the string "replace-macos".
- * The claim is "this lane runs the self-update gate in a real-swap mode on both a
- * Linux and a macOS runner, each against its own asset" - rename or restructure
- * freely.
+ * The claim is "this lane makes each of the arriving, up-to-date and replace claims
+ * on both a Linux and a macOS runner, each against its own asset" - rename or
+ * restructure freely.
  */
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 
 interface Step {
+  name?: string;
   uses?: string;
   run?: string;
+  if?: string;
+  env?: Record<string, string>;
+  with?: Record<string, unknown>;
 }
 interface Job {
   "runs-on"?: string;
   permissions?: Record<string, string>;
   environment?: unknown;
+  outputs?: Record<string, string>;
   steps?: Step[];
 }
 interface Workflow {
@@ -49,73 +63,171 @@ interface Workflow {
 }
 
 const LANE = "release-cli.yml";
+/** The up-to-date / replace gate. Drives `wego update` from a built asset. */
 const GATE = "scripts/assert-self-update.ts";
+/** The arriving gate. Drives a PUBLISHED PREDECESSOR's own `wego update`. */
+const ARRIVE = "scripts/update-smoke.sh";
 
 const wf = Bun.YAML.parse(
   readFileSync(`.github/workflows/${LANE}`, "utf8"),
 ) as Workflow;
 
-/** Jobs whose steps invoke the self-update gate, with the runner they run on. */
-function gateJobs(): { name: string; job: Job; runs: string; body: string }[] {
-  return Object.entries(wf.jobs)
-    .map(([name, job]) => ({
-      name,
-      job,
-      runs: job["runs-on"] ?? "",
-      body: (job.steps ?? [])
-        .map((s) => s.run ?? "")
-        .filter((r) => r.includes(GATE))
-        .join("\n"),
-    }))
-    .filter((j) => j.body !== "");
+interface Leg {
+  job: string;
+  runs: string;
+  step: Step;
+  body: string;
 }
 
-/** The gate legs running on macOS - what this file is about. */
-function macLegs(): ReturnType<typeof gateJobs> {
-  return gateJobs().filter((j) => j.runs.startsWith("macos-"));
+/**
+ * Every step that runs one of the two gates, flattened across jobs and kept as
+ * INDIVIDUAL steps. Per-step is load-bearing: `--force-replace` and
+ * `--expect-unchanged` are mutually exclusive within one invocation but both are
+ * wanted in one job, so a job-wide string search cannot tell "two correct steps"
+ * from "one contradictory one".
+ */
+function legs(tool: string): Leg[] {
+  return Object.entries(wf.jobs).flatMap(([job, j]) =>
+    (j.steps ?? [])
+      .filter((s) => (s.run ?? "").includes(tool))
+      .map((step) => ({
+        job,
+        runs: j["runs-on"] ?? "",
+        step,
+        // env is part of the body on purpose: the arriving legs name their asset in
+        // `OLD_BINARY` rather than inline, so a run-only search would report a leg
+        // pointed at the wrong platform's binary as correct.
+        body: [step.run ?? "", ...Object.values(step.env ?? {})].join("\n"),
+      })),
+  );
 }
 
-describe(`${LANE}: the shipping build's replace code is executed`, () => {
-  it("forces a real swap on linux-x64, in the job that builds and publishes", () => {
-    // Closes the timing gap: without this the release ships replace code whose
-    // first execution is a consumer's machine, or the NEXT release's SMOKE 3.
-    const linux = gateJobs().filter((j) => j.runs.startsWith("ubuntu-"));
-    expect(linux.some((j) => j.body.includes("--force-replace"))).toBe(true);
-    expect(linux.some((j) => j.body.includes("wego-linux-x64"))).toBe(true);
+const onLinux = (l: Leg) => l.runs.startsWith("ubuntu-");
+const onMac = (l: Leg) => l.runs.startsWith("macos-");
+const DARWIN = /wego-darwin-(arm64|x64)\b/;
+
+/** The jobs holding a macOS gate leg - what the capability assertions are about. */
+function macJobs(): Job[] {
+  const names = new Set(
+    [...legs(GATE), ...legs(ARRIVE)].filter(onMac).map((l) => l.job),
+  );
+  return [...names].map((n) => wf.jobs[n] as Job);
+}
+
+describe(`${LANE}: linux-x64 and darwin-arm64 make the same claims`, () => {
+  it("runs both gates on a macOS runner at all", () => {
+    // The cheapest thing to delete, and the one whose absence is silent.
+    expect(legs(GATE).filter(onMac)).not.toEqual([]);
+    expect(legs(ARRIVE).filter(onMac)).not.toEqual([]);
   });
 
-  it("runs the self-update gate on a macOS runner", () => {
-    expect(macLegs()).not.toEqual([]);
+  describe.each([
+    ["linux-x64", onLinux, /wego-linux-x64\b/],
+    ["darwin-arm64", onMac, DARWIN],
+  ] as const)("%s", (_label, onPlatform, asset) => {
+    it("proves a machine can ARRIVE at this release (SMOKE 3)", () => {
+      // The predecessor's own code pulls these bytes in. Old, frozen code - so a
+      // failure is a fact about consumers on the previous build, not about this one.
+      const arriving = legs(ARRIVE).filter(onPlatform);
+      expect(arriving).not.toEqual([]);
+      expect(arriving.some((l) => asset.test(l.body))).toBe(true);
+      // Without --require-replace a rerun past the advance captures THIS release as
+      // its own predecessor, swaps nothing, and passes having measured nothing.
+      // EVERY leg, not just one: with `some`, dropping the flag from one platform
+      // leaves the other one holding the assertion up for both.
+      for (const leg of arriving) {
+        expect(leg.body).toContain("--require-replace");
+      }
+    });
+
+    it("proves a machine can LEAVE it (SMOKE 4)", () => {
+      // Only an unforced run proves `update`'s OWN comparison concluded "already
+      // current" against the ring. A forced run skips that by construction, so
+      // SMOKE 5 cannot stand in for this.
+      const leaving = legs(GATE).filter(
+        (l) => onPlatform(l) && l.body.includes("--expect-unchanged"),
+      );
+      expect(leaving).not.toEqual([]);
+      expect(leaving.some((l) => asset.test(l.body))).toBe(true);
+    });
+
+    it("executes the replace code THIS BUILD ships (SMOKE 5)", () => {
+      // Closes the timing gap: without this the release ships replace code whose
+      // first execution is a consumer's machine, or the NEXT release's SMOKE 3.
+      const replacing = legs(GATE).filter(
+        (l) => onPlatform(l) && l.body.includes("--force-replace"),
+      );
+      expect(replacing).not.toEqual([]);
+      expect(replacing.some((l) => asset.test(l.body))).toBe(true);
+    });
   });
 
-  it("drives a REAL swap there, against the darwin asset", () => {
-    for (const leg of macLegs()) {
-      // --force is the only way past the up-to-date branch when the ring already
-      // serves these bytes, which it does by the time this job runs.
-      expect(leg.body).toContain("--force-replace");
-      expect(leg.body).toMatch(/wego-darwin-(arm64|x64)\b/);
-      // The opposite claim. Mutually exclusive in the script too, which errors -
-      // this catches the lane asking for it at all.
-      expect(leg.body).not.toContain("--expect-unchanged");
+  it("never asks one invocation for both mutually exclusive claims", () => {
+    // The script errors on this pairing. Asserted here so the LANE is caught asking
+    // for it, rather than a release burning the minutes to reach the error.
+    for (const leg of legs(GATE)) {
+      const both =
+        leg.body.includes("--force-replace") &&
+        leg.body.includes("--expect-unchanged");
+      expect(both).toBe(false);
     }
   });
 
-  it("keeps the up-to-date assertion alongside it, not instead of it", () => {
-    // Two claims, one per step, and a forced run cannot make the first: only an
-    // unforced run proves `update`'s OWN comparison concluded "already current"
-    // against the ring. Collapsing the pair into one forced step would silently
-    // drop that.
-    const linux = gateJobs().filter((j) => j.runs.startsWith("ubuntu-"));
-    expect(linux.some((j) => j.body.includes("--expect-unchanged"))).toBe(true);
+  it("skips the arriving legs together, never one without the other", () => {
+    // Both read the SAME capture. First release, or a ring not serving a complete
+    // set, and neither has a predecessor - so a darwin leg still running there
+    // would be testing something it invented.
+    const arriving = legs(ARRIVE);
+    expect(arriving.length).toBeGreaterThanOrEqual(2);
+    for (const leg of arriving) {
+      expect(leg.step.if ?? "").toMatch(/usable/);
+    }
+  });
+
+  it("captures the predecessor BEFORE the ring advances", () => {
+    // The window is the whole reason the darwin predecessor travels as an artifact:
+    // `cli/next` stops serving it the instant the pointer moves, and the macOS job
+    // does not start until long after that.
+    const steps = Object.values(wf.jobs).flatMap((j) => j.steps ?? []);
+    const capture = steps.findIndex((s) =>
+      /Capture the predecessor/i.test(s.name ?? ""),
+    );
+    const advance = steps.findIndex((s) =>
+      /Advance cli\/next/i.test(s.name ?? ""),
+    );
+    expect(capture).toBeGreaterThanOrEqual(0);
+    expect(advance).toBeGreaterThanOrEqual(0);
+    expect(capture).toBeLessThan(advance);
+  });
+
+  it("hands the darwin predecessor over under a name both sides agree on", () => {
+    // A rename on one side alone fails loudly at download time rather than silently,
+    // but it fails DURING a release. Cheaper to catch here.
+    const artifactName = (pred: (u: string) => boolean) =>
+      Object.values(wf.jobs)
+        .flatMap((j) => j.steps ?? [])
+        .filter((s) => pred(s.uses ?? ""))
+        .map((s) => s.with?.name)
+        .filter((n): n is string => typeof n === "string");
+
+    const uploaded = artifactName((u) =>
+      u.startsWith("actions/upload-artifact"),
+    );
+    const downloaded = artifactName((u) =>
+      u.startsWith("actions/download-artifact"),
+    );
+    const predecessor = uploaded.filter((n) => /predecessor/i.test(n));
+    expect(predecessor).not.toEqual([]);
+    for (const name of predecessor) expect(downloaded).toContain(name);
   });
 
   it("gives the macOS job neither capability the lane guards", () => {
-    // It executes a release binary against the public route and needs nothing
-    // else: no store token to write a ring with, no OIDC token to sign with.
-    for (const leg of macLegs()) {
-      expect(leg.job.permissions?.["id-token"]).toBeUndefined();
-      expect(leg.job.environment).toBeUndefined();
-      expect(JSON.stringify(leg.job)).not.toContain("BLOB_READ_WRITE_TOKEN");
+    // It executes release binaries against the public route and needs nothing else:
+    // no store token to write a ring with, no OIDC token to sign with.
+    for (const job of macJobs()) {
+      expect(job.permissions?.["id-token"]).toBeUndefined();
+      expect(job.environment).toBeUndefined();
+      expect(JSON.stringify(job)).not.toContain("BLOB_READ_WRITE_TOKEN");
     }
   });
 });
