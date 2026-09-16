@@ -13,7 +13,10 @@ Please include what you did, what you observed, and what you expected, along wit
 the CLI version (`wego version`), your operating system and architecture, and
 whether you were following `stable`, `next` or `edge`. A proof of concept helps.
 
-**What to expect:** we aim to acknowledge a report within **three business
+This is not a bug bounty program. Wego does not currently offer or guarantee
+monetary rewards for reports submitted under this policy.
+
+**What to expect:** we aim to acknowledge a report within **five business
 days**, and to keep you informed while we work on it. Acknowledgement is not a
 fix: how long a fix takes depends on what you found, and we will tell you what
 we know as we know it. We will tell you when a fix is released, and we are glad
