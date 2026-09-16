@@ -687,26 +687,16 @@ jobs:
         run: |
           set -euo pipefail
           bin=./dist/wego-linux-x64
-          chmod +x "$bin"
 
-          # A dev-versioned binary makes `update` return OK without acting, so a
-          # gate handed one would go green having tested nothing. Assert the build
-          # baked its version rather than hoping it did.
-          got=$("$bin" version)
-          if [ "$got" != "$VERSION" ]; then
-            echo "::error::./dist/wego-linux-x64 reports '$got', not '$VERSION'. It was built without WEGO_BUILD_VERSION baked, so 'wego update' would exit OK without doing anything and this gate would prove nothing."
-            exit 1
-          fi
-
-          outgoing=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' | tr -d '\r\n')
-          if [ -z "$outgoing" ]; then
-            echo "::error::cli/stable serves no VERSION, so there is nothing for this build to update ONTO and its replace path cannot be exercised. Refusing to publish a build whose ability to leave is unproven."
-            exit 1
-          fi
-          if [ "$outgoing" = "$VERSION" ]; then
-            echo "::error::cli/stable already serves $VERSION, so pointing this build at it would exercise no byte swap. Re-releasing a version that is already stable leaves the replace path untested - cut a new version instead."
-            exit 1
-          fi
+          # The baked-version guard, the cli/stable probe and both refusals are one
+          # script now: the other job asks the identical question at a different
+          # stage, and the two copies this replaces had already grown apart in
+          # wording. `--stage` keeps each job's own `::error::` advice, because the
+          # consequence differs even though the check does not. The script writes
+          # ONLY the resolved version to stdout — pinned by `outgoing-stable.test.ts`,
+          # since anything chatty would land inside `$( )` here and aim the upgrade
+          # path at garbage.
+          outgoing=$(sh scripts/outgoing-stable.sh "$bin" "$VERSION" --stage pre-publish)
 
           echo "making the new $VERSION binary install stable's $outgoing over itself..."
           if ! sh scripts/upgrade-path.sh "$bin" stable "$outgoing" --max-hops 1; then
@@ -1328,23 +1318,16 @@ jobs:
         run: |
           set -euo pipefail
           bin=./dist/wego-darwin-arm64
-          chmod +x "$bin"
 
-          got=$("$bin" version)
-          if [ "$got" != "$VERSION" ]; then
-            echo "::error::wego-darwin-arm64 reports '$got', not '$VERSION' - built without WEGO_BUILD_VERSION baked, so 'wego update' would return having done nothing and this leg would prove nothing."
-            exit 1
-          fi
-
-          outgoing=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' | tr -d '\r\n')
-          if [ -z "$outgoing" ]; then
-            echo "::error::cli/stable serves no VERSION, so there are no differing bytes for this build to replace itself with and the unforced path cannot be exercised."
-            exit 1
-          fi
-          if [ "$outgoing" = "$VERSION" ]; then
-            echo "::error::cli/stable already serves $VERSION, so no byte swap is possible and a pass here would prove nothing. Cut a new version rather than re-releasing one that is already stable."
-            exit 1
-          fi
+          # The baked-version guard, the cli/stable probe and both refusals are one
+          # script now: the other job asks the identical question at a different
+          # stage, and the two copies this replaces had already grown apart in
+          # wording. `--stage` keeps each job's own `::error::` advice, because the
+          # consequence differs even though the check does not. The script writes
+          # ONLY the resolved version to stdout — pinned by `outgoing-stable.test.ts`,
+          # since anything chatty would land inside `$( )` here and aim the upgrade
+          # path at garbage.
+          outgoing=$(sh scripts/outgoing-stable.sh "$bin" "$VERSION" --stage post-advance)
 
           if ! sh scripts/upgrade-path.sh "$bin" stable "$outgoing" --max-hops 1; then
             echo "::error::the darwin-arm64 $VERSION binary cannot replace itself on the ordinary, unforced path. Every Mac that took this build would be stuck on it, and a rollback cannot reach them - accepting one needs the update path that is broken. The forced step above passed, so fetch/decompress/checksum/quarantine/rename all run: what fails here is the binary landing somewhere other than where it runs from, or the unforced branch itself."

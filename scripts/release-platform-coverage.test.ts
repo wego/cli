@@ -72,6 +72,8 @@ const ACTION = ".github/actions/verify-replace/action.yml";
 const ACTION_REF = "./.github/actions/verify-replace";
 /** The install contract: the installer writes a record, this build reads it. */
 const INSTALL = "scripts/install-smoke.sh";
+/** The shared cli/stable resolution both upgrade-path gates go through. */
+const OUTGOING = "scripts/outgoing-stable.sh";
 /** The up-to-date / replace gate. Drives `wego update` from a built asset. */
 const GATE = "scripts/assert-self-update.ts";
 /** The arriving gate. Drives a PUBLISHED PREDECESSOR's own `wego update`. */
@@ -319,5 +321,58 @@ describe(`${ACTION}: one definition, so the legs cannot drift`, () => {
     for (const tool of [GATE, INSTALL]) {
       expect(gated.some((s) => (s.run ?? "").includes(tool))).toBe(false);
     }
+  });
+});
+
+describe(`${LANE}: the cli/stable probe is resolved once, not copied`, () => {
+  const bodies = Object.entries(wf.jobs).flatMap(([job, j]) =>
+    (j.steps ?? []).map((st) => ({
+      job,
+      runs: j["runs-on"] ?? "",
+      run: st.run ?? "",
+      name: st.name ?? "",
+    })),
+  );
+
+  it("has no inlined version probe left in either job", () => {
+    // The copy this replaced lived in two jobs with two sets of wording. A third
+    // would arrive the same way: pasted next to the second.
+    const inlined = bodies.filter((b) =>
+      b.run.includes("install?dl=VERSION&ring=stable"),
+    );
+    expect(inlined).toHaveLength(0);
+  });
+
+  it("resolves through the script on both platforms, each naming its stage", () => {
+    const viaScript = bodies.filter((b) => b.run.includes(OUTGOING));
+    expect(viaScript).toHaveLength(2);
+    expect(viaScript.some((b) => b.runs.startsWith("ubuntu-"))).toBe(true);
+    expect(viaScript.some((b) => b.runs.startsWith("macos-"))).toBe(true);
+    // The stages are what keep each job's ::error:: advice its own. Two call sites
+    // naming the same stage would mean one of them gives the wrong advice.
+    const stages = viaScript.map(
+      (b) => /--stage\s+([a-z-]+)/.exec(b.run)?.[1] ?? "",
+    );
+    expect(new Set(stages)).toEqual(new Set(["pre-publish", "post-advance"]));
+  });
+
+  it("never points the probe at a shim", () => {
+    // `--probe-url` exists for `outgoing-stable.test.ts` and nothing else. A lane
+    // that passed it would pass having proved nothing about the real route — the
+    // same rule the install URL in the smokes is held to.
+    for (const b of bodies) expect(b.run).not.toContain("--probe-url");
+  });
+
+  it("keeps the pre-publish gate ahead of publication", () => {
+    // The whole reason this is a shared SCRIPT and not a shared step: one caller
+    // gates publication, the other runs after the ring moved. Collapsing them would
+    // publish first and check second.
+    const release = wf.jobs.release?.steps ?? [];
+    const gate = release.findIndex((st) => (st.run ?? "").includes(OUTGOING));
+    const publish = release.findIndex((st) =>
+      (st.name ?? "").startsWith("Publish immutable artifact"),
+    );
+    expect(gate).toBeGreaterThanOrEqual(0);
+    expect(publish).toBeGreaterThan(gate);
   });
 });
