@@ -21,22 +21,21 @@ name: Promote (cli)
 # and the two rings' manifests must match afterwards. There is no undo step, because
 # there is no undo — the recovery is promoting an earlier good tag over the top.
 #
-# ROLLBACK is this same workflow with an older `tag`. It is a promote like any other:
-# the older tag's frozen bytes are copied onto `cli/stable`, and every install
-# self-updates onto them because the checksums differ. Note `VERSION` on the ring
-# then advertises the older version, which is correct — that IS what stable serves.
+# ROLLBACK IS `rollback-cli.yml`, NOT AN INPUT HERE. It used to be: `allow_not_next`
+# promoted a tag `cli/next` does not serve, by SUBTRACTING the gates that assume it
+# does. That boolean was the defect - it silently changed the meaning of twenty
+# downstream steps, so every gate added here had to remember to opt rollback out,
+# and the first one whose author did not (wego/cli#48, two `cli/next`-coupled gates)
+# hard-failed every rollback without anyone noticing. This workflow now has NO mode:
+# it only ever advances `stable` onto what `next` serves, so every gate below may
+# assume `next == tag` unconditionally, which is what they all already did.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'The vX.Y.Z tag to promote to cli/stable. Must already be published and, unless you are rolling back, should be what cli/next serves.'
+        description: 'The vX.Y.Z tag to promote to cli/stable. Must already be published, and must be what cli/next serves. To put stable back on an EARLIER release, use rollback-cli.yml.'
         required: true
         type: string
-      allow_not_next:
-        description: 'ROLLBACK / RECOVERY. Promote a tag that cli/next does not currently serve. Normally false: the promote decision is about the build people have been running.'
-        required: false
-        default: false
-        type: boolean
 
 # contents:read — this workflow creates no tag and no Release; both already exist
 # (release-please cut them). It only copies blobs.
@@ -95,13 +94,9 @@ jobs:
       - name: Record what is being approved
         env:
           TAG: ${{ inputs.tag }}
-          ALLOW_NOT_NEXT: ${{ inputs.allow_not_next }}
         run: |
           set -euo pipefail
           echo "Approved: promote $TAG to cli/stable."
-          if [ "$ALLOW_NOT_NEXT" = "true" ]; then
-            echo "::warning::allow_not_next is set - this is the rollback path, and cli/next is NOT required to serve $TAG."
-          fi
 
   promote:
     name: Promote ${{ inputs.tag }} to cli/stable
@@ -201,21 +196,22 @@ jobs:
           fi
           case "$version" in
             1.0.*|1.1.*) tag="cli-v$version"; lane="wego-ai's promote-cli.yml" ;;
-            *)           tag="v$version";     lane="this repository's promote-cli.yml" ;;
+            *)           tag="v$version";     lane="this repository's rollback-cli.yml" ;;
           esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "how=ROLL BACK: run $lane with tag=$tag and allow_not_next=true (that flag is required - cli/next will be serving the new build, not this one)." >> "$GITHUB_OUTPUT"
+          echo "how=ROLL BACK: run $lane with tag=$tag." >> "$GITHUB_OUTPUT"
           echo "rollback target: $tag via $lane"
 
       # A tag can exist - and `cli/<tag>/` can even be half-written - without the
       # release lane ever having FINISHED. Promoting that would put bytes no release
       # run ever verified in front of every install, which is the whole install base.
       #
-      # UNCONDITIONAL, including under `allow_not_next`: that input relaxes WHICH
-      # ring must currently serve the tag (the rollback path), never whether the tag
-      # was released at all. A rollback target is a tag that was released and then
-      # superseded, so this gate costs a rollback nothing.
+      # `rollback-cli.yml` asks a related question of its own target a different
+      # way - it requires the tag's frozen prefix to be present and complete in the
+      # store - because a rollback target is a tag that was released and then
+      # superseded, and what a rollback needs to know is whether those bytes
+      # SURVIVED, not whether they were once produced.
       #
       # `branch=<tag>` is how the Actions API filters runs by ref name; a tag-push
       # run is recorded under the tag's own name.
@@ -245,7 +241,7 @@ jobs:
             ).length;
             if (ok < 1) {
               core.setFailed(
-                `No completed, successful release-cli.yml run for ${tag}. cli/stable serves every install, so it is only ever advanced onto bytes a release run finished and verified. Re-run or fix the release for ${tag} first; allow_not_next does not bypass this.`,
+                `No completed, successful release-cli.yml run for ${tag}. cli/stable serves every install, so it is only ever advanced onto bytes a release run finished and verified. Re-run or fix the release for ${tag} first.`,
               );
               return;
             }
@@ -264,16 +260,17 @@ jobs:
       #
       # So the question moves here, where "no" is free: nothing has moved yet.
       #
-      # A ROLLBACK IS THE ONE CASE WHERE SKIPPING IS CORRECT. Rolling back to a
-      # pre-lane tag is the documented recovery path, and such a tag has no plugin
-      # content to publish - there is nothing to roll the plugin repo back TO. That
-      # path stays open and warns instead, because a rollback that cannot run is a
-      # worse failure than a plugin repo that lags by one tag.
+      # NO ROLLBACK ESCAPE HATCH IS NEEDED HERE ANY MORE. This used to warn rather
+      # than refuse when `allow_not_next` was set, because rolling back to a pre-lane
+      # tag is a recovery path that must never be blocked by a plugin repo. That case
+      # now lives in `rollback-cli.yml`, which publishes no plugin at all - the
+      # SKILL.md ships embedded in the binary and `update` reinstalls it after the
+      # swap, so a rollback needs nothing from `wego/skills`. A promote is always a
+      # forward move onto a tag that carries this lane, so the refusal is plain.
       - name: Refuse a tag whose tree cannot publish the plugin
         if: vars.SKILLS_PUBLISH_ENABLED == 'true'
         env:
           TAG: ${{ inputs.tag }}
-          ALLOW_NOT_NEXT: ${{ inputs.allow_not_next }}
         run: |
           set -euo pipefail
           missing=''
@@ -284,11 +281,7 @@ jobs:
             echo "ok: $TAG carries the plugin publish lane."
             exit 0
           fi
-          if [ "$ALLOW_NOT_NEXT" = "true" ]; then
-            echo "::warning::$TAG predates the plugin publish lane (missing:$missing). This is the rollback path, so the promote continues - but wego/skills will keep serving the plugin content of a NEWER tag than cli/stable. Promote a plugin-carrying tag to resynchronise."
-            exit 0
-          fi
-          echo "::error::$TAG has no plugin publish lane in its tree (missing:$missing) and SKILLS_PUBLISH_ENABLED is on. Refusing before cli/stable moves: promoting would move both rings and then skip the publish, which reports success for a promote that published nothing. Re-run with allow_not_next if this is a deliberate rollback to a pre-lane tag."
+          echo "::error::$TAG has no plugin publish lane in its tree (missing:$missing) and SKILLS_PUBLISH_ENABLED is on. Refusing before cli/stable moves: promoting would move both rings and then skip the publish, which reports success for a promote that published nothing. If you meant to put cli/stable back on an EARLIER release, use rollback-cli.yml - it publishes no plugin and does not care."
           exit 1
 
       # THE PROMOTE DECISION IS ABOUT A BUILD PEOPLE RAN, and that gate lives in the
@@ -302,9 +295,6 @@ jobs:
       # wrong place. The publisher already holds the origin it is about to write, so
       # it is the only place the gate and the write are the same store by
       # construction.
-      #
-      # `allow_not_next` drops the flag rather than adding a bypass: a rollback
-      # promotes an OLDER tag, which by definition is not what `next` serves.
 
       # THE PROMOTE GUARD (foundations#132, #134, #159 item 4). Refuse to move
       # `stable` unless the legacy bridge pin is LIVE in front of it.
@@ -328,9 +318,14 @@ jobs:
       # **This refuses today, and that is correct.** The bridge does not exist until
       # 3a publishes it and sets the two variables. It passes from the end of 3a on.
       # There is deliberately no bypass input: a promote that needs to skip this is
-      # a promote that strands the 1.0.x install base, and `allow_not_next` does not
-      # reach it either — a rollback moves `stable` just as surely, so it needs the
-      # pin just as much.
+      # a promote that strands the 1.0.x install base.
+      #
+      # `rollback-cli.yml` does NOT carry this gate, and that is not an oversight. A
+      # 1.0.x machine never reads this pointer - the pin serves it the frozen prefix
+      # whatever `stable` names - so a rollback can neither strand those installs nor
+      # rescue them, and holding a rollback hostage to a pre-existing condition it
+      # cannot affect would only extend the outage. This lane makes the same argument
+      # about itself at `Verify the install base can reach this promote` below.
       #
       # Production, not the promote's own store origin, on purpose: unlike the
       # `--require-serving next` gate below — which must ask the store it is about
@@ -421,11 +416,7 @@ jobs:
       # DELIBERATELY INLINE, not a script in `scripts/`: this job checks out the
       # TAG's tree, so a script-based check would silently skip on every tag cut
       # before it existed - including the tags it most needs to refuse.
-      #
-      # Skipped on a rollback: `allow_not_next` promotes a tag `next` does not
-      # serve, so there is nothing at `ring=next` to fetch.
       - name: Require this tag's binary to be distinguishable from a pre-relay install
-        if: ${{ !inputs.allow_not_next }}
         env:
           TAG: ${{ inputs.tag }}
         run: |
@@ -439,7 +430,7 @@ jobs:
           # error. Say it plainly and point at the gate that owns it.
           served=$(curl -fsSL "$url?dl=VERSION&ring=next" || true)
           if [ "$served" != "${TAG#v}" ]; then
-            echo "::error::cli/next serves '${served:-nothing}', not ${TAG#v}, so the bytes this gate would test are not $TAG's. Promote the build that ring has been running, or use allow_not_next for a deliberate rollback (which skips this gate)."
+            echo "::error::cli/next serves '${served:-nothing}', not ${TAG#v}, so the bytes this gate would test are not $TAG's. Promote the build that ring has been running. To put cli/stable back on an EARLIER release, use rollback-cli.yml."
             exit 1
           fi
           if ! curl -fsSL "$url?dl=wego-linux-x64&ring=next" -o "$work/bin/wego"; then
@@ -717,15 +708,9 @@ jobs:
           BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
           REQUIRE_PUBLISH: 'true'
           TAG: ${{ inputs.tag }}
-          ALLOW_NOT_NEXT: ${{ inputs.allow_not_next }}
         run: |
           set -euo pipefail
-          if [ "$ALLOW_NOT_NEXT" = "true" ]; then
-            echo "::warning::allow_not_next is set - promoting $TAG to cli/stable without requiring that cli/next serves it. This is the rollback path."
-            bun run scripts/upload-release-blob.ts --promote "$TAG" --to stable
-          else
-            bun run scripts/upload-release-blob.ts --promote "$TAG" --to stable --require-serving next
-          fi
+          bun run scripts/upload-release-blob.ts --promote "$TAG" --to stable --require-serving next
 
       # Verify the ring now serves this version, every asset hash-checked against the
       # manifest it just committed to.
@@ -744,11 +729,12 @@ jobs:
       # precisely because a promote is a copy. If these ever differ, something
       # rebuilt, and the rebuild is the bug.
       #
-      # Skipped when `allow_not_next` is set: a rollback deliberately puts `stable`
-      # on a DIFFERENT build from `next`, so the manifests are expected to differ and
-      # asserting otherwise would fail every rollback.
+      # UNCONDITIONAL, now that this lane has no rollback mode. It used to be skipped
+      # under `allow_not_next`, because a rollback deliberately puts `stable` on a
+      # different build from `next`. A rollback is `rollback-cli.yml`'s job, and it
+      # makes no such claim.
       - name: Prove cli/next and cli/stable are byte-identical
-        if: ${{ steps.promote.outputs.store_origin != '' && !inputs.allow_not_next }}
+        if: steps.promote.outputs.store_origin != ''
         env:
           ORIGIN: ${{ steps.promote.outputs.store_origin }}
         run: |

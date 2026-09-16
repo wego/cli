@@ -65,6 +65,44 @@ describe("rollback-cli.yml: never couples to cli/next", () => {
   });
 });
 
+describe("promote-cli.yml: has no rollback mode", () => {
+  // THE DEFECT ITSELF. `allow_not_next` was a human-typed boolean that subtracted
+  // gates from the forward path, so correctness depended on every future gate's
+  // author reconstructing an invariant documented per-step in prose and nowhere as
+  // a whole. Re-introducing it — as an input, an `if`, or an env var — brings back
+  // the exact shape that let #48 break rollback silently.
+  it("declares no allow_not_next input", () => {
+    const wf = workflow("promote-cli.yml") as {
+      on?: { workflow_dispatch?: { inputs?: Record<string, unknown> } };
+    };
+    const inputs = Object.keys(wf.on?.workflow_dispatch?.inputs ?? {});
+    expect(inputs).not.toContain("allow_not_next");
+  });
+
+  // The input being gone is not enough on its own: a leftover `!inputs.allow_not_next`
+  // in an `if` evaluates to TRUE for a missing input, so the guard silently inverts
+  // rather than erroring, and a gate that was meant to be conditional becomes
+  // permanently on — or off, depending which way it was written.
+  it("has no executable reference to the removed input", () => {
+    const text = executableText(workflow("promote-cli.yml"));
+    expect(text).not.toContain("allow_not_next");
+  });
+
+  // A promote only ever advances `stable` onto what `next` serves, and the
+  // publisher is where that is enforced — it holds the origin it is about to
+  // write, so the gate and the write are the same store by construction. Dropping
+  // the flag is how the old rollback mode worked; nothing should drop it now.
+  it("always passes --require-serving next to the publisher", () => {
+    const wf = workflow("promote-cli.yml") as {
+      jobs: Record<string, { steps?: { name?: string; run?: string }[] }>;
+    };
+    const move = Object.values(wf.jobs)
+      .flatMap((j) => j.steps ?? [])
+      .find((s) => s.name === "Advance cli/stable");
+    expect(move?.run).toContain("--require-serving next");
+  });
+});
+
 describe("the two lanes serialise against each other", () => {
   // Concurrency groups are scoped to the REPOSITORY, not the workflow, so the
   // shared group string is what stops a rollback racing a promote for the same
