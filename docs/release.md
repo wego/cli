@@ -388,18 +388,38 @@ and every binary built before that edit keeps the old anchors. The verifier take
 the roots as an argument rather than importing them itself, precisely so this
 stays a reviewed data change.
 
-There is no automatic notice when Fulcio rotates. That is what the check below is
-for.
+**A weekly lane now watches for that rotation.**
+`.github/workflows/fulcio-pin-check.yml` compares the pinned material against
+`https://fulcio.sigstore.dev/api/v1/rootCert` every Monday at 07:00 UTC and opens
+an issue when they diverge – one issue, not one per firing, because the cron keeps
+firing while the pin is stale. It also runs on any pull request touching
+`sigstore-roots.ts` or its checker, which is when you most want to know whether the
+material being pinned is what Fulcio is actually serving.
+
+It is a schedule rather than a gate in the release lanes on purpose. Proving a
+candidate can still verify something signed today would mean driving a real binary
+through a real update before the pointer moves: seconds of exposure on the one path
+where exposure is what is being minimised, asked one tag at a time, and only ever
+during a release. This risk is rare, sudden, and hits the whole install base at
+once, which a cheap scheduled check handles well and an expensive per-operation
+gate handles badly.
 
 ---
 
 ## Quarterly dependency check
 
+The Fulcio comparison that used to lead this list is automated: see
+`fulcio-pin-check.yml` above. What replaces it here is confirming the lane is still
+running, because **a scheduled workflow that has stopped firing looks exactly like
+one that keeps passing.** GitHub disables scheduled workflows after a long stretch
+without repository activity, which is unlikely on an active repository but is the
+specific way this particular watchdog dies.
+
 Once a quarter, and always before a release that changes the verifier:
 
-1. Compare `src/release-signing/sigstore-roots.ts` against
-   `https://fulcio.sigstore.dev/api/v1/rootCert`. A difference is a code change,
-   reviewed, released and promoted like any other.
+1. Confirm `fulcio-pin-check.yml` has run recently and is green, and that no
+   drift issue it opened is sitting unread. When one is open, the rotation is a
+   code change: edit the pin, review, release and promote it like any other.
 2. Check the pinned `cosign-installer` version in `.github/actions/sign-manifest`
    against upstream releases.
 3. Confirm every action in a signing lane is still SHA-pinned.
