@@ -1,7 +1,7 @@
 # Releasing the `wego` CLI
 
 How a release, an edge build, a promote and a rollback actually happen in this
-repository, what every value in the `production` environment is for, and how to
+repository, what every value in the four lane environments is for, and how to
 check a signed build record by hand.
 
 Two rules shape everything below:
@@ -49,7 +49,7 @@ to the tag is that merge.
 
 ### 2. `release-cli.yml`, on the tag
 
-Fires on `push: tags: ['v*']`. Six jobs:
+Fires on `push: tags: ['v*']`. Seven jobs:
 
 | Job | Runner | What it is for |
 |---|---|---|
@@ -57,7 +57,8 @@ Fires on `push: tags: ['v*']`. Six jobs:
 | `build` | ubuntu | One job, not a matrix: `bun build --compile` cross-compiles all five targets in it. **No `environment:`**, deliberately, so it cannot reach the store token |
 | `sign` | ubuntu | Signs `SHA256SUMS.txt` with keyless cosign. **No `environment:`** either, and `id-token: write` is granted here and nowhere else. The job that can sign cannot write the store, and the job that writes the store cannot sign |
 | `leave-macos` | macOS | Runs the pre-publication checks against `wego-darwin-arm64`. `release` **needs** it, so darwin gates publication rather than reporting after it |
-| `release` | ubuntu | `environment: production`, `concurrency: group: ring-next` with `cancel-in-progress: false`, because a cancel mid-copy is a half-moved ring. The only job that advances a ring |
+| `release` | ubuntu | `environment: release`, `concurrency: group: ring-next` with `cancel-in-progress: false`, because a cancel mid-copy is a half-moved ring. The only job that advances a ring. **`contents: read`** – it holds the store token, so it must not also hold repository write |
+| `announce` | ubuntu | Creates the GitHub Release and attaches `SHA256SUMS.txt`. **`contents: write` and no `environment:`** – the mirror image of `release`, and the reason the two are separate jobs |
 | `replace-macos` | macOS | The darwin half of the post-pointer replace proof. `needs: release`, because the checks in it read the ring |
 
 The commit-point order inside `release` matters and is fixed: **binaries and the
@@ -123,7 +124,7 @@ a rollback does not reach a machine whose binary cannot take one.
 
 `edge-cli.yml` runs on every push to `main`. Version is `package.json` plus
 `-edge.<sha>`, shallow checkout, `concurrency: group: ring-edge`,
-`environment: production`. It uses the same publisher as the release lane:
+`environment: edge`. It uses the same publisher as the release lane:
 `--freeze` to write the immutable prefix, then a separate `--promote --to edge`.
 
 Edge carries its own signing identity, distinct from the release one.
@@ -153,7 +154,24 @@ whole reason an allow-list in a file is meaningful here.
 the approver had to be different people. Here one person is both. Restoring that
 needs GitHub Enterprise (wego/foundations#128).
 
-**`promote`** runs with `environment: production` and
+**Why not just add environment reviewers, then.** It was tried, and reverted. The
+threat model here is scoped to *external* attackers – a malicious insider, or an
+org member acting inside their access, is explicitly out of scope. Under that
+scope reviewers on the promote lane block one of two credential-theft paths
+(advancing `stable`) and leave the other wide open: rolling `stable` back onto a
+known-vulnerable release through the rollback lane, which has to stay fast for
+incident response. Paying a human round-trip for half a door is not worth it.
+
+They also could not be confined to the lane they were meant for. Protection rules
+attach to the *environment*, not the job, so while all four lanes shared
+`production` the reviewers silently gated the edge publish – which runs on every
+qualifying merge – and the break-glass rollback along with it. **No environment in
+this repository has required reviewers**, and the `approve` allow-list above is
+the gate. It is also the only one of the two that can express *who may initiate a
+dispatch*, which is the actual question; an environment rule can only ask who
+approves after the fact.
+
+**`promote`** runs with `environment: stable-promote` and
 `concurrency: group: ring-stable`. It copies from the immutable `cli/<tag>/`
 prefix, never from `cli/next`, and it never re-signs: the record is copied as it
 stands.
@@ -348,32 +366,121 @@ a read taken the instant a promote completes can still be served the previous
 
 ---
 
-## The `production` environment
+## The four lane environments
 
-Both secrets and all variables live at **environment** scope on `production`,
-`main` and `v*` tags only. Jobs that do not declare `environment: production`
-cannot read any of it – which is why the `build` job does not declare it.
+There used to be one shared `production` environment, entered by four jobs across
+four workflows. It is gone. Each publishing lane now has its **own** environment:
+
+| Environment | Entered by | Deployment branch policy |
+|---|---|---|
+| `edge` | `edge-cli.yml` → `publish` | `main` branch only |
+| `release` | `release-cli.yml` → `release` | `v*` **tags** only |
+| `stable-promote` | `promote-cli.yml` → `promote` | `main` branch only |
+| `stable-rollback` | `rollback-cli.yml` → `rollback` | `main` branch only |
+
+`release-please` is a fifth environment, unrelated to the rings and already
+correctly scoped; it is not part of this layout.
+
+Secrets and variables live at **environment** scope. A job that declares no
+`environment:` can read none of it – which is why `build` and `sign` do not
+declare one, and must not be given one.
+
+**Why four and not one.** Protection rules attach to the environment, not to the
+job that enters it, so one shared environment forced three couplings that should
+never have existed:
+
+- Its branch policy had to be the **union** of every lane's needs – `main` *and*
+  `v*` – so each lane was reachable from refs it never uses. Each lane now admits
+  exactly the one ref it actually runs on.
+- Any rule added for one lane applied to all four. This is not hypothetical:
+  reviewers added to gate the promote lane silently gated the edge publish, which
+  runs on every qualifying merge, and the rollback lane, which is the break-glass
+  tool. Both are described above.
+- It hid a real failure mode. Every artifact in the edge and release lanes carries
+  `retention-days: 1`, so an approval delay past ~24h does not *delay* a publish,
+  it **fails** it – the binaries and the signature are already gone.
+
+**Why `stable-promote` and `stable-rollback` are still two**, given both run from
+`main` and hold the same token value: the whole point of the split is that a
+shared environment couples lanes with different requirements. Promote and rollback
+have opposite latency requirements – one is fail-closed and can afford to wait,
+the other is what you reach for during an incident. Merging them would rebuild
+exactly the coupling this removed.
+
+**A branch policy evaluates the workflow run's ref, not the checkout.** This is the
+easiest thing here to get wrong. `promote-cli.yml` checks out `inputs.tag`, but the
+*run* is dispatched on `main` – so `stable-promote` is `main`-only, and a `v*`
+policy on it would reject every promote. Only `release` is tag-scoped, because only
+it is triggered by a tag push.
+
+**What this does not change: the token's capability.** The same
+`BLOB_READ_WRITE_TOKEN` value sits in all four environments and still has write
+access to the whole store. This is a change to **who can reach the credential and
+from which ref** – not to what the credential can do, and not cryptographic
+separation of any kind. Do not read it as one.
+
+**It also does not touch signing.** The `sign` jobs hold `id-token: write` and
+deliberately carry no environment; the split touched publish-side jobs only. The
+identity clients pin is a SAN URI of the form
+`https://github.com/<owner>/<repo>/.github/workflows/<file>@<ref>` – repo,
+workflow file and ref, with no environment component, so renaming an environment
+cannot move it. What *would* move it is renaming a workflow file or converting one
+to a reusable workflow. Both files warn about this already.
+
+### Rotating `BLOB_READ_WRITE_TOKEN` is now a four-step operation
+
+The one thing the split costs. The token lives in four places, and a rotation that
+updates three of them leaves one lane writing with a revoked credential – which
+surfaces as a red run in whichever lane was missed, possibly not for weeks if it is
+the rollback one.
+
+```
+gh secret set BLOB_READ_WRITE_TOKEN --env edge            --repo wego/cli
+gh secret set BLOB_READ_WRITE_TOKEN --env release         --repo wego/cli
+gh secret set BLOB_READ_WRITE_TOKEN --env stable-promote  --repo wego/cli
+gh secret set BLOB_READ_WRITE_TOKEN --env stable-rollback --repo wego/cli
+```
+
+Then confirm all four carry it, before revoking the old value:
+
+```
+for e in edge release stable-promote stable-rollback; do
+  echo "-- $e"
+  gh api "repos/wego/cli/environments/$e/secrets" --jq '[.secrets[].name]'
+done
+```
 
 ### Secrets
 
-| Secret | What it is for |
-|---|---|
-| `BLOB_READ_WRITE_TOKEN` | Writes the release store. Held by the `release`, `promote` and edge jobs only |
-| `SKILLS_PUBLISH_APP_PRIVATE_KEY` | The GitHub App key used to mint a token for publishing the plugin to `wego/skills` |
-| `RELEASE_PLEASE_APP_PRIVATE_KEY` | The App key release-please signs its commits and tags with. Using an App, not the default token, is what lets the tag it creates trigger `release-cli.yml` |
+| Secret | Lives on | What it is for |
+|---|---|---|
+| `BLOB_READ_WRITE_TOKEN` | `edge`, `release`, `stable-promote`, `stable-rollback` | Writes the release store. The four publishing jobs only – never `build`, never `sign` |
+| `SKILLS_PUBLISH_APP_PRIVATE_KEY` | `stable-promote` | The GitHub App key used to mint a token for publishing the plugin to `wego/skills`. The promote lane is the only one that publishes a plugin, so this is the only environment that carries it |
+| `RELEASE_PLEASE_APP_PRIVATE_KEY` | `release-please` | The App key release-please signs its commits and tags with. Using an App, not the default token, is what lets the tag it creates trigger `release-cli.yml` |
 
 ### Variables
 
-| Variable | What it is for |
-|---|---|
-| `WEGO_API_URL` | The API the built binary talks to. Asserted HTTPS and a production host at build time |
-| `WEGO_AUTH_AUTHORIZE_URL` | OAuth authorize endpoint baked into the binary. Same assertions |
-| `WEGO_AUTH_TOKEN_URL` | OAuth token endpoint baked into the binary. Same assertions |
-| `WEGO_CLI_CLIENT_ID` | The public OAuth client id. The CLI is a public + PKCE client and holds no secret |
-| `WEGO_CLI_POSTHOG_PROJECT_KEY` | Write-only analytics key. **Optional**, and it belongs at **repository** scope, not here: the `build` job has no `environment:`, so setting it on the environment bakes an empty value and fails nothing |
-| `SKILLS_PUBLISH_ENABLED` | Turns the plugin publish on. When on, the promote refuses a tag whose tree cannot publish |
-| `SKILLS_PUBLISH_APP_CLIENT_ID` | Client id paired with the App key above |
-| `RELEASE_PLEASE_APP_ID` | App id paired with the release-please key above |
+| Variable | Lives on | What it is for |
+|---|---|---|
+| `WEGO_API_URL` | repository | The API the built binary talks to. Asserted HTTPS and a production host at build time |
+| `WEGO_AUTH_AUTHORIZE_URL` | repository | OAuth authorize endpoint baked into the binary. Same assertions |
+| `WEGO_AUTH_TOKEN_URL` | repository | OAuth token endpoint baked into the binary. Same assertions |
+| `WEGO_CLI_CLIENT_ID` | repository | The public OAuth client id. The CLI is a public + PKCE client and holds no secret |
+| `WEGO_CLI_POSTHOG_PROJECT_KEY` | repository | Write-only analytics key. **Optional**. It belongs at repository scope for the same reason the four above do: the `build` job has no `environment:`, so setting it on an environment bakes an empty value and fails nothing |
+| `SKILLS_PUBLISH_ENABLED` | `stable-promote` | Turns the plugin publish on. When on, the promote refuses a tag whose tree cannot publish |
+| `SKILLS_PUBLISH_APP_CLIENT_ID` | `stable-promote` | Client id paired with the App key above |
+| `RELEASE_PLEASE_APP_ID` | `release-please` | App id paired with the release-please key above |
+
+**Everything the binary bakes in lives at repository scope, not on a lane
+environment.** `build` declares no `environment:` – that is the whole point of it –
+so it can only see repository-scoped variables, and a value set on an environment
+would bake in as empty. The old `production` environment carried duplicate copies
+of the four `WEGO_*` values; they were exact duplicates of the repository-scoped
+ones and were not carried over, because nothing could read them there anyway.
+
+The two `SKILLS_PUBLISH_*` variables are the only ones that are genuinely
+lane-scoped, and they sit on `stable-promote` alone: the promote lane is the only
+one that publishes a plugin.
 
 `WEGO_CLI_SKILL_ORIGIN` is still referenced by `release-cli.yml` and **does
 nothing**. The skill channel did not move to this repository: the body ships

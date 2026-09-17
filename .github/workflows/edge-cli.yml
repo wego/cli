@@ -303,8 +303,19 @@ jobs:
     # still write bytes to the store - but a record clients accept is out of
     # reach, and swapping a binary fails the manifest, which names every file by
     # sha256.
+    #
+    # `edge` is this lane's OWN environment, admitting `main` ONLY - not the union
+    # of every lane's refs that the old shared `production` had to allow. It is not
+    # a weaker credential: the same `BLOB_READ_WRITE_TOKEN` value sits in all four
+    # lane environments and still has write access to the whole store. What the
+    # split changes is WHO CAN REACH it and FROM WHICH REF, not what it can do.
+    #
+    # No required reviewers here, deliberately: this job runs on every qualifying
+    # merge to main, and every artifact in this lane carries `retention-days: 1`, so
+    # any approval delay past ~24h would not delay the publish - it would FAIL it,
+    # with the binaries and the signature already expired.
     environment:
-      name: production
+      name: edge
     permissions:
       contents: read
     env:

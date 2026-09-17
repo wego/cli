@@ -112,9 +112,28 @@ jobs:
       group: ring-stable
       cancel-in-progress: false
     # The store token lives here. `approve` gated entry to this job; this
-    # environment is what actually holds the credential that selects a store.
+    # environment is what actually holds the credential that selects a store. It
+    # also holds `SKILLS_PUBLISH_APP_PRIVATE_KEY` and the `SKILLS_PUBLISH_*`
+    # variables the plugin publish below reads - this is the only lane that uses
+    # them, so this is the only environment that carries them.
+    #
+    # `stable-promote` admits `main` ONLY. Note that a deployment branch policy
+    # evaluates THE WORKFLOW RUN'S REF, not the checkout: this run is dispatched on
+    # `main` while the `ref:` below checks out `inputs.tag`. `main` is therefore the
+    # correct policy, and a `v*` policy here would reject every promote.
+    #
+    # KEPT SEPARATE FROM `stable-rollback` even though both run from `main` and hold
+    # the same token value. A shared environment is exactly the coupling this split
+    # exists to remove: promote and rollback have opposite latency requirements, and
+    # merging them would mean any rule added for one silently gated the other - which
+    # is what happened when reviewers were added to the old shared `production` and
+    # quietly gated the edge publish and the break-glass rollback along with it.
+    #
+    # Not cryptographic separation: the same token value, with write access to the
+    # whole store, sits in all four lane environments. This changes WHO CAN REACH the
+    # credential and FROM WHICH REF, not what the credential can do.
     environment:
-      name: production
+      name: stable-promote
     permissions:
       contents: read
       # One gate below queries the Actions API for this tag's release run.

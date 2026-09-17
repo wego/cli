@@ -109,8 +109,26 @@ jobs:
       cancel-in-progress: false
     # The store token lives here. `approve` gated entry; this environment is what
     # actually holds the credential that selects a store.
+    #
+    # `stable-rollback` admits `main` ONLY - the WORKFLOW RUN'S ref, which for a
+    # dispatch of this file is always `main`.
+    #
+    # SEPARATE FROM `stable-promote` ON PURPOSE, though both run from `main` and
+    # hold the same token value. This is the break-glass lane: it has to stay fast,
+    # which means it must never inherit a protection rule someone adds for the
+    # promote lane. That is not hypothetical - reviewers added to the old shared
+    # `production` to gate promote silently gated this lane too.
+    #
+    # NO required reviewers on this environment. `approve` above is the gate, and it
+    # is the one that can express what environment rules cannot: WHO may initiate the
+    # dispatch. It is version-controlled and code-owner reviewed; a settings toggle
+    # is neither.
+    #
+    # Not cryptographic separation: the same token value, with write access to the
+    # whole store, sits in all four lane environments. This changes WHO CAN REACH the
+    # credential and FROM WHICH REF, not what the credential can do.
     environment:
-      name: production
+      name: stable-rollback
     permissions:
       contents: read
     env:
