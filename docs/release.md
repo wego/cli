@@ -283,6 +283,71 @@ no deadline.
 
 ---
 
+## The GitHub "Latest" badge
+
+**`Latest` means what `cli/stable` serves. Everything published above it is
+marked pre-release.** `release-badge.yml` maintains that, and nothing else does.
+
+Nothing in the product reads GitHub Releases – install and `wego update` both
+follow the rings – so this is a human-facing record only. It is still worth
+being correct: it is the first thing a person checks to answer "what is everyone
+running?"
+
+| Release | Flag | Why |
+|---|---|---|
+| Whatever `cli/stable` serves | `prerelease: false`, `make_latest: true` | The build every `wego update` receives |
+| Anything published after it | `prerelease: true` | Released and on `cli/next`, not yet promoted |
+| Anything published before it | untouched | Historical record; cannot take the badge |
+
+So between a release and its promote, the new version reads **Pre-release** and
+the badge stays on the previous one. A promote moves it up; a rollback moves it
+back down and re-marks what it passed.
+
+### Why it is a reconciler
+
+GitHub awards `Latest` to a release **at birth** – `make_latest` "defaults to
+`true` for newly published releases" – so every tag release-please cuts takes the
+badge before anything is published. On 2026-09-16 that misled for an hour and a
+half: v1.3.0 was released at 14:11, its promote failed at 14:28, `cli/stable` was
+rolled back to v1.2.7 at 14:30, and GitHub went on advertising v1.3.0 as `Latest`
+until v1.3.1 was promoted at 15:49.
+
+The badge is **derived** state – a function of one fact, what `cli/stable`
+serves. Writing it from the release, promote and rollback lanes would make it an
+obligation every future author of a ring-writing lane has to remember, which is
+the shape `allow_not_next` had and how wego/cli#48 broke rollback silently.
+Evaluating the function in one place means a new lane that moves `cli/stable` has
+nothing to remember.
+
+`release-badge.yml` therefore runs on `release: published`, on `workflow_run`
+completion of the three lanes, and on dispatch. It re-reads the ring every time
+rather than trusting the event, and it listens for `completed` rather than
+`success` – what the badge needs is the ring's value, not the run's verdict.
+
+So a run that left `cli/stable` **unchanged** – a gate that refused before the
+move, a `plan_only` rollback rehearsal – is a harmless no-op, with nothing to
+special-case. And a run that moved the ring and **then** failed or was cancelled
+is reconciled onto the value it actually left behind. That second case is not
+hypothetical: it is precisely the v1.3.0 promote above, which advanced the
+pointer and went red afterwards.
+
+### What it cannot do
+
+It writes no ring: no `environment:`, no `BLOB_READ_WRITE_TOKEN`, no `id-token`.
+A `workflow_run` run's conclusion does not propagate to the run that triggered
+it, so it cannot fail, block or delay a release, a promote or a rollback. **Its
+concurrency group is its own – never move it onto `ring-stable`**, which would
+let a badge update queue behind or block a promote. A total failure of it leaves
+the badge stale, which is the state it exists to fix.
+
+It also waits once, past the 60s `cacheControlMaxAge` on the ring's objects, and
+re-reads. That closes the only race here that does not repair itself: the promote
+lane's settle barrier and this workflow resolve `api.wego.com` independently, so
+a read taken the instant a promote completes can still be served the previous
+`VERSION` – and the promote has already finished, so it will not trigger a repair.
+
+---
+
 ## The `production` environment
 
 Both secrets and all variables live at **environment** scope on `production`,
