@@ -42,6 +42,14 @@ name: Release badge
 #
 # NO CHECKOUT, deliberately: `github-script` needs no working tree, so there is
 # no repository credential in this job to persist or leak (artipacked).
+#
+# THIS REPOSITORY IS PUBLIC, and `workflow_run` + `contents: write` is the shape
+# of a "pwn request" — a privileged job that consumes something an outside
+# contributor controls. This one consumes NOTHING: no checkout, so no fork code
+# is fetched or run; no artifact download, which is the usual poisoning path for
+# `workflow_run`; and no read of `github.event.*` anywhere — the script uses
+# `context.repo` and one hardcoded URL. There is no attacker-controlled input at
+# any point, which is the property to preserve if this file ever grows a step.
 on:
   # The badge goes wrong for exactly two reasons, and each gets a trigger.
   #
@@ -62,6 +70,18 @@ on:
   # `Release (cli)` is belt for the brace above: an App-created release is
   # expected to fire `release: published`, but if it ever did not, the release
   # lane completing covers the same ground a few minutes later.
+  #
+  # NEVER ADD A FORK-REACHABLE WORKFLOW TO THIS LIST. This is the one edit that
+  # turns this file from unreachable-by-outsiders into fork-triggerable, and it
+  # would look entirely reasonable in review.
+  #
+  # All three below need WRITE access to start: `Release (cli)` runs on a `v*`
+  # tag push, and `Promote (cli)` / `Rollback (cli)` are `workflow_dispatch` only,
+  # behind a named-promoter allow-list. `ci-cli` and `fulcio-pin-check` are the
+  # two workflows in this repository that run on `pull_request`, so ANY outside
+  # contributor can start them from a fork — putting either here would hand a
+  # stranger a trigger into a `contents: write` job. The header explains why that
+  # would still not be exploitable today; do not spend that margin.
   workflow_run:
     workflows: ["Release (cli)", "Promote (cli)", "Rollback (cli)"]
     types: [completed]
