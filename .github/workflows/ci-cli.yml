@@ -36,7 +36,32 @@ jobs:
           persist-credentials: false
 
       # Composite action: setup-bun + restore cache + frozen install (+ save on main).
+      # NO `production:` here - lint, typecheck and the test suite need the
+      # devDependencies. The flag belongs to the two build jobs only.
       - uses: ./.github/actions/setup-bun
+
+      # AUTHENTICITY, which `bun.lock` does not provide. The lockfile records a
+      # sha512 per package, and that proves the bytes have not changed SINCE WE
+      # FIRST FETCHED THEM - integrity. It proves nothing about whether those
+      # bytes were ever legitimate, because the hash is minted from whatever the
+      # registry served at the moment of the bump. The window is the instant a
+      # version is first pinned, which is exactly when a compromised upstream
+      # release would enter (wego/foundations#182).
+      #
+      # `npm audit signatures` closes that: it walks the installed tree - it needs
+      # no `package-lock.json`, so it reads exactly what bun linked - and checks
+      # each tarball against the registry's signature, plus the publisher's
+      # provenance attestation where one exists. It exits non-zero on any invalid
+      # or missing signature. Confirmed green on this tree today, so it starts
+      # quiet: 74 packages verified, 13 carrying attestations, 0 invalid, 0
+      # missing.
+      #
+      # WHAT IT DOES NOT DO: check WHICH upstream identity published a package. A
+      # valid attestation naming the wrong repository still passes. Pinning the
+      # expected builder identity - the way `src/release-signing/identity.ts`
+      # pins ours - is the open half of wego/foundations#182.
+      - name: Verify registry signatures and provenance
+        run: npm audit signatures
 
       - name: Lint & format check (biome check)
         run: bun run lint

@@ -1,6 +1,26 @@
 name: Setup Bun
 description: Install Bun, restore the bun install cache, and run a frozen install (cache saved on main only).
 
+inputs:
+  production:
+    description: >-
+      Link ONLY `dependencies`, omitting devDependencies. Set this on the jobs
+      that compile the shipped binary and nowhere else.
+
+      `bun build --compile` bundles the import graph reachable from
+      `src/index.ts`, and the only third-party package on that graph is `zod`
+      (everything else is `node:*` or `bun`). So a build job needs exactly one
+      package; a full install links ~100, including `@vercel/blob` and its 31
+      transitives. None of those reach the binary - they just sit in the job
+      that produces the artefact users install, which is the blast radius this
+      input exists to cut.
+
+      NOT settable by anything else: `ci-cli` needs biome, typescript and the
+      `@types` packages, and every publish job imports `@vercel/blob`, which is
+      a devDependency.
+    required: false
+    default: "false"
+
 runs:
   using: composite
   steps:
@@ -23,7 +43,12 @@ runs:
         restore-keys: |
           bun-${{ runner.os }}-
 
-    - run: bun install --frozen-lockfile
+    # `--production` is applied at LINK time, on a fresh tree. It does not prune
+    # an existing `node_modules`, which is why it is safe here and only here: CI
+    # restores bun's global package cache, never `node_modules`, so every job
+    # links from empty. Verified: a clean `--frozen-lockfile --production` links
+    # 1 package, and `bun build --compile` still bundles 136 modules from it.
+    - run: bun install --frozen-lockfile ${{ inputs.production == 'true' && '--production' || '' }}
       shell: bash
 
     # Populate the shared cache from main ONLY. A cache saved on a PR branch is
@@ -40,8 +65,15 @@ runs:
     # bun.lock changes (exact miss, restore-keys prefix fallback) we still save
     # the new key. This is the common case on release/main runs — the lockfile
     # rarely moves — so the save runs only when it has new bytes to store.
+    # Never save from a `production` install. The cache key is the lockfile hash,
+    # but a production install only ever POPULATES the cache with `dependencies` -
+    # so saving one would publish a near-empty cache under the key every full
+    # install then restores, and `ci-cli` would re-download devDependencies on
+    # every PR. `edge-cli`'s build job runs on `main` and would hit exactly this.
+    # Restoring a full cache into a production install is harmless, so only the
+    # save is guarded.
     - name: Save bun install cache
-      if: github.ref == 'refs/heads/main' && steps.restore-bun-cache.outputs.cache-hit != 'true'
+      if: github.ref == 'refs/heads/main' && steps.restore-bun-cache.outputs.cache-hit != 'true' && inputs.production != 'true'
       uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: ~/.bun/install/cache

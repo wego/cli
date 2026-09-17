@@ -253,7 +253,13 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
+      # `production: "true"`: this job compiles the binary users install, and the
+      # only third-party package on that import graph is `zod`. Linking the other
+      # ~99 - biome, typescript, `@vercel/blob` and its transitives - would put
+      # code in the artefact-producing job that never reaches the artefact.
       - uses: ./.github/actions/setup-bun
+        with:
+          production: "true"
 
       # Cross-compiles all targets (Bun downloads each target runtime on demand).
       # RELEASE_TAG → the baked `wego version` (build-release.ts strips `v`).

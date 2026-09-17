@@ -133,7 +133,12 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.sha }}
 
+      # `production: "true"`: same reasoning as `release-cli.yml`'s build job -
+      # this job produces the edge artefact, and `zod` is the only third-party
+      # package that reaches it. See `.github/actions/setup-bun`.
       - uses: ./.github/actions/setup-bun
+        with:
+          production: "true"
 
       # Version = <base>-edge.<short sha of this merge>, base read from the TREE.
       # The base is cosmetic (the ring serves whatever the pointer names, and

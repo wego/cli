@@ -36,6 +36,13 @@ scripts/             @sunny-wego @yeouchien-wego @chuyeowego
 # `package.json` would match one at any depth rather than the repository root.
 /package.json                  @sunny-wego @yeouchien-wego @chuyeowego
 /bun.lock                      @sunny-wego @yeouchien-wego @chuyeowego
+# `bunfig.toml` carries `minimumReleaseAge` - the floor on how old a version must
+# be before it may be pinned at all. It decides nothing on its own (CI installs
+# frozen, so the gate never runs there), but it is the stated policy for the two
+# files directly above, and lowering it to `0` in a diff that looks like config
+# tidying would remove the only thing standing between a bump and an upstream
+# release published minutes earlier. Same bar as the files it governs.
+/bunfig.toml                   @sunny-wego @yeouchien-wego @chuyeowego
 /release-please-config.json    @sunny-wego @yeouchien-wego @chuyeowego
 /.release-please-manifest.json @sunny-wego @yeouchien-wego @chuyeowego
 

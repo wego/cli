@@ -1,0 +1,32 @@
+# Bun package-manager configuration.
+#
+# Separate from `package.json` because what follows is an INSTALL POLICY, not
+# package metadata: it constrains what a bump is allowed to pin, and says nothing
+# about what this package is.
+
+[install]
+# Refuse to newly resolve a dependency version published less than 7 days ago.
+#
+# WHY. The shortest path from a compromised upstream to a user's machine runs
+# through a dependency bump (wego/foundations#182). `zod` is compiled INTO every
+# published binary by `bun build --compile`, so a poisoned upstream release would
+# be built from this tree, hashed, cosigned under the release identity, and pass
+# every gate in the release lane - because nothing would be forged. The malicious
+# bytes would genuinely BE the release. Most upstream compromises are found
+# within days of publication; this buys that window.
+#
+# WHAT THIS IS NOT: an enforced control, and it must not be mistaken for one.
+# Bun consults the age gate only when RESOLVING a version that is not already in
+# `bun.lock`. Every CI lane installs with `--frozen-lockfile`, which resolves
+# nothing, so this line never runs there. It stops an ACCIDENT - a bump to an
+# hours-old release on a developer's machine - and nothing else.
+#
+# What stops a deliberate one is the review bar: `/package.json` and `/bun.lock`
+# are behind CODEOWNERS release signers, and `ci-cli` runs `npm audit signatures`
+# over the installed tree.
+minimumReleaseAge = 604800 # 7 days, in seconds
+
+# Empty deliberately. Each entry would be a package exempt from the age gate at
+# any version. Nothing here ships inside the binary or runs beside a credential
+# on a schedule urgent enough to need one.
+minimumReleaseAgeExcludes = []
