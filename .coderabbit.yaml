@@ -1,0 +1,445 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.yaml
+#
+# Written for THIS repository, not copied from wego-ai. Three things differ, and
+# each one is load-bearing:
+#
+#  1. Every `knowledge_base` scope is pinned `local`. The default is `auto`,
+#     which resolves to GLOBAL for a private repo and local for a public one -
+#     so `auto` silently re-expands to org-wide the moment anyone flips this
+#     repo private for an afternoon. This repository IS STILL PRIVATE as of
+#     this commit, so `auto` would resolve global today, and every comment
+#     written under it becomes public the moment visibility flips. Pinned
+#     `local`, nothing wego-ai knows can reach a comment here. See the block
+#     at the end.
+#  2. `request_changes_workflow` is OFF. Branch protection on `main` requires
+#     ONE approving review and code-owner review. CODEOWNERS covers only the
+#     release path (workflows, actions, `src/release-signing/`, `scripts/`,
+#     `package.json`, `bun.lock`, the release-please files), so a pull request
+#     touching only the other ~20k source lines under `src/` needs no code
+#     owner at all. With the approval workflow on, a contributor could resolve
+#     CodeRabbit's threads and merge that with no human approval whatsoever.
+#     The bot must never be the only reviewer.
+#  3. No wego-ai internals appear anywhere in this file. It is published the
+#     moment the repository is - path names and review instructions included.
+language: en-US
+tone_instructions: >
+  Be direct and concise. Focus on correctness, the stdout JSON contract, the
+  OAuth/PKCE surface, and the path by which a binary is installed, verified,
+  replaced and removed. Skip stylistic nits - biome handles formatting, import
+  order and the console ban, and it fails the build. Do not comment on
+  formatting, naming conventions or missing comments.
+
+early_access: true
+
+reviews:
+  profile: assertive
+  # Deliberately false - see note 2 in the header. CodeRabbit reviews; humans
+  # approve. If you want a merge gate from it, require its CHECK in branch
+  # protection instead, which cannot be satisfied by resolving threads.
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_placeholder: "@coderabbitai summary"
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    # Note this is aspirational until the repo has stars: on the free OSS tier,
+    # public repositories under 10 stars get MANUAL triggers only. This repo is
+    # private with 0 stars today, so until both change the review is summoned
+    # with `@coderabbitai review` and this flag does nothing. It is set
+    # correctly so that it starts working on its own.
+    enabled: true
+    drafts: false
+    # Re-review is manual: comment `@coderabbitai review`. With the approval
+    # workflow off there is no auto-approve loop to worry about here, but the
+    # churn is still not worth it - ask for the re-review by hand on anything
+    # that touches the release path.
+    auto_incremental_review: false
+    ignore_usernames:
+      # A lockfile bump has no prose to review. `bun.lock` is CODEOWNERS-gated
+      # anyway, so a release signer reads it either way.
+      - "dependabot[bot]"
+      # release-please's PRs are a generated CHANGELOG plus a version bump.
+      # This is the App that actually opens them (`release-please.yml` mints an
+      # installation token from `vars.RELEASE_PLEASE_APP_ID`); every
+      # `chore(cli): release X.Y.Z` PR in this repo is authored by it.
+      - "wego-cli-release[bot]"
+    ignore_title_keywords:
+      - "wip"
+      - "[skip review]"
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: warning
+      requirements: >
+        Conventional Commits: `type(scope): subject`. Type is one of feat, fix,
+        docs, test, chore, refactor, perf, ci, build. Scope is the area it
+        touches, as used in this repo's history: cli, release, release-signing,
+        signing, edge, promote, rollback, update, notice, runbook, skill, auth,
+        ci. A breaking change to the wire contract, to a command's stdout, or
+        to what a published ring serves carries `!` before the colon. Subject
+        is imperative and lowercase.
+  tools:
+    # `bun run lint` is biome, and it is a required check on `main` via
+    # `ci-cli`. A second biome pass here only duplicates a comment the build
+    # already fails on.
+    biome:
+      enabled: false
+    # Nothing else is listed because every other tool defaults to enabled, and
+    # four of them earn their keep here: `zizmor` (the same GitHub Actions
+    # security analyzer already referenced in `ci-cli.yml`), `actionlint`,
+    # `skillspector` (scans AI agent skills - i.e. `skills/wego/SKILL.md`,
+    # which ships inside the binary), and `presidio` + `gitleaks` for secrets
+    # and sensitive identifiers on a repo about to become public.
+    #
+    # `shellcheck` also defaults on and is newly load-bearing: `scripts/` now
+    # carries four shell scripts that drive real installs and updates
+    # (`install-smoke.sh`, `update-smoke.sh`, `upgrade-path.sh`,
+    # `verify-published.sh`). Leave it enabled.
+    #
+    # Do NOT add `github-checks: timeout_ms:` here. It is not in schema.v2 and
+    # is silently ignored; `enabled` is the only key that tool accepts.
+  finishing_touches:
+    # House style is rationale-in-comments, hand-written. A bot that volunteers
+    # docstrings fights the reviewer.
+    docstrings:
+      enabled: false
+    # The test suites here ARE the enforcement layer (bin-contract, help-shape,
+    # env-example, plugin-conformance, assert-self-update, workflow-shape,
+    # workflow-lanes, workflow-contexts, release-platform-coverage). A
+    # generated stub cannot honour a contract it has not read.
+    unit_tests:
+      enabled: false
+
+  path_filters:
+    # `bun.lock` selects the code that executes beside the signing identity and
+    # the blob token - which is exactly why CODEOWNERS puts it behind a release
+    # signer. Review by a human who holds those rights is the control; a bot
+    # cannot attest to a lockfile's provenance, and its comments here would be
+    # noise on top of the gate that actually matters.
+    - "!bun.lock"
+
+    # NOT excluded, deliberately: `package.json`. It is CODEOWNERS-gated for the
+    # same reason as `bun.lock`, but unlike the lockfile its `dependencies` are
+    # COMPILED INTO THE SHIPPED BINARY by `bun build --compile`, then hashed and
+    # signed - so the malicious bytes would genuinely be the release and no job
+    # isolation reaches them. A single added dependency is exactly the diff a
+    # reviewer should see, and it is one line of readable prose. Keep it in.
+    #
+    # NOT excluded, deliberately: `src/api-types.d.ts`. It is generated
+    # (`api-types:generate`) and biome already ignores it, but `src/api-wire.ts`
+    # type-imports it at line 1. path_filters ALSO drive CodeRabbit's
+    # sparse-checkout, so dropping it from the clone would leave every review
+    # under `src/` type-blind. It is handled with an instruction below instead.
+
+  path_instructions:
+    # -- The CLI itself ------------------------------------------------------
+    - path: "src/**/*.ts"
+      instructions: |
+        Public OAuth2 + PKCE client - it holds NO secret. Flag:
+        - A client secret, or any PKCE weakening: S256 downgraded to plain, a
+          predictable or short verifier, a missing `state` check on the
+          loopback callback, a loopback listener bound beyond 127.0.0.1.
+        - Tokens or refresh tokens written unencrypted, logged, or printed.
+        - Non-JSON on stdout for a data command (`whoami`, `places`, `info *`,
+          `flights *`, `hotels *`). stdout is a machine contract; hints,
+          warnings and the version notice go to stderr. This is the defect
+          class `src/target.test.ts` was written to guard against.
+        - An exit code that does not match the taxonomy in `skills/wego/SKILL.md`
+          (branch on the code, never on stderr wording).
+        - A plaintext `http` endpoint accepted anywhere `assertSecureUrl`
+          currently guards. Loopback is the ONE documented exception.
+        - Hand edits to `src/api-types.d.ts` - it is generated by
+          `bun run api-types:generate` and must be regenerated, not patched.
+        Do NOT restate the console ban: `biome.jsonc` makes `noConsole` an error
+        everywhere under `src/` except the entrypoint and tests, and the build
+        fails on it.
+
+    # -- Installing, updating and removing the binary ------------------------
+    #
+    # The highest-consequence code in the repository that is NOT CODEOWNERS
+    # gated. `update.ts` overwrites the running executable with bytes fetched
+    # over the network; `uninstall.ts` unlinks it; `ring-follow.ts` decides
+    # WHERE those bytes come from. A defect here does not fail a build - it
+    # ships a binary that can be replaced by the wrong bytes, or one that can
+    # never be replaced again, and a binary that cannot take an update cannot
+    # take the fix either.
+    - path: "src/{update,uninstall,ring-follow}.ts"
+      instructions: |
+        This is the self-update path: it replaces, or deletes, the binary the
+        user is currently running. Treat every relaxation here as a supply-chain
+        change and say so explicitly. Flag:
+        - ANY reordering of download -> hash -> `verifySignedManifest` ->
+          `chmod` -> atomic `rename`. Nothing may be moved onto `execPath`
+          before verification has returned success. A `rename` that can be
+          reached on a verification failure path is the top defect class here.
+        - Verification made conditional on an env var, a flag, a ring, a target
+          or a platform - including a new "skip", "force" or "insecure" escape
+          hatch. `--force` may skip the PROMPT; it must never skip a check.
+        - A caught-and-swallowed error, an early `return`, or a comparison that
+          is truthy when a field is `undefined`, anywhere on the verify path.
+        - A fallback ring, a default pointer, or a baked-in download base. A
+          missing, unreadable or incomplete `install.json` is a REFUSAL by
+          design (`ring-follow.ts`); turning that into a guess re-introduces the
+          exact drift the recorded-ring model removed.
+        - Weakening of the `install.json` guards: the ring-name shape (no path
+          separators, no `..`, no spaces, no uppercase), or the `installUrl`
+          rules that reject a query, a fragment, or a raw dot segment. Both
+          values are interpolated into a URL, so both are injection sites.
+        - `assertSecureUrl` dropped or bypassed on the recorded base.
+        - A temp path that is not a per-run-unique sibling of `execPath` on the
+          same filesystem. `/tmp` breaks the atomic `rename` across devices; a
+          shared fixed name lets two concurrent runs collide on the file that is
+          about to become the user's binary.
+        - A mode other than `0o755` on the staged binary, or the macOS
+          quarantine clear dropped.
+        - Self-replace or self-delete attempted on Windows - it cannot unlink a
+          running `.exe`, and both commands must degrade to a printed manual
+          step instead.
+        - `uninstall` widened beyond what this CLI installed: it may remove the
+          binary, the stored credentials and the skill it wrote. A new path
+          removed, or a recursive delete rooted anywhere derived from input,
+          needs a stated reason.
+        These flows are written against injected deps precisely so they can be
+        tested without the network or the real filesystem. A change that moves
+        real I/O back inline, or that adds a branch with no test in
+        `update.test.ts` / `uninstall.test.ts` / `ring-follow.test.ts`, should
+        be called out.
+
+    # -- Release signing -----------------------------------------------------
+    - path: "src/release-signing/**/*.ts"
+      instructions: |
+        Signature verification over attacker-supplied bytes - a parser here is
+        reached before anything is trusted. Flag:
+        - DER / X.509 / certificate parsing that indexes or slices without a
+          length check, or that trusts a declared length from the input.
+        - Verification that can return success on a malformed or absent
+          signature: an early return, a caught-and-swallowed error, a
+          comparison that is truthy when a field is undefined.
+        - Non-constant-time comparison of a digest or signature.
+        - A widened or newly-trusted sigstore root, identity or issuer in
+          `sigstore-roots.ts` / `identity.ts` without a stated reason. The
+          accepted identities still include wego-ai's release workflow while
+          the migration is in flight; that set should only ever SHRINK.
+        - Any change to `sigstore-roots.ts`. The anchors are pinned at BUILD
+          time on purpose, so rotating them is a code change with a blast
+          radius: every binary built before the commit gains a rollback horizon
+          and can only be rolled back onto releases it can still verify. It is
+          also watched by `scripts/check-fulcio-pin.ts` on a schedule - if this
+          file changes, that watcher and `docs/release.md` must agree with it.
+        - Verification made conditional on an env var, a flag, or a target.
+        This path is CODEOWNERS-gated to release signers. Say plainly when a
+        change here needs one, rather than assuming the author knows.
+
+    # -- Anything that runs beside the signing identity ----------------------
+    - path: "scripts/**/*.ts"
+      instructions: |
+        These run inside the privileged release, promote, rollback and edge
+        jobs, next to the signing identity and the blob store token. Flag:
+        - A newly imported package, or a new transitive surface, reaching the
+          job that holds the identity - name it explicitly in the review.
+        - A secret, token or signing key read into a variable that is then
+          logged, echoed, written to a file, or included in an error message.
+        - A shell interpolation of untrusted input (a tag, a branch, a PR
+          title, a blob key) without quoting or validation.
+        - A publish or upload step that runs before its verification step, or
+          that proceeds when verification returned non-zero. This applies to
+          BOTH publish targets: the blob store (`upload-release-blob.ts`,
+          `publish-edge-blob.ts`, `blob-publish.ts`, `blob-consistency.ts`) and
+          the plugin repository (`publish-plugin.ts`, `plugin-publish.ts`,
+          `verify-plugin-published.ts`).
+        - Weakened tag validation in `validate-release-tag.ts`, or ring rules in
+          `ring-rules.ts` relaxed so a ring could serve a version shape it does
+          not promise. Whatever a ring serves is what its install base receives
+          on the next `update`, and `cli/next` has no backward path.
+        - `check-fulcio-pin.ts` made non-fatal, or its failure downgraded to a
+          warning. It is the only notice that the pinned trust anchors have
+          drifted, and that failure is otherwise silent and global.
+        - A change to `build-release.ts` or `release-config.ts` that alters what
+          is compiled in, what the asset is named, or which platforms are built,
+          without the matching update to `release-platform-coverage.test.ts`.
+
+    # -- The shell that drives real installs and updates ---------------------
+    - path: "scripts/**/*.sh"
+      instructions: |
+        These drive REAL installs and self-updates end to end, which is the only
+        place the shipped install and upgrade paths are exercised. A silently
+        passing smoke test is worse than none. Flag:
+        - A missing `set -euo pipefail`, or an added `|| true` / `set +e` that
+          lets a failed step report success.
+        - An unquoted expansion, or a command substitution interpolating a tag,
+          ring, version or URL without quoting.
+        - `curl` without a failure flag (`-f` / `--fail`), or a download whose
+          checksum comparison is not itself checked.
+        - A temp dir not made with `mktemp -d`, or left without a cleanup trap.
+        - An assertion loosened to a substring or a `grep` that would match the
+          failure text as readily as the success text.
+        - Anything that writes outside the temp dir, or that touches the
+          caller's real `~/.config` or an installed binary on the runner.
+
+    # -- Workflows -----------------------------------------------------------
+    - path: ".github/workflows/**"
+      instructions: |
+        Release-path CI. The lanes are `ci-cli`, `edge-cli`, `release-cli`,
+        `promote-cli`, `rollback-cli`, `release-please` and `fulcio-pin-check`.
+        Flag:
+        - THE CAPABILITY SPLIT, which is the load-bearing invariant of the whole
+          release design: the job granted `id-token: write` (signing) must NOT
+          also carry the `environment:` that holds the store token, and the job
+          that publishes must NOT carry `id-token: write`. A change that puts
+          both on one job hands one step the ability to both mint a signing
+          identity and write the store. `scripts/release-signing.test.ts`,
+          `workflow-lanes.test.ts` and `workflow-contexts.test.ts` assert this -
+          a diff here with no change there deserves a question.
+        - An action referenced by tag or branch instead of a full commit SHA.
+        - `permissions:` widened beyond what the job uses, or a token scope
+          added without a stated reason. The workflow-level floor is
+          `contents: read`; `contents: write` and `id-token: write` belong in a
+          single job's own block, never at the top.
+        - `persist-credentials: true` (or the default) on a checkout in a job
+          that does not push - it leaves the token in `.git/config`.
+        - `pull_request_target`, or any workflow that exposes a secret to code
+          from a fork. This repository takes fork PRs once it is public.
+        - A secret passed to a step that does not need it, or into an
+          `env:` visible to a third-party action.
+        - A change to the `ci-cli` job NAME - it is the ONLY required status
+          check on `main` and renaming it silently removes the gate.
+        - A verification step removed from, or moved after, a publish or a
+          pointer move. Every gate in these lanes runs before publication on
+          purpose: a check after the ring advanced can only describe a bad
+          release, not prevent it.
+        - A `workflow_dispatch` input (tag, ring, version) flowing into a `run:`
+          via `${{ }}` rather than through `env:`. `promote-cli` and
+          `rollback-cli` are dispatch-driven and take these by hand.
+        Apply the public-repo disclosure rule here too. The `**` instruction
+        below does not reach a dotted directory under default glob semantics,
+        and these files are dense with internal run IDs, hostnames and
+        cross-repo references in comments.
+
+    # -- Composite actions ---------------------------------------------------
+    - path: ".github/actions/**"
+      instructions: |
+        Composite actions run with the CALLING job's permissions and secrets, so
+        they inherit the signing identity or the store token depending on who
+        calls them. They also exist specifically so the two platform legs of a
+        lane cannot drift. Flag:
+        - A check REMOVED from `verify-build` or `verify-replace`. These are one
+          definition each for both platforms, so a deletion here silently
+          removes that gate from linux-x64 AND darwin-arm64 at once, on every
+          lane that calls them.
+        - An input interpolated straight into `run:` with `${{ }}` instead of
+          being passed through `env:` - a script-injection site.
+        - A step missing an explicit `shell:`.
+        - A change to `sign-manifest` that alters the cosign invocation or the
+          bundle format. That action exists because the two lanes carried copied
+          signing calls that drifted twice and broke real releases; the format is
+          pinned by a gate test, and both must move together.
+        - A new `uses:` not pinned to a full commit SHA.
+        Apply the public-repo disclosure rule here too, for the same reason as
+        `.github/workflows/**`.
+
+    # -- The agent contract --------------------------------------------------
+    - path: "skills/**"
+      instructions: |
+        The operating contract an agent follows, embedded into the shipped
+        binary by `src/skill-embed.ts`. Flag:
+        - A documented command, flag, exit code or JSON field that disagrees
+          with the code changed in this PR. Drift here misleads every agent
+          driving the CLI, and ships inside the binary.
+        - Em-dashes. This tree is deliberately en-dash only (166 en-dashes, 0
+          em-dashes); use an en-dash, a comma or a colon. This rule is scoped to
+          `skills/` alone - the rest of the tree uses em-dashes freely, so do
+          not raise it anywhere else.
+        - Guidance that invites an agent to scrape identifiers out of human
+          readable stderr when the same value exists in the JSON.
+
+    # -- The published plugin ------------------------------------------------
+    - path: "plugin/**"
+      instructions: |
+        Published verbatim to a separate public repository by
+        `scripts/publish-plugin.ts`. Flag any change to `plugin.json` that
+        `scripts/plugin-conformance.test.ts` does not cover, and in particular a
+        hand-written version field - the version is derived at publish time, and
+        a hardcoded one in a published artifact goes stale silently.
+
+    # -- Everything a stranger reads first -----------------------------------
+    - path: "{README.md,CONTRIBUTING.md,SECURITY.md,docs/**/*.md}"
+      instructions: |
+        The public front matter and the operator runbooks. `docs/release.md` and
+        `docs/install-and-update.md` are what someone follows during an incident,
+        so a stale line here is an outage instruction. Flag:
+        - An install command, flag, ring name, env var or URL that does not
+          match the code or the workflows in this PR.
+        - A claim about signing, verification, provenance or rollback that the
+          release lane does not actually make - including a documented gate,
+          job name or ordering that the workflows in this PR no longer have.
+        - A step in a runbook that names a workflow, input or environment that
+          has been renamed or removed in this PR.
+        - In `SECURITY.md`, a reporting route or disclosure window that does not
+          match how the repository is actually configured.
+
+    # -- The environment contract --------------------------------------------
+    - path: ".env.local.example"
+      instructions: |
+        A checked-in contract, asserted by `src/env-example.test.ts`, not a
+        scratch file. Flag any value that is an actual secret rather than a
+        public one, any key that `src/config.ts` no longer reads, and any
+        default here that disagrees with the code default it claims to mirror.
+
+    # -- Public-repo hygiene, all paths --------------------------------------
+    - path: "**"
+      instructions: |
+        This repository is public. In ADDED OR MODIFIED lines only, flag
+        anything that discloses internal Wego systems and does not need to be
+        here: internal hostnames, private service or vendor names, internal
+        ticket or case numbers, staff emails, internal dashboards, or a private
+        repository's paths and architecture.
+
+        Do not raise pre-existing occurrences in unchanged context. The tree
+        still carries a known backlog of internal references inherited from the
+        migration - cross-repo issue numbers, a private monorepo's app paths,
+        and the name of the repository this CLI was extracted from - which is
+        being retired separately. Comment when a PR ADDS one, not when a PR
+        happens to touch a file that already had one.
+
+        Staging hosts are expected and fine - `--target staging` is documented.
+        The seeded `client_id` is a PUBLIC PKCE client with no secret and is
+        meant to be in the tree. Never hardcode an actual secret.
+
+knowledge_base:
+  # The isolation boundary. `opt_out: false` keeps learnings and code
+  # guidelines, both of which are useful; the SCOPES below are what stop
+  # anything from wego-ai or any other private repository reaching a comment
+  # on a pull request here.
+  #
+  # `local` restricts context to this repository only. The default, `auto`,
+  # would resolve to `global` (org-wide) while this repository is private, and
+  # to `local` once it is public - a distinction that depends on live
+  # visibility, which is not a thing to hang a disclosure boundary on. This
+  # repository is private TODAY, so `auto` would resolve global right now.
+  #
+  # If you ever want the harder guarantee, `opt_out: true` disables every
+  # knowledge-base feature that retains data - including Multi-Repo Analysis
+  # and Automatic Repository Linking, which are NOT governed by these scopes -
+  # and deletes what is already stored. The cost is losing learnings entirely.
+  opt_out: false
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "**/AGENTS.md"
+      - "**/CLAUDE.md"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "docs/**/*.md"
+
+chat:
+  auto_reply: true
