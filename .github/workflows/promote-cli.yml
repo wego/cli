@@ -58,8 +58,13 @@ jobs:
   #
   # What gates a promote instead, both enforced:
   #   1. This workflow has NO trigger but `workflow_dispatch`, so a promote only
-  #      ever happens because a person with write access typed a tag.
-  #   2. This job refuses to continue unless that person is a named promoter.
+  #      ever happens because a person with write access typed a tag - or re-ran
+  #      a run in which one already did.
+  #   2. This job refuses to continue unless BOTH that dispatcher and whoever
+  #      started this particular run are named promoters. The second half is not
+  #      redundant: re-running an existing run needs only write access, and
+  #      `github.actor` still reports the ORIGINAL dispatcher on a re-run, so a
+  #      gate reading it alone would pass a replay on a promoter's name.
   # The allow-list is meaningful because this file is itself protected: `main`
   # requires a code-owner review, so widening the list is a reviewed change.
   #
@@ -79,17 +84,40 @@ jobs:
       - name: Only a named promoter may promote
         env:
           ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           PROMOTERS: sunny-wego yeouchien-wego chuyeowego
         run: |
           set -euo pipefail
-          for promoter in $PROMOTERS; do
-            if [ "$promoter" = "$ACTOR" ]; then
-              echo "$ACTOR is a named promoter."
-              exit 0
-            fi
-          done
-          echo "::error::$ACTOR is not a named promoter. Allowed: $PROMOTERS"
-          exit 1
+
+          is_promoter() {
+            candidate="$1"
+            for p in $PROMOTERS; do
+              if [ "$p" = "$candidate" ]; then return 0; fi
+            done
+            return 1
+          }
+
+          # `github.actor` is the ORIGINAL dispatcher and does NOT change on a
+          # re-run; `github.triggering_actor` is whoever started THIS run. Both
+          # must be promoters. Checking only the first lets anyone with write
+          # access re-run a past run of this lane and have the gate pass on the
+          # original promoter's name - which for the rollback lane is a replay
+          # that moves `cli/stable` onto an old tag.
+          #
+          # Call `is_promoter` inside an `if !` condition, never as a bare
+          # statement: `set -e` is suspended for a command used as a condition,
+          # and writing the loop body as `[ ... ] && return 0` would make a
+          # non-matching iteration return non-zero and trip `set -e`.
+          if ! is_promoter "$ACTOR"; then
+            echo "::error::$ACTOR is not a named promoter. Allowed: $PROMOTERS"
+            exit 1
+          fi
+          if ! is_promoter "$TRIGGERING_ACTOR"; then
+            echo "::error::$TRIGGERING_ACTOR re-ran this run and is not a named promoter. Allowed: $PROMOTERS"
+            exit 1
+          fi
+
+          echo "$ACTOR dispatched and $TRIGGERING_ACTOR ran this; both are named promoters."
 
       - name: Record what is being approved
         env:

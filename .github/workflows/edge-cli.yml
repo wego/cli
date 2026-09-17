@@ -59,7 +59,6 @@ on:
       - '.github/actions/setup-bun/**'
       - '.github/actions/sign-manifest/**'
       - '.github/workflows/edge-cli.yml'
-  workflow_dispatch:
 
 # NO workflow-level `concurrency:`, and no `cancel-in-progress` anywhere.
 # Serialization belongs on the ONE job that advances a channel - `publish` below -
@@ -90,12 +89,28 @@ permissions:
 jobs:
   build:
     name: Build edge binaries
-    # `workflow_dispatch` above is for RE-RUNNING a failed edge publish on main,
-    # never for publishing another ref: a dispatch can name any branch, and this
-    # job would check it out, build it with the production values and move
-    # `cli/edge` to it. That would put unmerged code in front of every edge
-    # dogfooder, and the sha it advertises would not be an ancestor of main. So
-    # the ref is gated here rather than the trigger removed.
+    # THIS LANE HAS NO `workflow_dispatch`, and that is deliberate. It used to,
+    # for re-running a failed edge publish - but `publish` below holds
+    # `BLOB_READ_WRITE_TOKEN`, and a dispatch trigger let any of the repository's
+    # collaborators start a job holding the store token on demand. The bytes were
+    # never the risk (a dispatch was gated to `main` and so built what a merge
+    # would have built); the churn in the store and in the `ring-edge` queue was.
+    # Re-running a failed publish did not need the trigger either: GitHub's own
+    # re-run button replays the push run that failed.
+    #
+    # An allow-list job is the WRONG shape here, which is why the trigger went
+    # instead. This lane must publish unattended on every qualifying merge, and
+    # the merger is any collaborator, so a gate would have to be conditional on
+    # `github.event_name`, could not sit in `publish`'s `needs:` without blocking
+    # the push path, and would end up as a step inside the job that already holds
+    # the token. `promote-cli.yml` and `rollback-cli.yml` keep their `approve`
+    # jobs because those lanes are dispatch-only and attended.
+    #
+    # The ref guard below stays anyway, as cheap insurance: with only the
+    # `push` trigger above `github.ref` is always `refs/heads/main`, so it costs
+    # nothing, and it is what would stop a future trigger from checking out an
+    # unmerged ref, building it with the production values and moving `cli/edge`
+    # onto a sha that is not an ancestor of main.
     #
     # ONE guard, not three: `sign` and `publish` both `needs:` this job, and a
     # skipped dependency skips its dependents. Repeating the condition on each job

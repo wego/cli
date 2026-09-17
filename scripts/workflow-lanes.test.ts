@@ -22,7 +22,7 @@
  * `with` — so the parsed object is the right surface to assert against.
  */
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 const workflow = (file: string): unknown =>
   Bun.YAML.parse(readFileSync(`.github/workflows/${file}`, "utf8"));
@@ -119,4 +119,127 @@ describe("the two lanes serialise against each other", () => {
       expect(groups).toContain("ring-stable");
     }
   });
+});
+
+/**
+ * THE INVARIANT THIS REPOSITORY LEARNED THE HARD WAY.
+ *
+ * `github.actor` is the user who triggered the INITIAL run, and it does NOT change
+ * on a re-run. `github.triggering_actor` is whoever started THIS run. Re-running an
+ * existing run needs only write access — a far larger set than the promoter
+ * allow-list — so an `approve` job reading `github.actor` alone passes a replay on
+ * the ORIGINAL promoter's name, with that run's original `inputs.tag`. Replaying a
+ * rollback puts `cli/stable` back on an old tag; replaying a promote is a downgrade
+ * the moment `stable` has advanced past it. Neither needs a stolen account.
+ *
+ * So: a lane that can reach the store with a manual trigger must gate on BOTH.
+ * A lane with no manual trigger is out of scope by construction — the only way to
+ * start it is the event itself, and re-running it re-runs that event's own commit.
+ * That is why `edge-cli.yml` answers this by having no `workflow_dispatch` at all
+ * rather than by growing a gate it could not usefully hold (its `publish` job is
+ * the one holding the token, and it must run unattended on every merge).
+ */
+describe("every store-writing lane with a manual trigger gates on both actors", () => {
+  // Sorted: `readdirSync` returns filesystem order, so the exact-set assertion
+  // below would otherwise pass or fail depending on the machine.
+  const workflowFiles = readdirSync(".github/workflows")
+    .filter((f) => f.endsWith(".yml"))
+    .sort();
+
+  // Scoped to `jobs`, not the whole file: several workflows DISCUSS the token in
+  // their headers precisely to explain that they do not hold it, and comments are
+  // documentation, not reach. `release-badge.yml` is the live example — it is
+  // dispatchable and names the token only to say it has none.
+  const holdsStoreToken = (wf: { jobs?: unknown }): boolean =>
+    JSON.stringify(wf.jobs ?? {}).includes("BLOB_READ_WRITE_TOKEN");
+
+  it("is a non-empty set, so this suite cannot pass by matching nothing", () => {
+    const gated = workflowFiles.filter((f) => {
+      const wf = workflow(f) as {
+        on?: Record<string, unknown>;
+        jobs?: unknown;
+      };
+      return holdsStoreToken(wf) && "workflow_dispatch" in (wf.on ?? {});
+    });
+    expect(gated).toEqual(["promote-cli.yml", "rollback-cli.yml"]);
+  });
+
+  for (const file of workflowFiles) {
+    it(`${file}: no manual trigger, or an approve job reading both actors`, () => {
+      const wf = workflow(file) as {
+        on?: Record<string, unknown>;
+        jobs?: Record<
+          string,
+          {
+            needs?: string | string[];
+            steps?: { run?: string; env?: Record<string, unknown> }[];
+          }
+        >;
+      };
+
+      if (!holdsStoreToken(wf)) return;
+      if (!("workflow_dispatch" in (wf.on ?? {}))) return;
+
+      const approve = wf.jobs?.approve;
+      expect(
+        approve,
+        `${file} holds the store token and is manually dispatchable, so it needs an approve job`,
+      ).toBeDefined();
+      const steps = approve?.steps ?? [];
+
+      // ASSERT ON THE EXECUTABLE SURFACE, NOT THE STEP TEXT. A `run:` body is one
+      // YAML string, so the shell comments inside it survive parsing — and this
+      // gate's comments necessarily NAME both contexts in order to explain the
+      // difference between them. A substring search over the step would therefore
+      // still pass with the binding deleted and only the prose left, which is the
+      // one regression this test exists to catch. So: read the `env:` mapping,
+      // which is the only place a context can actually enter the shell.
+      const bound = new Map<string, string>();
+      for (const step of steps) {
+        for (const [name, value] of Object.entries(step.env ?? {})) {
+          if (typeof value === "string")
+            bound.set(name, value.replace(/\s+/g, ""));
+        }
+      }
+      const varFor = (context: string): string | undefined =>
+        [...bound].find(([, v]) => v === `\${{${context}}}`)?.[0];
+
+      // `github.actor` alone is the bug; `github.triggering_actor` alone would drop
+      // the guarantee about who chose the tag in the first place. Both, or neither
+      // property holds.
+      for (const context of ["github.actor", "github.triggering_actor"]) {
+        const name = varFor(context);
+        expect(
+          name,
+          `${file}: approve binds no env var to ${context}`,
+        ).toBeDefined();
+
+        // A bound-but-unread variable is not a gate, and neither is one that is
+        // merely echoed — the refusal has to hang off it. So require the variable
+        // to appear on a line that is part of a CONDITION. Whole-line shell
+        // comments are stripped first, for the same reason as above.
+        //
+        // This is a shape check, not a proof: a deliberate rewrite into some other
+        // control flow would need this assertion updated alongside it, which is the
+        // intended cost. What it does catch is the silent regression — the gate
+        // decaying back to one actor while the comments still describe two.
+        const code = steps
+          .map((s) => s.run ?? "")
+          .join("\n")
+          .split("\n")
+          .filter((line) => !line.trimStart().startsWith("#"));
+
+        const conditioned = code.some(
+          (line) => /\bif\b/.test(line) && line.includes(`$${name}`),
+        );
+        expect(
+          conditioned,
+          `${file}: approve binds ${context} to $${name} but never branches on it`,
+        ).toBe(true);
+
+        // And the branch must be able to refuse.
+        expect(code.join("\n")).toContain("exit 1");
+      }
+    });
+  }
 });
