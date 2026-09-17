@@ -1,46 +1,27 @@
 name: release-please
 
-# THE VERSION AXIS. release-please owns it; no human types a version anywhere in
-# this repository.
+# release-please owns the version. No person types a version in this repository.
 #
-# On every push to main this keeps ONE open release PR: it reads the
-# conventional-commit subjects since `v<manifest version>`, computes the next
-# version, and writes `CHANGELOG.md`, `package.json`'s `version` and
-# `.release-please-manifest.json` into that PR. The PR body is the changelog a
-# user would read, assembled from the notes their authors wrote.
+# On every push to main this workflow keeps one release PR open. The PR carries the
+# next version, computed from the conventional-commit subjects since the last tag,
+# and updates `package.json` and `.release-please-manifest.json`.
 #
-# MERGING THAT PR IS THE RELEASE. release-please then creates the `vX.Y.Z`
-# tag, and that tag - not this workflow - starts `release-cli.yml`, which builds
-# and publishes the binaries. `release-cli.yml` is reachable ONLY by a `v*`
-# tag push: it has no `workflow_call` and no `workflow_dispatch`, so there is one
-# way in and nothing to deduplicate.
+# Merging that PR is the release. release-please then creates the `vX.Y.Z` tag and
+# the GitHub Release. The tag push starts `release-cli.yml`. That workflow has no
+# `workflow_call` and no `workflow_dispatch`, so the tag is the only way in.
 #
-# That is what the App is for. A tag created with the workflow token starts no
-# run (GitHub's recursion guard), so release-please must push the tag as an App.
-# In wego-ai this workflow carried a token-presence probe and a fallback
-# `publish` job that called `release-cli.yml` directly for the no-App case; with
-# the App required, both are gone and the single path replaces the mutual
-# exclusion they enforced.
+# The tag must be pushed with an App token. A tag created with the workflow token
+# does not start a workflow (GitHub recursion guard).
 #
-# `release-type: node` (see release-please-config.json) writes `package.json`,
-# where wego-ai used `simple` + a `version.txt`. That was to keep the release PR
-# from carrying a `bun.lock` edit: bun records a WORKSPACE MEMBER's version in the
-# lockfile, so bumping `apps/cli/package.json` went red on the next
-# `--frozen-lockfile`. The CLI is the root package here, and bun does not record
-# the root's own version, so a bump leaves `bun.lock` untouched and the frozen
-# install stays green - which is what makes `node` (and dropping `version.txt`)
-# safe in this repository and not in the monorepo.
+# `release-type: node` writes `package.json`. bun does not record the root package
+# version in `bun.lock`, so the version bump keeps `--frozen-lockfile` green.
 on:
   push:
     branches:
       - main
 
-# contents:write - creates the release branch and the `v*` tag.
-# pull-requests:write - opens and updates the release PR.
-#
-# Both are the WORKFLOW token's scopes, which the release-please action does not
-# use for the tag: it acts as the App, whose own installation permissions
-# (contents:write, pull_requests:write) are what actually create the tag and PR.
+# Scopes of the workflow token. The release-please action uses the App token for
+# the tag and the PR, so the App's own installation permissions are what count.
 permissions:
   contents: write
   pull-requests: write
@@ -50,30 +31,24 @@ jobs:
     name: Maintain the release PR
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # The App credentials live in an environment bound to `main`, never at
-    # repository scope: a repository-scope secret is readable by the workflow file
-    # of ANY branch, an agent's pull request included. Bound here, only a workflow
-    # running on `main` can read the key that mints a tag-pushing token.
+    # The App key lives in an environment bound to `main`. A repository-scope secret
+    # is readable by the workflow file of any branch, including a pull request.
     environment: release-please
-    # Only ONE release PR may be in flight, and two overlapping runs would both
-    # try to write it. `cancel-in-progress: false` so a superseded run finishes
-    # its write rather than leaving the PR half-updated.
+    # One release PR at a time. Do not cancel: a cancelled run can leave the PR
+    # half-updated.
     concurrency:
       group: release-please
       cancel-in-progress: false
     steps:
-      # Mint a short-lived installation token per run. Not a PAT: no human's
-      # credential is in the release path, the token dies with the job, and its
-      # scope is the App's installation on this repository and nothing else.
+      # A short-lived installation token, scoped to this repository. Not a PAT.
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         id: app-token
         with:
           app-id: ${{ vars.RELEASE_PLEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
 
-      # The tag this creates is pushed as the App, so it DOES start
-      # `release-cli.yml` (see the header). Handing it `github.token` instead
-      # would silently publish nothing.
+      # The tag is pushed as the App, so it starts `release-cli.yml`. With
+      # `github.token` the tag would start nothing.
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         id: release
         with:
@@ -81,51 +56,24 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # THE ONE FAILURE THIS WORKFLOW CANNOT REPORT ON ITS OWN.
+      # release-please can merge a release PR, create no tag, and exit 0. Then
+      # `release-cli.yml` never starts and nothing is published. It also opens no
+      # new release PR until the wedge clears. Observed in wego/foundations#129.
       #
-      # release-please can merge a release pull request, create no release and no
-      # tag, and still exit 0. When that happens `release-cli.yml` never starts,
-      # nothing is published, and the only trace is a `logger.warn` buried in the
-      # action's output. Observed in wego/foundations#129: `v1.0.2` was merged and
-      # went untagged, and the run above reported success.
+      # The signal is the label. release-please sets `autorelease: pending` when it
+      # opens the PR and changes it to `autorelease: tagged` when it creates the
+      # release. A merged PR that still carries `pending` means the release did not
+      # complete. This check does not depend on the cause.
       #
-      # The signal is the label. release-please puts `autorelease: pending` on the
-      # release pull request when it opens it, and swaps it to `autorelease: tagged`
-      # in the same run that creates the release. So a pull request that is BOTH
-      # merged AND still `pending` means exactly one thing: release-please could not
-      # finish what the merge started. Verified against this repository - every
-      # released pull request (#7, #9, #11, #13) carries `autorelease: tagged`, and
-      # the count of merged-and-pending is 0.
-      #
-      # This is deliberately CAUSE-AGNOSTIC. The 2026-09-11 instance was a config
-      # interaction (`separate-pull-requests: false` + `component` +
-      # `include-component-in-tag: false` made `buildRelease` return early), fixed by
-      # setting `separate-pull-requests: true`. But that fix is one leg of a
-      # three-legged trap: `component: "cli"` is still vestigial here, so flipping
-      # that one boolean back would silently restore the bug. This check does not
-      # care which leg breaks - it only asks whether a merge that should have
-      # released actually did.
-      #
-      # It also catches the SECOND-ORDER failure from the same incident: while a
-      # merged pull request keeps the `pending` label, release-please refuses to
-      # open ANY further release pull request ("There are untagged, merged release
-      # PRs outstanding - aborting"), so the repository silently stops releasing
-      # altogether. That wedge stayed invisible for three runs.
-      #
-      # `actions/github-script`, not `gh`: originally because the old self-hosted
-      # `github-runner-small` image carried no GitHub CLI (wego/foundations#129
-      # again). `ubuntu-latest` ships `gh`, so that is no longer binding - the shape
-      # stays for consistency with the other two lanes. `pulls.list` rather than the
-      # search API because search is eventually consistent and this runs seconds
-      # after the label is written.
+      # `pulls.list`, not the search API: search is eventually consistent and this
+      # runs seconds after the label is written.
       - name: Refuse to exit green on a release that did not happen
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const PENDING = "autorelease: pending";
-            // Sorted by recency and capped: a wedged pull request was just merged,
-            // so it is at the top. This runs on every push to main, so a wedge is
-            // caught on the push that creates it, not archaeologically.
+            // Most recently updated first. A wedged PR was just merged, so it is
+            // near the top.
             const { data: closed } = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
