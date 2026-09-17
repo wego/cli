@@ -38,3 +38,86 @@ scripts/             @sunny-wego @yeouchien-wego @chuyeowego
 /bun.lock                      @sunny-wego @yeouchien-wego @chuyeowego
 /release-please-config.json    @sunny-wego @yeouchien-wego @chuyeowego
 /.release-please-manifest.json @sunny-wego @yeouchien-wego @chuyeowego
+
+# THE SELF-UPDATE DECISION PATH. `src/release-signing/` above decides whether a
+# signed build record VERIFIES. These two decide what is done with that verdict,
+# and no amount of signing reaches them:
+#
+#   - `src/update.ts` is what a verify failure has to travel through to become a
+#     refusal. Widening one error path from "refuse to install" to "warn and
+#     continue" defeats the signature check without editing a line of the code
+#     that performs it, and it reads like ordinary error-handling polish.
+#   - `src/ring-follow.ts` decides WHOSE bytes an install accepts. Self-update
+#     compares checksums, not versions, so the recorded pointer is the entire
+#     policy for what a machine downloads - and the rule that no record is a
+#     REFUSAL rather than a guessed default is the only thing standing between a
+#     missing file and an install following a ring nobody chose.
+#
+# SECURITY.md already declares "the self-update path, including signature
+# verification and how an update decides what to install" in scope. Owning only
+# the verification half was the disagreement; this closes it.
+src/update.ts      @sunny-wego @yeouchien-wego @chuyeowego
+src/ring-follow.ts @sunny-wego @yeouchien-wego @chuyeowego
+
+# THE CREDENTIAL PATH, in scope by the same sentence in SECURITY.md:
+# "credential handling, the OAuth + PKCE login flow, token storage on disk".
+# Each of these holds a control that is invisible to a reviewer who is not
+# already looking for it, and each is a plausible-looking small diff away from
+# being gone:
+#
+#   - `src/oauth.ts` performs the token request and receives the access, refresh
+#     and id tokens. It is the only place the CLI's credentials exist before
+#     something writes them down, and the one client that must stay Auth Code +
+#     PKCE (never ROPC).
+#   - `src/pkce.ts` generates the verifier and the CSRF `state`. That entropy and
+#     the S256 challenge ARE the binding between the browser that authorized and
+#     the process that redeems; shortening a length or returning a fixed value on
+#     some branch looks like a refactor and makes the flow interceptable.
+#   - `src/loopback.ts` decides which callback requests may settle a login -
+#     origin first, then `state`. Relaxing either lets any other process on the
+#     machine hand the flow an authorization code, or cancel a login in flight.
+#   - `src/paste-callback.ts` is a second door onto that same lock: the SSH flow
+#     completes by hand through the same interpreter, so what a pasted URL is
+#     allowed to be is part of the same decision.
+#   - `src/storage.ts` is the 0600 token file. The chmod after the write is there
+#     because `mode` applies only on creation; deleting that one line leaves
+#     tokens readable by every user on the box, and no test output changes shape.
+#   - `src/config-dir.ts` owns the 0700 directory that sits under it. Whichever
+#     command runs first on a fresh machine fixes that directory's mode, so a
+#     change here can downgrade token storage from a command that never mentions
+#     a token.
+src/oauth.ts          @sunny-wego @yeouchien-wego @chuyeowego
+src/pkce.ts           @sunny-wego @yeouchien-wego @chuyeowego
+src/loopback.ts       @sunny-wego @yeouchien-wego @chuyeowego
+src/paste-callback.ts @sunny-wego @yeouchien-wego @chuyeowego
+src/storage.ts        @sunny-wego @yeouchien-wego @chuyeowego
+src/config-dir.ts     @sunny-wego @yeouchien-wego @chuyeowego
+
+# The two that decide WHERE a credential goes and whether it may travel in
+# cleartext. Neither is purely a security file, and both are included anyway:
+#
+#   - `src/target.ts` resolves which backend one binary talks to, at run time,
+#     from a flag or an env var. It therefore names the host that receives the
+#     access token, and its prod default is a safety property, not a preference:
+#     changing the default, or the endpoint bundle a target implies, redirects
+#     live credentials without touching any file that mentions a token.
+#   - `src/config.ts` carries `assertSecureUrl`, the guard that refuses a
+#     plaintext endpoint for anything but a loopback host - the reason auth codes
+#     and refresh tokens cannot be sent over `http://`. It is also what
+#     `update.ts` uses to check the recorded install URL, so it is the one file
+#     on BOTH paths. It does see ordinary config churn; that cost is accepted
+#     because the guard is a single `superRefine` away from allowing cleartext
+#     everywhere.
+src/target.ts @sunny-wego @yeouchien-wego @chuyeowego
+src/config.ts @sunny-wego @yeouchien-wego @chuyeowego
+
+# Deliberately NOT owned, so the omissions read as decisions rather than gaps:
+#
+#   - `src/commands.ts` and `src/index.ts` wire the login flow together, but they
+#     also carry every other command in the CLI. Owning them would put a release
+#     signer on nearly every pull request in the repository - the bottleneck the
+#     missing `*` line exists to avoid. The controls themselves live in the
+#     modules above, and those are owned.
+#   - The `*.test.ts` files beside these modules. Deleting the test that pins
+#     fail-closed buys nothing on its own: the behaviour change it was hiding
+#     still has to be made in a file on this list, and that still needs a signer.
