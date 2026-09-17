@@ -321,8 +321,15 @@ nothing to remember.
 
 `release-badge.yml` therefore runs on `release: published`, on `workflow_run`
 completion of the three lanes, and on dispatch. It re-reads the ring every time
-rather than trusting the event, so a failed promote, a cancelled run or a
-`plan_only` rehearsal is a harmless no-op.
+rather than trusting the event, and it listens for `completed` rather than
+`success` – what the badge needs is the ring's value, not the run's verdict.
+
+So a run that left `cli/stable` **unchanged** – a gate that refused before the
+move, a `plan_only` rollback rehearsal – is a harmless no-op, with nothing to
+special-case. And a run that moved the ring and **then** failed or was cancelled
+is reconciled onto the value it actually left behind. That second case is not
+hypothetical: it is precisely the v1.3.0 promote above, which advanced the
+pointer and went red afterwards.
 
 ### What it cannot do
 
