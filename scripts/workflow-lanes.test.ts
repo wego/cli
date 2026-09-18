@@ -159,19 +159,57 @@ const needsOf = (job: Job | undefined): string[] =>
   job?.needs === undefined ? [] : [job.needs].flat();
 
 /**
- * Is `approve` anywhere in this job's dependency chain? Depth-first over `needs`,
- * with a seen-set: GitHub rejects a cycle, but this parses YAML that GitHub has
- * not necessarily accepted yet, and a cycle here would otherwise hang the suite.
+ * Every job reachable from this one through `needs`. Depth-first with a seen-set:
+ * GitHub rejects a cycle, but this parses YAML that GitHub has not necessarily
+ * accepted yet, and a cycle here would otherwise hang the suite.
  */
-const reachesApprove = (start: string, jobs: Record<string, Job>): boolean => {
+const ancestryOf = (start: string, jobs: Record<string, Job>): string[] => {
   const seen = new Set<string>();
   const stack = needsOf(jobs[start]);
   while (stack.length > 0) {
     const next = stack.pop() as string;
-    if (next === "approve") return true;
     if (seen.has(next)) continue;
     seen.add(next);
     stack.push(...needsOf(jobs[next]));
+  }
+  return [...seen];
+};
+
+const reachesApprove = (start: string, jobs: Record<string, Job>): boolean =>
+  ancestryOf(start, jobs).includes("approve");
+
+/**
+ * The status functions that let a job run even though a dependency FAILED.
+ *
+ * This is the whole reason a `needs:` edge is not by itself proof of a gate. An
+ * `if:` with no status function implicitly carries `success()`, so an ordinary
+ * condition (`inputs.plan_only != 'true'`) still waits for every dependency to
+ * succeed and is harmless here. `always()`, `cancelled()` and `failure()` are the
+ * three that override that, and `if: ${{ always() }}` on a token-bearing job with
+ * `needs: approve` runs the job after the gate has already refused.
+ */
+const BYPASSES_FAILURE = /\b(always|cancelled|failure)\s*\(\s*\)/;
+
+/**
+ * Walking forward from the `if` line at `startIdx`, does THIS branch reach a
+ * nonzero exit before its own `fi`?
+ *
+ * An `exit 1` somewhere else in the script is not evidence that this particular
+ * actor is rejected - one refusal path would otherwise satisfy the assertion for
+ * both actors, which is exactly the regression (a gate decaying to one actor)
+ * this suite exists to catch. The depth counter keeps a nested `if` from ending
+ * the scan early.
+ */
+const branchRefuses = (lines: string[], startIdx: number): boolean => {
+  let depth = 0;
+  for (let i = startIdx; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (/^if\b/.test(line)) depth++;
+    else if (/^fi\b/.test(line)) {
+      depth--;
+      if (depth <= 0) return false;
+    }
+    if (depth >= 1 && i > startIdx && /\bexit\s+[1-9]/.test(line)) return true;
   }
   return false;
 };
@@ -265,6 +303,16 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
       const varFor = (context: string): string | undefined =>
         [...bound].find(([, v]) => v === `\${{${context}}}`)?.[0];
 
+      // The gate's shell, with whole-line comments stripped. They are stripped for
+      // the same reason the bindings are read from `env:` above: a `run:` body is
+      // one YAML string, so its comments survive parsing, and this gate's comments
+      // necessarily name both contexts in order to explain them.
+      const code = steps
+        .map((s) => s.run ?? "")
+        .join("\n")
+        .split("\n")
+        .filter((line) => !line.trimStart().startsWith("#"));
+
       // `github.actor` alone is the bug; `github.triggering_actor` alone would drop
       // the guarantee about who chose the tag in the first place. Both, or neither
       // property holds.
@@ -277,30 +325,41 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
 
         // A bound-but-unread variable is not a gate, and neither is one that is
         // merely echoed — the refusal has to hang off it. So require the variable
-        // to appear on a line that is part of a CONDITION. Whole-line shell
-        // comments are stripped first, for the same reason as above.
+        // to appear on a line that is part of a CONDITION.
         //
         // This is a shape check, not a proof: a deliberate rewrite into some other
         // control flow would need this assertion updated alongside it, which is the
         // intended cost. What it does catch is the silent regression — the gate
         // decaying back to one actor while the comments still describe two.
-        const code = steps
-          .map((s) => s.run ?? "")
-          .join("\n")
-          .split("\n")
-          .filter((line) => !line.trimStart().startsWith("#"));
-
-        const conditioned = code.some(
+        const branchIdx = code.findIndex(
           (line) => /\bif\b/.test(line) && line.includes(`$${name}`),
         );
         expect(
-          conditioned,
+          branchIdx,
           `${file}: approve binds ${context} to $${name} but never branches on it`,
-        ).toBe(true);
+        ).toBeGreaterThanOrEqual(0);
 
-        // And the branch must be able to refuse.
-        expect(code.join("\n")).toContain("exit 1");
+        // AND THAT BRANCH MUST REFUSE - its own branch, not the script's.
+        // Checking `exit 1` anywhere in the combined script lets one actor's
+        // refusal path stand in as evidence for the other's: both variables could
+        // appear in non-enforcing conditions and pass on an unrelated exit. Each
+        // actor's failure path has to reach a nonzero exit on its own.
+        expect(
+          branchRefuses(code, branchIdx),
+          `${file}: the branch testing $${name} never reaches a nonzero exit, so this actor is not actually refused`,
+        ).toBe(true);
       }
+
+      // The allow-list is what the branches above are testing against, so it has
+      // to be bound and read. This does not pin HOW the comparison is written -
+      // both lanes go through an `is_promoter` helper, and forcing the list into
+      // the `if` line would forbid that - only that the gate has a list at all.
+      const promoters = bound.get("PROMOTERS");
+      expect(
+        promoters,
+        `${file}: approve binds no PROMOTERS allow-list`,
+      ).toBeDefined();
+      expect(code.join("\n")).toContain("$PROMOTERS");
 
       // A GATE NOTHING DEPENDS ON IS DECORATION. Everything above establishes that
       // `approve` refuses the wrong actor; none of it establishes that the job
@@ -315,10 +374,26 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
       for (const [name, job] of Object.entries(wf.jobs ?? {})) {
         if (name === "approve") continue;
         if (!JSON.stringify(job).includes("BLOB_READ_WRITE_TOKEN")) continue;
+        const jobs = wf.jobs ?? {};
         expect(
-          reachesApprove(name, wf.jobs ?? {}),
+          reachesApprove(name, jobs),
           `${file}: job '${name}' reaches the store without approve anywhere in its needs chain`,
         ).toBe(true);
+
+        // AN EDGE IS NOT A GATE ON ITS OWN. `needs: approve` only blocks the job
+        // while the job waits for approve to SUCCEED, and a status function in
+        // `if:` removes exactly that. `if: ${{ always() }}` on this job, or on any
+        // job between it and approve, runs the privileged step after the gate has
+        // already refused - with the ancestry assertion above still green.
+        for (const link of [name, ...ancestryOf(name, jobs)]) {
+          const condition = (jobs[link] as Record<string, unknown> | undefined)
+            ?.if;
+          if (typeof condition !== "string") continue;
+          expect(
+            BYPASSES_FAILURE.test(condition),
+            `${file}: job '${link}' is on '${name}'s path to the store and its if: can run after approve fails`,
+          ).toBe(false);
+        }
       }
     });
   }
