@@ -1,34 +1,20 @@
 name: Promote (cli)
 
-# THE SECOND HUMAN ACTION IN A CLI RELEASE (#74 rung 7).
+# Move `cli/stable` to the tag that `cli/next` serves. This is the second human
+# action in a release. The first is merging the release PR.
 #
-# `release-cli.yml` published `vX.Y.Z` and advanced `cli/next`. People have been
-# running that build against the real production API. This workflow is somebody
-# saying it is good: it moves `cli/stable` — what everyone receives — onto the SAME
-# bytes, and moves `skill/stable` behind it.
+# A promote copies the frozen `cli/<tag>/` bytes to `cli/stable`. Nothing is
+# rebuilt. `wego update` compares checksums, not versions, so every install on
+# `stable` takes the new bytes at its next check.
 #
-# PROMOTION IS A POINTER MOVE, NEVER A REBUILD. `wego update` compares CHECKSUMS,
-# not versions (`src/update.ts`), so what a ring serves is what its install
-# base receives on the next `update`. Rebuilding to promote would mean the bytes that
-# were exercised are not the bytes that ship — the single defect this whole rework
-# exists to remove. `upload-release-blob.ts --promote` server-side copies the frozen
-# `cli/<tag>` blobs, which is why the barrier below can assert that `next` and
-# `stable` end up byte-identical rather than merely equivalent.
+# A published binary cannot be recalled. Every gate runs before the pointer moves.
+# The recovery after a bad promote is `rollback-cli.yml`, which moves `cli/stable`
+# to an earlier tag. This workflow has no rollback mode. It only moves `stable` to
+# what `next` serves, and every gate may assume `next == tag`.
+# `scripts/workflow-lanes.test.ts` asserts that.
 #
-# A PUBLISHED CLI BINARY CANNOT BE RECALLED (issue constraint 1). Nothing here
-# reaches a machine that already installed. So every check this lane has is spent
-# BEFORE the pointer moves: the tag must exist, `cli/next` must currently serve it,
-# and the two rings' manifests must match afterwards. There is no undo step, because
-# there is no undo — the recovery is promoting an earlier good tag over the top.
-#
-# ROLLBACK IS `rollback-cli.yml`, NOT AN INPUT HERE. It used to be: `allow_not_next`
-# promoted a tag `cli/next` does not serve, by SUBTRACTING the gates that assume it
-# does. That boolean was the defect - it silently changed the meaning of twenty
-# downstream steps, so every gate added here had to remember to opt rollback out,
-# and the first one whose author did not (wego/cli#48, two `cli/next`-coupled gates)
-# hard-failed every rollback without anyone noticing. This workflow now has NO mode:
-# it only ever advances `stable` onto what `next` serves, so every gate below may
-# assume `next == tag` unconditionally, which is what they all already did.
+# When `SKILLS_PUBLISH_ENABLED` is 'true', the `promote` job also publishes the
+# plugin from the tag's tree to `wego/skills` after the move.
 on:
   workflow_dispatch:
     inputs:
@@ -37,40 +23,27 @@ on:
         required: true
         type: string
 
-# contents:read — this workflow creates no tag and no Release; both already exist
-# (release-please cut them). It only copies blobs.
-#
-# actions:read is added on the promote job: one gate below asks the Actions API
-# whether the release run for this tag actually succeeded.
+# No tag and no Release is created here. `actions: read` on the `promote` job is
+# for the release-run check.
 permissions:
   contents: read
 
 jobs:
-  # THE HUMAN GATE, and nothing else.
+  # The human gate.
   #
-  # It is NOT an environment. On a private repository a GitHub Team plan cannot
-  # carry required-reviewer protection rules - that rule is Enterprise-only, and
-  # `PUT .../environments/stable-approval` answers 422 "Please ensure the billing
-  # plan supports the required reviewers protection rule". Declaring the
-  # environment anyway would be worse than leaving it out: GitHub creates it
-  # unprotected on first use, so the job would advertise an approval gate and
-  # wave every dispatch straight through.
+  # Not an environment with required reviewers. That rule is not available on this
+  # plan for a private repository, and an unprotected environment would let every
+  # dispatch through (wego/foundations#128). The list below is the authority.
+  # `main` requires a code-owner review, so a change to the list is reviewed.
   #
-  # What gates a promote instead, both enforced:
-  #   1. This workflow has NO trigger but `workflow_dispatch`, so a promote only
-  #      ever happens because a person with write access typed a tag.
-  #   2. This job refuses to continue unless that person is a named promoter.
-  # The allow-list is meaningful because this file is itself protected: `main`
-  # requires a code-owner review, so widening the list is a reviewed change.
+  # One person dispatches and approves. There is no four-eyes rule. This job holds
+  # no secrets and no variables.
   #
-  # WHAT THIS GIVES UP, and the `stable-approval` environment did not: four eyes.
-  # With environment reviewers the dispatcher and the approver were necessarily
-  # different people ("prevent self-review"); here one person does both. Restoring
-  # that needs GitHub Enterprise. See wego/foundations#128.
-  #
-  # Separate from `promote` on purpose: this job holds NO secrets and NO variables
-  # - there is nothing in it to leak or misuse - and `promote` cannot begin until
-  # it has passed.
+  # Both actors must be promoters, not just one. `github.actor` is the original
+  # dispatcher and does not change on a re-run. `github.triggering_actor` is
+  # whoever started this run. Re-running a run needs only write access, so a check
+  # on `github.actor` alone passes a replay of a past promote under the original
+  # promoter's name.
   approve:
     name: Approve promoting ${{ inputs.tag }} to cli/stable
     runs-on: ubuntu-latest
@@ -79,17 +52,40 @@ jobs:
       - name: Only a named promoter may promote
         env:
           ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           PROMOTERS: sunny-wego yeouchien-wego chuyeowego
         run: |
           set -euo pipefail
-          for promoter in $PROMOTERS; do
-            if [ "$promoter" = "$ACTOR" ]; then
-              echo "$ACTOR is a named promoter."
-              exit 0
-            fi
-          done
-          echo "::error::$ACTOR is not a named promoter. Allowed: $PROMOTERS"
-          exit 1
+
+          is_promoter() {
+            candidate="$1"
+            for p in $PROMOTERS; do
+              if [ "$p" = "$candidate" ]; then return 0; fi
+            done
+            return 1
+          }
+
+          # `github.actor` is the ORIGINAL dispatcher and does NOT change on a
+          # re-run; `github.triggering_actor` is whoever started THIS run. Both
+          # must be promoters. Checking only the first lets anyone with write
+          # access re-run a past run of this lane and have the gate pass on the
+          # original promoter's name - which for the rollback lane is a replay
+          # that moves `cli/stable` onto an old tag.
+          #
+          # Call `is_promoter` inside an `if !` condition, never as a bare
+          # statement: `set -e` is suspended for a command used as a condition,
+          # and writing the loop body as `[ ... ] && return 0` would make a
+          # non-matching iteration return non-zero and trip `set -e`.
+          if ! is_promoter "$ACTOR"; then
+            echo "::error::$ACTOR is not a named promoter. Allowed: $PROMOTERS"
+            exit 1
+          fi
+          if ! is_promoter "$TRIGGERING_ACTOR"; then
+            echo "::error::$TRIGGERING_ACTOR re-ran this run and is not a named promoter. Allowed: $PROMOTERS"
+            exit 1
+          fi
+
+          echo "$ACTOR dispatched and $TRIGGERING_ACTOR ran this; both are named promoters."
 
       - name: Record what is being approved
         env:
@@ -103,50 +99,39 @@ jobs:
     needs: approve
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Serialized against itself AND against nothing else: `release-cli.yml` writes
-    # `cli/next`, this writes `cli/stable`, so the two lanes share no pointer and must
-    # not share a queue slot. cancel-in-progress is FALSE for the same reason it is
-    # there: a promote aborted between copying binaries and copying the manifest
-    # leaves `stable` half-moved.
+    # Same group as `rollback-cli.yml`: both write `cli/stable`. `release-cli.yml`
+    # writes `cli/next` and has its own group. Do not cancel a move in progress.
     concurrency:
       group: ring-stable
       cancel-in-progress: false
-    # The store token lives here. `approve` gated entry to this job; this
-    # environment is what actually holds the credential that selects a store. It
-    # also holds `SKILLS_PUBLISH_APP_PRIVATE_KEY` and the `SKILLS_PUBLISH_*`
-    # variables the plugin publish below reads - this is the only lane that uses
-    # them, so this is the only environment that carries them.
+    # The store token lives here, with `SKILLS_PUBLISH_APP_PRIVATE_KEY` and the
+    # `SKILLS_PUBLISH_*` variables the plugin publish below reads. This is the only
+    # lane that publishes a plugin, so the only environment carrying them.
     #
-    # `stable-promote` admits `main` ONLY. Note that a deployment branch policy
-    # evaluates THE WORKFLOW RUN'S REF, not the checkout: this run is dispatched on
-    # `main` while the `ref:` below checks out `inputs.tag`. `main` is therefore the
-    # correct policy, and a `v*` policy here would reject every promote.
+    # `stable-promote` admits `main` only. A deployment branch policy evaluates the
+    # workflow run's ref, not the checkout: this run is dispatched on `main` while
+    # the `ref:` below checks out `inputs.tag`. A `v*` policy here would reject every
+    # promote.
     #
-    # KEPT SEPARATE FROM `stable-rollback` even though both run from `main` and hold
-    # the same token value. A shared environment is exactly the coupling this split
-    # exists to remove: promote and rollback have opposite latency requirements, and
-    # merging them would mean any rule added for one silently gated the other - which
-    # is what happened when reviewers were added to the old shared `production` and
-    # quietly gated the edge publish and the break-glass rollback along with it.
+    # Separate from `stable-rollback`, though both run from `main` and hold the same
+    # token value. The two lanes have opposite latency requirements, and a shared
+    # environment is the coupling this split removes.
     #
-    # Not cryptographic separation: the same token value, with write access to the
-    # whole store, sits in all four lane environments. This changes WHO CAN REACH the
-    # credential and FROM WHICH REF, not what the credential can do.
+    # Not cryptographic separation: the same value, with write access to the whole
+    # store, sits in all four lane environments.
     environment:
       name: stable-promote
     permissions:
       contents: read
-      # One gate below queries the Actions API for this tag's release run.
+      # For the release-run check below.
       actions: read
     env:
       WEGO_CLI_TELEMETRY: "0"
     steps:
-      # `ref` is the PROMOTED TAG, not the default branch. The plugin publisher
-      # below reads the tag's own tree, so a default checkout would publish main's
-      # plugin content beside the tag's binaries. A promote is a pointer move onto
-      # ONE revision's bytes, and everything published beside them is part of that
-      # revision. (In wego-ai the same rule covered the skill body, which this
-      # repository ships embedded in the binary instead.)
+      # Check out the tag, not main. The plugin publisher reads the tag's tree.
+      # Consequence: every script in this job is the tag's version. A check that
+      # must work for a tag cut before the script existed is inline (see the agent
+      # probe below).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag }}
@@ -155,11 +140,8 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
 
-      # Shape-gate the typed tag before it reaches the store. This is the ONE input a
-      # human types in the whole release, so it is the one place a typo can enter:
-      # `validate-release-tag.ts` is the same authority the release lane uses, and
-      # `ring-rules.ts` refuses a prerelease on `stable` independently at publish
-      # time. Checked here so a bad tag costs one cheap step, not a Blob round trip.
+      # The tag is the only typed input. Same parser as the release lane. A
+      # prerelease is refused; `ring-rules.ts` refuses it again at publish time.
       - name: Validate the tag
         env:
           TAG: ${{ inputs.tag }}
@@ -173,31 +155,12 @@ jobs:
           esac
           echo "ok: $TAG is a plain release version."
 
-      # THE ROLLBACK TARGET, READ BEFORE IT IS OVERWRITTEN.
+      # Read what `cli/stable` serves before the move replaces it. Every failure
+      # message after the move names this as the rollback target.
       #
-      # Every failure message below this point tells an operator how to undo the
-      # move, and the right answer is ALWAYS "put back what was there" - which is
-      # knowable only now, because the move is what destroys it.
-      #
-      # THIS USED TO BE A HARDCODED `cli-v1.1.0` and that was a fossil. It was
-      # correct exactly once: at the relay cutover, when 1.1.0 WAS what `stable`
-      # served. Left as a literal it quietly became advice to downgrade the entire
-      # install base across every release since, for no reason - and to do it
-      # through the OTHER repository's lane.
-      #
-      # 1.1.0 IS NOT A UNIVERSAL FLOOR, which is the reasoning that made the
-      # literal look safe. A pre-relay 1.0.x machine never reads this pointer at
-      # all: the legacy bridge pin serves it the frozen `cli/cli-v1.1.0/` prefix
-      # whatever `stable` names. So the population a rollback reaches is 1.1.0 and
-      # newer, every member of which can verify any `wego/cli` release - and the
-      # least disruptive target for them is simply the one they were already on.
-      #
-      # WHICH LANE OWNS THE TAG follows from the version, because the tag GRAMMAR
-      # changed at the relay: wego-ai published `cli-vX.Y.Z` up to 1.1.0, wego/cli
-      # publishes `vX.Y.Z` from 1.2.0 on. This repository's promote would refuse a
-      # `cli-v` tag twice over - `validate-release-tag.ts` rejects the shape, and
-      # the release-run check queries THIS repository - so a message naming the
-      # wrong lane costs an operator the one thing they do not have.
+      # Tag grammar: wego-ai published `cli-vX.Y.Z` up to 1.1.0. This repository
+      # publishes `vX.Y.Z` from 1.2.0. The lane that can roll back follows from
+      # the version.
       - name: Record the rollback target (what cli/stable serves today)
         id: outgoing
         run: |
@@ -205,9 +168,6 @@ jobs:
           version=$(curl -fsSL 'https://api.wego.com/install?dl=VERSION&ring=stable' 2>/dev/null || true)
           version=$(printf '%s' "$version" | tr -d '\r\n')
           if [ -z "$version" ]; then
-            # First promote onto an empty ring, or the store is unreachable. Neither
-            # is a reason to stop - but every rollback line below must then say so
-            # rather than name a tag that does not exist.
             echo "tag=" >> "$GITHUB_OUTPUT"
             echo "how=NO ROLLBACK TARGET: cli/stable serves nothing today, so there is no previous build to put back." >> "$GITHUB_OUTPUT"
             echo "::warning::cli/stable currently serves no VERSION - rollback guidance in this run will say so."
@@ -222,27 +182,10 @@ jobs:
           echo "how=ROLL BACK: run $lane with tag=$tag." >> "$GITHUB_OUTPUT"
           echo "rollback target: $tag via $lane"
 
-      # A tag can exist - and `cli/<tag>/` can even be half-written - without the
-      # release lane ever having FINISHED. Promoting that would put bytes no release
-      # run ever verified in front of every install, which is the whole install base.
-      #
-      # `rollback-cli.yml` asks a related question of its own target a different
-      # way - it requires the tag's frozen prefix to be present and complete in the
-      # store - because a rollback target is a tag that was released and then
-      # superseded, and what a rollback needs to know is whether those bytes
-      # SURVIVED, not whether they were once produced.
-      #
-      # `branch=<tag>` is how the Actions API filters runs by ref name; a tag-push
-      # run is recorded under the tag's own name.
-      # `actions/github-script`, NOT `gh api`. Kept deliberately now that this runs
-      # on `ubuntu-latest`, which DOES ship `gh`: the original reason was the old
-      # self-hosted `github-runner-small` image, which carried no GitHub CLI on
-      # PATH, so `gh api` here exited 127 `gh: command not found` and took the whole
-      # promote down with it (wego/foundations#129, run 34609251560). That
-      # constraint is gone; the choice stays, because `release-cli.yml` reaches the
-      # API the same way and one shape across both lanes is worth more than the two
-      # lines `gh` would save. The job's `actions: read` is what authorises the
-      # listing.
+      # `cli/<tag>/` can exist half-written if the release lane did not finish.
+      # Require one completed, successful `release-cli.yml` run for this tag.
+      # `branch=<tag>` is how the Actions API filters a tag-push run.
+      # `github-script`, not `gh`: one shape across the lanes.
       - name: Require a completed, successful release run for the tag
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -268,24 +211,9 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
 
-      # foundations#101 rung 5(f). ASKED BEFORE THE RINGS MOVE, ON PURPOSE.
-      #
-      # The two plugin steps below exit 0 when the tag's tree carries no publisher.
-      # That guard is right - a promote must not hard-fail on a missing file after
-      # cli/stable has moved - but with REQUIRE_PUBLISH on it produces the one shape
-      # this workflow refuses everywhere else: a promote that published nothing and
-      # reported success. REQUIRE_PUBLISH cannot catch it, because the variable is
-      # read inside `publish-plugin.ts` and the guard fires before that script runs.
-      #
-      # So the question moves here, where "no" is free: nothing has moved yet.
-      #
-      # NO ROLLBACK ESCAPE HATCH IS NEEDED HERE ANY MORE. This used to warn rather
-      # than refuse when `allow_not_next` was set, because rolling back to a pre-lane
-      # tag is a recovery path that must never be blocked by a plugin repo. That case
-      # now lives in `rollback-cli.yml`, which publishes no plugin at all - the
-      # SKILL.md ships embedded in the binary and `update` reinstalls it after the
-      # swap, so a rollback needs nothing from `wego/skills`. A promote is always a
-      # forward move onto a tag that carries this lane, so the refusal is plain.
+      # With the flag on, the plugin steps below exit 0 for a tag whose tree has no
+      # publisher. That would move `stable` and then publish nothing, with a green
+      # run. Refuse before the move.
       - name: Refuse a tag whose tree cannot publish the plugin
         if: vars.SKILLS_PUBLISH_ENABLED == 'true'
         env:
@@ -303,53 +231,19 @@ jobs:
           echo "::error::$TAG has no plugin publish lane in its tree (missing:$missing) and SKILLS_PUBLISH_ENABLED is on. Refusing before cli/stable moves: promoting would move both rings and then skip the publish, which reports success for a promote that published nothing. If you meant to put cli/stable back on an EARLIER release, use rollback-cli.yml - it publishes no plugin and does not care."
           exit 1
 
-      # THE PROMOTE DECISION IS ABOUT A BUILD PEOPLE RAN, and that gate lives in the
-      # publisher (`--require-serving next`), not here.
-      #
-      # It has to, because of WHICH STORE it asks. A step here could only reach a
-      # `GET /install?dl=VERSION&ring=next`, which resolves against that deploy's own
-      # `CLI_DOWNLOAD_BASE_URL` — while the promote writes to the Blob origin the
-      # publisher discovers from `cli/<tag>/`. Nothing enforces that those are the
-      # same store, so a workflow-side gate can pass or refuse on a fact about the
-      # wrong place. The publisher already holds the origin it is about to write, so
-      # it is the only place the gate and the write are the same store by
-      # construction.
+      # "cli/next serves this tag" is enforced by the publisher
+      # (`--require-serving next` in "Advance cli/stable"), not by a step here. The
+      # publisher holds the store origin it writes to, so the gate and the write
+      # use the same store.
 
-      # THE PROMOTE GUARD (foundations#132, #134, #159 item 4). Refuse to move
-      # `stable` unless the legacy bridge pin is LIVE in front of it.
+      # 1.0.0 and 1.0.1 installs trust only wego-ai's signing identity. apps/api
+      # serves any `ring=stable` request with a `Bun/` user agent from the frozen
+      # `cli/cli-v1.1.0/` prefix (wego/foundations#132). Require that pin to answer
+      # before `stable` moves. Without it, those installs can never update again.
+      # There is no bypass input.
       #
-      # The guarantee this protects: every 1.0.0 and 1.0.1 install following
-      # `stable` reaches every later release with nothing but `wego update`, at any
-      # time, with no deadline and no reinstall. Those binaries trust only wego-ai's
-      # signing identity. The moment `stable` names a release signed under
-      # wego/cli's, they can no longer verify what `stable` points at — they refuse,
-      # fail-closed, and stay refusing. There is no later fix: a binary that cannot
-      # verify an update cannot be updated INTO one that can.
-      #
-      # So the pin has to already be answering before this pointer moves, and the
-      # only honest way to know that is to ASK api.wego.com the way an old binary
-      # asks it — with its user agent, for the object it actually fetches. A 1.0.x
-      # `wego update` sends `Bun/…` because the 1.0.x CLI never named itself; the
-      # pin keys on that prefix and nothing else. If the answer names the bridge
-      # prefix, an old binary is being served a release it can verify, and `stable`
-      # is free to move past it.
-      #
-      # **This refuses today, and that is correct.** The bridge does not exist until
-      # 3a publishes it and sets the two variables. It passes from the end of 3a on.
-      # There is deliberately no bypass input: a promote that needs to skip this is
-      # a promote that strands the 1.0.x install base.
-      #
-      # `rollback-cli.yml` does NOT carry this gate, and that is not an oversight. A
-      # 1.0.x machine never reads this pointer - the pin serves it the frozen prefix
-      # whatever `stable` names - so a rollback can neither strand those installs nor
-      # rescue them, and holding a rollback hostage to a pre-existing condition it
-      # cannot affect would only extend the outage. This lane makes the same argument
-      # about itself at `Verify the install base can reach this promote` below.
-      #
-      # Production, not the promote's own store origin, on purpose: unlike the
-      # `--require-serving next` gate below — which must ask the store it is about
-      # to write — this one is about what INSTALLED BINARIES are being served, and
-      # `api.wego.com` is the host every one of them resolves through.
+      # `rollback-cli.yml` does not carry this gate: a 1.0.x install never reads
+      # the pointer a rollback moves.
       - name: Require the legacy bridge pin to be live
         run: |
           set -euo pipefail
@@ -364,30 +258,10 @@ jobs:
           echo "::error::the legacy bridge pin is NOT live: a Bun/ user agent asking for stable is answered with '${loc:-no location header}', which does not name /cli/cli-v1.1.0/. Moving cli/stable now would strand every 1.0.0 and 1.0.1 install that follows it, permanently and unrecoverably. Publish the bridge and set CLI_LEGACY_BRIDGE_RING + CLI_LEGACY_BRIDGE_TAG on the production apps/api deploy first (wego/foundations#132)."
           exit 1
 
-      # THE SAME CLAIM, ACTUALLY WALKED - still before the move.
-      #
-      # The probe above reads ONE HEADER. It proves the pin points somewhere, not
-      # that anything is there: it never downloads the frozen prefix, never checks
-      # the wego-ai-signed record beside it, and never runs a binary. A collected
-      # object or an expired certificate passes it and strands every 1.0.x install.
-      #
-      # HOP 1 IS FROZEN AT BOTH ENDS, which is what makes this hoistable. A 1.0.1
-      # binary asking ring `stable` is intercepted by the pin before `stable` is
-      # ever consulted, so where that pointer happens to be aimed is irrelevant to
-      # the hop - and a real walk of it does not need the promote to have happened.
-      # There is no reason to learn this after the move, and every reason not to.
-      #
-      # THE DESTINATION IS THE OUTGOING RELEASE, deliberately. The walk runs the
-      # WHOLE 1.0.x route - pin, frozen prefix, then the live pointer - against the
-      # ring as it stands right now, so it converges on what `stable` serves today
-      # (recorded at `Record the rollback target`). It therefore proves the route's
-      # MECHANICS are sound; that the route's second hop can carry the NEW bytes is
-      # what `Require the install base to be able to reach this tag` proves against
-      # `cli/next`. Between them every part is covered before the pointer moves, and
-      # only their COMPOSITION against the new pointer is left for after.
-      #
-      # Skipped when `stable` serves nothing - a first promote onto an empty ring
-      # has no route to walk and nothing to converge on.
+      # The probe above reads one header. This step drives a real 1.0.1 binary
+      # through the pin, the frozen prefix and the live pointer, to the release
+      # `stable` serves today. It proves the route, not the new tag. Skipped when
+      # `stable` is empty.
       - name: Walk the pre-relay route before moving anything
         if: steps.outgoing.outputs.version != ''
         env:
@@ -410,31 +284,21 @@ jobs:
           fi
           echo "ok: the full 1.0.1 -> 1.1.0 -> stable route works against the outgoing release."
 
-      # THE COMPLEMENT OF THE PROBE ABOVE, and the check whose absence shipped
-      # v1.2.0 (wego/cli#25).
+      # The complement of the pin probe. The tag's binary must not send a `Bun/`
+      # user agent, or the pin claims it and it can never update. v1.2.0 shipped
+      # that way (wego/cli#25).
       #
-      # That probe asserts OLD binaries ARE pinned. This asserts the binary about
-      # to go in front of everybody is NOT - by measuring the user agent it
-      # actually sends and asking the real route what it does with it.
+      # Part 1: record the agent with a loopback listener, then ask the real route
+      # what it does with that agent. Part 2: run a real `update` against
+      # `cli/next`, which serves this tag; the expected result is "up to date".
+      # Part 2 does not use `stable`: during the migration `stable` served a
+      # wego-ai tag that no wego/cli binary accepts, so an outcome test there fails
+      # for a reason unrelated to the candidate (wego/cli#29).
       #
-      # REWRITTEN 2026-09-14 after the first version blocked a safe promote.
-      # That version ran a real `wego update` against live `stable`, on the
-      # premise that a correct binary would update onto the outgoing release.
-      # The premise is false across a repository migration: `stable` served
-      # wego-ai's `cli-v1.1.0`, and wego/cli's RELEASE_TAG_IDENTITY matches
-      # `wego-ai/...@refs/tags/vX.Y.Z` - never `cli-vX.Y.Z` - so ANY wego/cli
-      # binary refuses it, pinned or not. Exit 6 from the pin and exit 6 from a
-      # tag-shape mismatch are indistinguishable, so the outcome test cannot
-      # answer the question it was asked. Measure the agent instead: that IS the
-      # pin's whole input, and it is knowable before the pointer moves.
-      #
-      # The outcome test still exists, AFTER the move, where `stable` serves a
-      # release this binary can verify and a successful round trip means what it
-      # says.
-      #
-      # DELIBERATELY INLINE, not a script in `scripts/`: this job checks out the
-      # TAG's tree, so a script-based check would silently skip on every tag cut
-      # before it existed - including the tags it most needs to refuse.
+      # The same check runs in `.github/actions/verify-build` before publication.
+      # It is repeated here because the route can change between release and
+      # promote. Inline, not a script: this job runs the tag's tree, and older tags
+      # do not carry the script.
       - name: Require this tag's binary to be distinguishable from a pre-relay install
         env:
           TAG: ${{ inputs.tag }}
@@ -444,9 +308,7 @@ jobs:
           work="$RUNNER_TEMP/agent-probe"; rm -rf "$work"
           mkdir -p "$work/bin" "$work/home/.config/wego"
 
-          # `--require-serving next` in `Advance cli/stable` owns this rule, but it
-          # runs AFTER this step, so a mismatch would surface here as a bare curl
-          # error. Say it plainly and point at the gate that owns it.
+          # `--require-serving next` owns this rule but runs later. Say it here.
           served=$(curl -fsSL "$url?dl=VERSION&ring=next" || true)
           if [ "$served" != "${TAG#v}" ]; then
             echo "::error::cli/next serves '${served:-nothing}', not ${TAG#v}, so the bytes this gate would test are not $TAG's. Promote the build that ring has been running. To put cli/stable back on an EARLIER release, use rollback-cli.yml."
@@ -458,22 +320,15 @@ jobs:
           fi
           chmod +x "$work/bin/wego"
 
-          # A listener that records the agent and 404s. The 404 is fine: the agent
-          # goes out on the FIRST request, which is all this needs.
-          #
-          # `bun -e`, not a heredoc: a heredoc body inside a YAML block scalar
-          # carries the block's indentation into the file and has to be stripped
-          # back out, which is a silent breakage waiting to happen in a lane
-          # nothing lints.
+          # A listener that records the agent and answers 404. `bun -e`, not a
+          # heredoc: a heredoc inside a YAML block scalar carries the indentation.
           : > "$work/agent.txt"
           AGENT_FILE="$work/agent.txt" bun -e 'const out=Bun.file(process.env.AGENT_FILE).writer();Bun.serve({hostname:"127.0.0.1",port:8977,fetch(r){out.write((r.headers.get("user-agent")??"")+"\n");out.flush();return new Response("probe",{status:404});}});' &
           LPID=$!
           sleep 2
 
-          # THE BINARY MUST BE NAMED `wego`: the config directory is derived from
-          # the name it is invoked as, so `wego-linux-x64` looks for
-          # `.config/wego-linux-x64/`, finds no install record, and exits without
-          # touching the network - a green check that measured nothing.
+          # The binary must be named `wego`. The config directory follows the
+          # invoked name.
           printf '{"ring":"stable","installUrl":"http://127.0.0.1:8977/install"}\n' \
             > "$work/home/.config/wego/install.json"
           set +e
@@ -483,9 +338,7 @@ jobs:
           kill "$LPID" 2>/dev/null || true
           echo "$out"
 
-          # `update` returns 0 without acting for a dev-versioned or from-source
-          # binary (update.ts:364), so a check that tolerated an empty result
-          # would pass having measured nothing.
+          # `update` exits 0 without a request for a dev-versioned binary.
           if printf '%s' "$out" | grep -q 'Self-update applies to installed release binaries'; then
             echo "::error::$TAG's binary does not consider itself a release build, so it never made a request and this check measured NOTHING. It was built without WEGO_BUILD_VERSION."
             exit 1
@@ -497,13 +350,13 @@ jobs:
           fi
           echo "$TAG's binary sends: $agent"
 
-          # The pin's own predicate, applied to the measured value.
+          # The pin's own predicate.
           if printf '%s' "$agent" | grep -qiE '^bun/'; then
             echo "::error::$TAG's binary sends '$agent', which apps/api's legacy bridge pin treats as a pre-relay 1.0.x install. Promoting it would pin every install of this build to the frozen bridge, whose record it cannot verify - it could never update again. That is exactly what v1.2.0 shipped (wego/cli#25)."
             exit 1
           fi
 
-          # And the real route's actual decision, which is the claim that matters.
+          # The real route's decision for this agent.
           loc=$(curl -sI -A "$agent" "$url?dl=SHA256SUMS.txt&ring=stable" \
                   | grep -i '^location:' || true)
           if printf '%s' "$loc" | grep -q '/cli/cli-v1.1.0/'; then
@@ -512,28 +365,7 @@ jobs:
           fi
           echo "ok: $TAG's binary is not claimed by the pin. $loc"
 
-          # SECOND QUESTION, DIFFERENT TARGET. The check above asks what the PIN
-          # does with this binary, and the pin's only input is the agent - so a
-          # HEAD request answers it completely.
-          #
-          # This asks whether the binary can actually COMPLETE an update: route,
-          # signed-record verification, manifest coverage, hash comparison,
-          # replace. That needs a ring serving bytes this binary can verify, and
-          # `cli/next` is serving this very tag - so the correct outcome is
-          # "already up to date".
-          #
-          # NOT `stable`, which is what the first version of this gate got wrong.
-          # `stable` is where the pin lives but it may hold a release this binary
-          # cannot verify at all - during this migration it held wego-ai's
-          # `cli-v1.1.0`, which no wego/cli binary accepts (wego/cli#29) - so an
-          # outcome test there fails for a reason that has nothing to do with the
-          # candidate. Two questions, two targets; conflating them blocked a safe
-          # promote of v1.2.1.
-          #
-          # The release lane runs this same assertion before the tag ships. It is
-          # repeated here because the promote is a later decision: `cli/next` or
-          # the store could have moved in between, and this is the last moment
-          # before the pointer does.
+          # Part 2: a full update against cli/next.
           rm -rf "$work/outcome"; mkdir -p "$work/outcome/bin" "$work/outcome/home/.config/wego"
           cp "$work/bin/wego" "$work/outcome/bin/wego"
           printf '{"ring":"next","installUrl":"%s"}\n' "$url" \
@@ -554,58 +386,15 @@ jobs:
           fi
           echo "ok: $TAG's binary completes a real update against cli/next and reports itself current."
 
-      # THE LAST GATE BEFORE THE POINTER MOVES, and the one the install base
-      # depends on. Everything above asks what THIS TAG'S BINARY can do. This asks
-      # the opposite and more important question: can the binaries people are
-      # ALREADY RUNNING arrive at it.
+      # Two checks, both before the move.
       #
-      # IT MUST BE HERE, NOT BELOW. Advancing `cli/stable` is the irreversible act
-      # in this lane - the moment it lands, every install following that pointer is
-      # offered these bytes, and a machine that updates before anyone notices has
-      # already left. A rollback re-points the ring; it cannot un-update a laptop.
-      # So the question has to be answered while the answer can still stop the move.
-      #
-      # 1.1.0 IS THE WHOLE INSTALL BASE, in one binary. Every machine at or below
-      # it converges through 1.1.0: a pre-relay 1.0.x asking `stable` is claimed by
-      # the legacy bridge pin (wego/foundations#132), served the frozen
-      # `cli/cli-v1.1.0/` prefix, and becomes 1.1.0 before it ever reads the live
-      # pointer. So 1.0.1's second hop IS this test, and its first hop is asserted
-      # by `Require the legacy bridge pin to be live` above - also before the move.
-      # Between them the full 1.0.1 -> 1.1.0 -> stable chain is proven while
-      # `cli/stable` still points at the old release.
-      #
-      # IT DRIVES `next` BECAUSE `next` IS ALREADY THESE BYTES. The promote below
-      # refuses to run unless `cli/next` serves this tag (`--require-serving next`),
-      # and the byte-identity proof after it confirms the copy changed nothing. So
-      # `cli/next` right now holds exactly what `cli/stable` is about to hold -
-      # which is the only way to test the destination before it exists.
-      #
-      # The predecessor is the immutable `cli/cli-v1.1.0/` artifact, so a re-run
-      # always starts from the same genuine 1.1.0 and can never drift forward to
-      # meet the destination and pass having exercised nothing.
-      # WHAT WE TEST MUST BE WHAT LANDS, AND IT MUST BE COMPLETE.
-      #
-      # Two assumptions were being made silently, and both are the difference
-      # between prevention and luck.
-      #
-      # ONE: the gate below drives a real binary, and a real binary can only reach
-      # bytes through a ring the deploy resolves - so it necessarily tests
-      # `cli/next`. But the promote copies `cli/<tag>/`. Those are different
-      # objects, and `--require-serving next` compares VERSION STRINGS, not bytes.
-      # Normally they are identical, because `cli/next` was itself copied from
-      # `cli/<tag>/` - but "normally" is exactly what a gate is supposed to stop
-      # relying on. Proving the two manifests equal here makes the walk below
-      # transitively a test of the bytes that will actually be copied onto stable.
-      #
-      # TWO: nothing anywhere asserts WHICH platforms a release contains.
-      # `verify-published.sh all` checksums "every asset listed in SHA256SUMS.txt"
-      # - so a build matrix that silently stopped emitting, say, darwin-arm64 would
-      # produce a shorter manifest, pass every existing check, promote cleanly, and
-      # strand every Apple-silicon install with no asset to download. The set is
-      # pinned here, and a NEW platform fails this too: adding one should be a
-      # deliberate edit, not something a ring discovers on the way past.
-      #
-      # Both run BEFORE the move, so either failure costs a re-run, not a rollback.
+      # 1. `cli/next` and `cli/<tag>/` must hold identical manifests. The gates test
+      #    `next`; the promote copies `cli/<tag>/`. `--require-serving` compares
+      #    version strings, not bytes.
+      # 2. `cli/<tag>/` must carry exactly the asset set below. `verify-published.sh`
+      #    checks only what the manifest lists, so a build that stopped emitting a
+      #    platform would pass it. The list is a literal on purpose. A new platform
+      #    must update it.
       - name: Require the bytes that will land to be the bytes under test
         env:
           TAG: ${{ inputs.tag }}
@@ -622,17 +411,14 @@ jobs:
           curl -fsSL "$origin/cli/$TAG/SHA256SUMS.txt" > "$RUNNER_TEMP/tag.sums"
           curl -fsSL "$origin/cli/next/SHA256SUMS.txt" > "$RUNNER_TEMP/next.sums"
 
-          # Sorted: both manifests come from separate `sha256sum *` runs and the
-          # glob's order is not a promise. The SET of name→digest pairs is the claim.
+          # Sorted: the manifests come from separate `sha256sum *` runs.
           if ! diff -u <(sort "$RUNNER_TEMP/next.sums") <(sort "$RUNNER_TEMP/tag.sums"); then
             echo "::error::cli/$TAG and cli/next do not hold identical bytes. The gate below tests cli/next, but the promote copies cli/$TAG - so promoting now would ship bytes nothing has exercised. cli/next was supposed to BE this tag; find out what republished one of them."
             exit 1
           fi
           echo "ok: cli/next is byte-identical to cli/$TAG, so testing next tests what will be copied."
 
-          # Every platform this project ships, raw and gzipped, plus VERSION.
-          # Kept as a literal on purpose: it is the assertion, not a derivation
-          # from the thing being asserted.
+          # Every platform, raw and gzipped, plus VERSION.
           expected='VERSION
           wego-darwin-arm64
           wego-darwin-arm64.gz
@@ -652,20 +438,11 @@ jobs:
           fi
           echo "ok: cli/$TAG carries every expected platform, raw and gzipped."
 
-      # THE ANTI-BRICK GATE, RE-ASKED AT THE STABLE DECISION.
-      #
-      # `release-cli.yml` proved this binary can really replace itself before it
-      # published anything. The bytes have not changed since - the tag prefix is
-      # immutable - but the WORLD has: `apps/api` may have deployed, a signing
-      # certificate may have aged out, an object may have been collected. The
-      # release gate proved the build; this proves the build AND today's route,
-      # at the last moment before every install is pointed at it.
-      #
-      # `cli/stable` still serves the outgoing release, so pointing this tag's
-      # binary at it exercises the full download-decompress-verify-replace path
-      # for real, exactly as the release lane did. A build that cannot leave must
-      # never become `stable`: those machines cannot be rescued by a rollback,
-      # because a binary that cannot update cannot take one.
+      # The anti-brick gate, repeated at the stable decision. The release lane
+      # proved this before publication. The bytes are unchanged; the route and the
+      # store may have changed. Pointed at `stable`, which serves the outgoing
+      # release, so a real byte swap happens. A build that cannot update cannot take
+      # a rollback either.
       - name: Require this tag's binary to be able to update itself for real
         env:
           TAG: ${{ inputs.tag }}
@@ -695,14 +472,17 @@ jobs:
           fi
           echo "ok: $TAG's binary performs a real self-replace against today's route - it can leave."
 
+      # The last gate before the move. Can the installed population arrive at this
+      # tag? 1.1.0 is the hinge: the bridge pin lands every 1.0.x install on 1.1.0
+      # first. Drives a real 1.1.0 binary onto `cli/next`, which holds the bytes
+      # `stable` is about to serve. The predecessor is the frozen `cli/cli-v1.1.0/`
+      # artifact, so a re-run always starts from the same binary.
       - name: Require the install base to be able to reach this tag
         env:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          # The origin is read from the deploy rather than hardcoded, exactly as
-          # the pin probe above does: nothing in this lane names a store host.
           loc=$(curl -sI 'https://api.wego.com/install?dl=SHA256SUMS.txt&ring=next' \
                 | tr -d '\r' | sed -n 's/^[Ll]ocation: //p')
           origin=${loc%/cli/next/SHA256SUMS.txt}
@@ -717,10 +497,9 @@ jobs:
           fi
           echo "ok: a 1.1.0 install reaches $version on the bytes cli/stable is about to serve."
 
-      # THE MOVE. A server-side copy of the frozen cli/<tag> blobs onto cli/stable.
-      # REQUIRE_PUBLISH: an absent token must FAIL here rather than exit 0 having
-      # promoted nothing - a "successful" promote that moved no pointer would read as
-      # shipped when the whole install base is still on the old build.
+      # The move: a server-side copy of `cli/<tag>/` to `cli/stable`.
+      # `--require-serving next`: refuse unless `cli/next` serves this tag.
+      # REQUIRE_PUBLISH: a missing token fails instead of exit 0.
       - name: Advance cli/stable
         id: promote
         env:
@@ -731,8 +510,7 @@ jobs:
           set -euo pipefail
           bun run scripts/upload-release-blob.ts --promote "$TAG" --to stable --require-serving next
 
-      # Verify the ring now serves this version, every asset hash-checked against the
-      # manifest it just committed to.
+      # Hash-check every asset on the ring against the manifest it now serves.
       - name: Verify cli/stable
         if: steps.promote.outputs.store_origin != ''
         env:
@@ -740,18 +518,8 @@ jobs:
           VERSION: ${{ inputs.tag }}
         run: sh scripts/verify-published.sh "$BASE" "${VERSION#v}" all
 
-      # THE BYTE-IDENTITY PROOF the issue's End state asks for: `SHA256SUMS.txt` read
-      # from BOTH rings and compared at promote time.
-      #
-      # This is the claim the whole design rests on - that what the candidate group
-      # exercised is exactly what everyone receives - and it is checkable in one line
-      # precisely because a promote is a copy. If these ever differ, something
-      # rebuilt, and the rebuild is the bug.
-      #
-      # UNCONDITIONAL, now that this lane has no rollback mode. It used to be skipped
-      # under `allow_not_next`, because a rollback deliberately puts `stable` on a
-      # different build from `next`. A rollback is `rollback-cli.yml`'s job, and it
-      # makes no such claim.
+      # The claim the design rests on: what the candidate group ran is what everyone
+      # receives. A difference means something rebuilt.
       - name: Prove cli/next and cli/stable are byte-identical
         if: steps.promote.outputs.store_origin != ''
         env:
@@ -760,9 +528,7 @@ jobs:
           set -euo pipefail
           curl -fsSL "$ORIGIN/cli/next/SHA256SUMS.txt"   > "$RUNNER_TEMP/next.sums"
           curl -fsSL "$ORIGIN/cli/stable/SHA256SUMS.txt" > "$RUNNER_TEMP/stable.sums"
-          # `sort` because the manifests are generated by separate `sha256sum *` runs
-          # and the shell glob's order is not a promise; the SET of name→digest pairs
-          # is the claim, not the line order.
+          # Sorted: the manifests come from separate `sha256sum *` runs.
           if ! diff -u <(sort "$RUNNER_TEMP/next.sums") <(sort "$RUNNER_TEMP/stable.sums"); then
             echo "::error::cli/next and cli/stable do not serve identical bytes. A promote is a server-side COPY of the frozen cli/<tag> blobs, so this can only mean something rebuilt between publish and promote. Do not paper over it - find the rebuild."
             exit 1
@@ -770,32 +536,15 @@ jobs:
           echo "ok: cli/next and cli/stable serve byte-identical artifacts."
           cat "$RUNNER_TEMP/stable.sums"
 
-      # THE BARRIER THIS LANE NEVER HAD - and whose absence rolled back a good
-      # v1.3.0 (run 35108775349).
+      # The publisher copies the signed record and the manifest as two writes, and
+      # `waitChannelConsistent` polls only `cli/<ring>`, not `cli-sig/<ring>`. Ring
+      # objects have `cacheControlMaxAge` 60 s, so the route can serve the new
+      # manifest with the old record for up to 60 s. A client that fetches both
+      # refuses. Run 35108775349 rolled back a good v1.3.0 for that reason.
       #
-      # `upload-release-blob.ts` copies the signed record and then the manifest as
-      # two adjacent writes, and `waitChannelConsistent` polls ONLY `cli/<ring>`:
-      # it settles the manifest and every binary and never reads `cli-sig/<ring>`
-      # at all. So `--promote` reports the channel advanced while the record can
-      # still be served from an edge holding the PREVIOUS tag's copy for the rest
-      # of its 60s `cacheControlMaxAge`. A client that fetches the new manifest
-      # next to the old record refuses - correctly, and fail-closed - and the step
-      # below read that refusal as a reason to roll back a release that was fine.
-      #
-      # BYTES, NOT CRYPTO. The claim is "does the route serve, for `stable`, what
-      # the frozen `cli/<tag>` prefix holds" - a plain `cmp`. Re-deriving the
-      # record's digest binding here would be a second implementation of
-      # `release-signing/signature.ts` in shell, untested and free to drift the
-      # moment the bundle shape does. The tag prefix's own internal consistency is
-      # already proven by the release lane, so byte-equality with it is enough.
-      #
-      # THROUGH `/install`, not the store origin, because that is the route the
-      # step below drives and the one every install resolves through: it covers
-      # `apps/api`'s own layer, which a direct-to-store poll does not.
-      #
-      # REMOVE THIS, and the retry below, once ring resolution moves into
-      # `apps/api` - a ring becomes ONE pointer at an immutable `cli/<tag>`
-      # prefix, there is no second object to settle, and nothing here to wait for.
+      # Wait until both objects, read through `/install`, match the frozen prefix
+      # byte for byte. Bounded: 12 x 10 s. Remove this step, and the retry below,
+      # when ring resolution moves into apps/api and a ring becomes one pointer.
       - name: Wait for cli/stable to be coherent through the install route
         if: steps.promote.outputs.store_origin != ''
         env:
@@ -827,15 +576,12 @@ jobs:
           echo "::error::cli/stable did not become coherent through the install route within 120s: the manifest and the signed record it serves for ring stable do not both match the frozen $TAG prefix. Every client that fetches them together will refuse to install, fail-closed. $ROLLBACK"
           exit 1
 
-      # THE "LEAVING" TEST. The pre-move gate proved this binary can update
-      # against the OUTGOING stable. This proves the state we just created is
-      # self-consistent: a binary of the version now on `stable`, asking
-      # `stable`, must report it is already current.
+      # A binary taken from `stable` must report "up to date" against `stable`.
       #
-      # Post-move on purpose, and safe to be: it asserts a property of the ring
-      # as it now stands, which cannot be known before the move. The gate that
-      # must never fail late is the pre-move one above; this is verification,
-      # the same role `Verify cli/stable` plays.
+      # Exit 5 with "for a different manifest" is the CLI's retryable verdict for
+      # a ring mid-flip (`update.ts` EXIT.RETRYABLE). Retry up to 8 x 15 s. Any
+      # other exit 5 is not retried. The wait above should make retries 0; any
+      # retry gets a warning so a growing window is visible.
       - name: Verify a promoted binary reports itself current
         if: steps.promote.outputs.store_origin != ''
         env:
@@ -851,27 +597,6 @@ jobs:
           printf '{"ring":"stable","installUrl":"%s"}\n' "$url" \
             > "$work/home/.config/wego/install.json"
 
-          # EXIT 5 IS NOT A VERDICT ON THIS BUILD - it is the CLI's own "try again"
-          # (update.ts:550 returns EXIT.RETRYABLE; update.test.ts:775 pins it). It
-          # is what a ring mid-flip serves, and it clears on its own. Run
-          # 35108775349 rolled back a good v1.3.0 because `[ "$code" -ne 0 ]`
-          # could not tell that apart from a build nobody can install.
-          #
-          # ONLY the propagation case. `signature.ts` returns `inconsistent` - and
-          # so exit 5 - for TWO conditions: a record for a different manifest
-          # (settles) and a record whose signature does not verify (never does).
-          # Retrying the second would burn two minutes before reporting a corrupt
-          # record, so the MESSAGE, not the code alone, gates the retry.
-          #
-          # BOUNDED at 8 x 15s = 120s, comfortably past the 60s
-          # `cacheControlMaxAge` on the ring's objects. Past that the propagation
-          # theory is dead and the failure is real.
-          #
-          # The barrier above should make this fire zero times; it is here for the
-          # edge IT cannot speak for - the two steps resolve `api.wego.com`
-          # independently and need not land on the same POP. Any retry at all is
-          # therefore worth a warning rather than silence: it is how a growing
-          # window becomes visible instead of absorbed.
           attempt=0
           while :; do
             set +e
@@ -907,31 +632,12 @@ jobs:
           fi
           echo "ok: a binary from cli/stable asks stable and is told it is current."
 
-      # THE REAL ROUTE, WALKED ONCE THE DESTINATION EXISTS.
+      # Verification, not a gate. The pre-move gate drove `next`; this drives
+      # `stable`, the pointer every install follows. 1.1.0 in one hop. 1.0.1 in two
+      # hops through the frozen bridge; `--via` pins the route.
       #
-      # VERIFICATION, NOT A GATE - the gate is `Require the install base to be able
-      # to reach this tag`, which ran before the move and could still stop it. This
-      # is the same claim re-asked against the thing itself rather than its
-      # stand-in: the gate drove `cli/next`, which HOLDS these bytes; this drives
-      # `cli/stable`, which IS the pointer every install follows, through the
-      # legacy bridge pin that only exists on that ring.
-      #
-      # So this is the one and only place 1.0.1's actual two-hop journey runs end
-      # to end: pin -> frozen `cli/cli-v1.1.0/` -> live pointer. It cannot run
-      # earlier, because 1.0.1 refuses every `wego/cli` signature and so can reach
-      # no ring but the pinned one, and that ring did not serve this tag until the
-      # step above moved it.
-      #
-      # `--via 1.1.0` pins the ROUTE, not just the arrival. A 1.0.1 that reached
-      # the new version by some other path would converge and pass silently, and
-      # the path is the thing under test: if the pin ever stops claiming a
-      # pre-relay agent, this is what says so.
-      #
-      # A failure here means the pre-move gate was satisfied and the post-move
-      # reality is not - so the fault is in the move itself or in the pin, not in
-      # the build. The rollback line comes from `Record the rollback target`,
-      # which read what `stable` served BEFORE this run overwrote it; see that
-      # step for why the target is the previous release and not a fixed version.
+      # A 1.0.1 failure is not fixed by a rollback: that install never reads this
+      # pointer. Fix apps/api or the frozen prefix instead.
       - name: Verify the install base can reach this promote
         if: steps.promote.outputs.store_origin != ''
         env:
@@ -942,20 +648,12 @@ jobs:
           set -euo pipefail
           version="${TAG#v}"
 
-          # 1.1.0 - the relay release. One hop: it trusts `wego/cli`'s signing
-          # identities, so it reads the live pointer directly.
           if ! sh scripts/upgrade-path.sh \
                  "$ORIGIN/cli/cli-v1.1.0/wego-linux-x64" stable "$version" --max-hops 1; then
             echo "::error::a 1.1.0 install cannot reach $TAG on cli/stable. Every install at or below 1.1.0 - including every 1.0.x machine, which lands on 1.1.0 first - is now stranded on the pointer this promote just moved. $ROLLBACK"
             exit 1
           fi
 
-          # 1.0.1 - pre-relay. Two hops, through the frozen bridge.
-          #
-          # A rollback does NOT rescue this one. A 1.0.x machine never reads this
-          # pointer - the pin serves it the frozen prefix whatever `stable` names -
-          # so if this fails, the fault is the pin or the frozen prefix, and putting
-          # the old release back changes nothing for the machines affected.
           if ! sh scripts/upgrade-path.sh \
                  "$ORIGIN/cli/cli-v1.0.1/wego-linux-x64" stable "$version" \
                  --via 1.1.0 --max-hops 2; then
@@ -964,12 +662,12 @@ jobs:
           fi
           echo "ok: both 1.0.1 and 1.1.0 installs converge on $version."
 
-      # NO skill steps. The skill channel did not move to this repository: the
-      # SKILL.md ships embedded in the binary, and `update` re-runs the new
-      # binary's `skill install --owned-only` after it swaps. In wego-ai this job
-      # advanced `skill/stable` beside `cli/stable`, and `release-cli.yml` advanced
-      # `skill/next` beside `cli/next`.
+      # No skill steps. The SKILL.md ships inside the binary, and `update` runs
+      # `skill install --owned-only` after the swap.
 
+      # Skipped when the flag is off. Without this guard the publish step ran with
+      # no token and REQUIRE_PUBLISH, and failed after `stable` had moved
+      # (wego/foundations#129, run 34610149769).
       - name: Mint the plugin publish token
         id: plugin-token
         if: steps.promote.outputs.store_origin != '' && vars.SKILLS_PUBLISH_ENABLED == 'true'
@@ -981,101 +679,40 @@ jobs:
           repositories: skills
           permission-contents: write
 
-      # The `SKILLS_PUBLISH_ENABLED` guard belongs on THIS step too, not only on
-      # the two above it. Without it the flag is half-honoured: with the flag off,
-      # `Refuse a tag whose tree cannot publish the plugin` and `Mint the plugin
-      # publish token` skip, so `steps.plugin-token.outputs.token` is empty — and
-      # then this step runs anyway with `REQUIRE_PUBLISH: true`, the script reports
-      # `SKILLS_PUBLISH_TOKEN is unset - skipping the skill publish`, and exits 1.
-      # The promote goes red AFTER `cli/stable` has already advanced and been
-      # verified, which is the worst possible place to fail: the ring moved, the
-      # run says failure. Observed in wego/foundations#129, run 34610149769.
+      # The steps are main's; the tree is the tag's. A tag cut before this lane
+      # existed has no publisher script. Skip, do not fail after the move.
       #
-      # `REQUIRE_PUBLISH: 'true'` stays. It is right when the flag is ON — a skip
-      # there would be a promote that silently published nothing.
+      # Credential handling: `http.extraheader` through `GIT_CONFIG_COUNT`, never a
+      # token in the remote URL (the publisher prints the remote). The base64 value
+      # is masked because Actions masks only the raw token. The header matches every
+      # github.com URL, so run no other git command in this step.
       - name: Publish the plugin repo
         if: steps.promote.outputs.store_origin != '' && vars.SKILLS_PUBLISH_ENABLED == 'true'
         env:
           SKILLS_PUBLISH_TOKEN: ${{ steps.plugin-token.outputs.token }}
           REQUIRE_PUBLISH: 'true'
         run: |
-          # THE WORKFLOW IS main'S; THE TREE IS THE TAG'S. This job checks out
-          # `ref: inputs.tag`, but a workflow_dispatch runs the step definitions
-          # from the default branch - so a promote of any tag cut before this
-          # lane landed runs THESE steps against a tree that does not contain
-          # its scripts. Without this guard that is a hard failure on a missing
-          # file, AFTER cli/stable and skill/stable have already moved, which is
-          # the one thing this workflow's own comments say must never happen.
           if [ ! -f "scripts/publish-plugin.ts" ]; then
             echo "scripts/publish-plugin.ts is not in this tag's tree - skipping."
             exit 0
           fi
           if [ -n "${SKILLS_PUBLISH_TOKEN:-}" ]; then
-            # `http.extraheader`, NOT a token in the remote URL. The publisher
-            # prints the remote in three places, one of them a `git clone` line
-            # an operator is told to paste; a URL-embedded token would ride into
-            # all three, and a pasteable command containing `***` is a broken
-            # command rather than a safe one.
             AUTH=$(printf 'x-access-token:%s' "$SKILLS_PUBLISH_TOKEN" | base64 | tr -d '\n')
-            # The base64 is a DERIVED value: Actions masks the token it minted,
-            # not this encoding of it, so a verbose git trace would otherwise
-            # print the header in clear.
             echo "::add-mask::$AUTH"
-            # THE CREDENTIAL NEVER TOUCHES DISK. `GIT_CONFIG_COUNT` injects
-            # config into git's process environment, so there is no file to
-            # leak, nothing to clean up, and nothing left behind when a run is
-            # killed before its cleanup step. On `ubuntu-latest` the VM is
-            # destroyed with the job, so a leaked `$HOME` is no longer the durable
-            # exposure it was on the self-hosted image this lane used to run on -
-            # but the technique costs nothing, this repo already records that a run
-            # killed by a timeout or an OOM never reaches its own cleanup
-            # (post-deploy-staging-smoke.yml), and keeping it is what makes the step
-            # safe to run on any runner.
-            #
-            # It ADDS to the runner's real config rather than replacing it, which
-            # `GIT_CONFIG_GLOBAL` does not: measured, redirecting that variable
-            # hides `~/.gitconfig` entirely, `init.defaultBranch` included - and
-            # which branch `git push origin HEAD` resolves to on an empty remote
-            # is the one failure rung 4b's read-back exists to catch, so this
-            # lane must not quietly change its inputs.
-            #
-            # Measured: the injected key is visible to git, the real global
-            # config is still visible beside it, `~/.gitconfig` is untouched,
-            # and the value survives into the `git` that `bun` spawns.
             export GIT_CONFIG_COUNT=1
             export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
             export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH"
-            # `http.<url>.extraheader` matches by URL PREFIX, so this
-            # write-scoped token would attach to ANY github.com git command that
-            # ran later in this step. Nothing else here runs git - keep it that
-            # way, or scope the header to the exact remote first.
             export SKILLS_PLUGIN_REPO="https://github.com/wego/skills.git"
           fi
           bun run scripts/publish-plugin.ts
 
-      # foundations#101 rung 4b. The publish above proves the repo holds only
-      # paths the plan names; it never reads back what those paths CONTAIN. This
-      # does, from an independent clone - the only vantage point that can see a
-      # push which landed on a branch the clone does not check out, which exits 0
-      # in the step above and leaves the channel empty.
-      #
-      # It builds its own credential rather than inheriting one: the publish
-      # step's lives only in that step's process environment, so there is
-      # nothing to reuse and nothing left behind if this step is removed.
-      # Same guard, same reason: with the flag off there is no token and nothing
-      # was published, so there is nothing to verify.
+      # Read back from an independent clone. The publish step proves the paths; this
+      # proves the content. Same guard and same credential handling as above.
       - name: Verify the plugin repo
         if: steps.promote.outputs.store_origin != '' && vars.SKILLS_PUBLISH_ENABLED == 'true'
         env:
           SKILLS_PUBLISH_TOKEN: ${{ steps.plugin-token.outputs.token }}
         run: |
-          # THE WORKFLOW IS main'S; THE TREE IS THE TAG'S. This job checks out
-          # `ref: inputs.tag`, but a workflow_dispatch runs the step definitions
-          # from the default branch - so a promote of any tag cut before this
-          # lane landed runs THESE steps against a tree that does not contain
-          # its scripts. Without this guard that is a hard failure on a missing
-          # file, AFTER cli/stable and skill/stable have already moved, which is
-          # the one thing this workflow's own comments say must never happen.
           if [ ! -f "scripts/verify-plugin-published.ts" ]; then
             echo "scripts/verify-plugin-published.ts is not in this tag's tree - skipping."
             exit 0
@@ -1101,15 +738,3 @@ jobs:
             echo "Everyone on \`wego update\` receives this build from now on."
             echo "It is byte-identical to what \`cli/next\` served."
           } >> "$GITHUB_STEP_SUMMARY"
-
-  # P9 (foundations#109): the ONLY outbound channel these lanes have.
-  #
-  # Nothing here has ever told a person that a release, promote or rollback
-  # failed. The triggering actor on the production lanes is a bot, so GitHub's
-  # own "your run failed" mail reaches nobody and the red run just sits on the
-  # Actions tab. The action this calls opens one issue per lane; see its header
-  # for why an issue and not a chat webhook.
-  #
-  # `cancelled` is reported next to `failure` deliberately: a job killed by its
-  # `timeout-minutes` bound (H1, wego-ai#1863) reports as `cancelled`, NOT as
-  # `failure`. A lane that hung is exactly the case nobody hears about.

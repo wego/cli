@@ -1,105 +1,53 @@
 name: Release badge
 
-# THE "LATEST" BADGE, DERIVED FROM THE RING RATHER THAN WRITTEN BY HAND.
+# Keep the GitHub "Latest" badge on the release that `cli/stable` serves.
 #
-# GitHub awards "Latest" to a release at birth: `make_latest` "defaults to `true`
-# for newly published releases" (REST API), and "drafts and prereleases cannot be
-# set as latest". So every tag release-please cuts takes the badge the moment it
-# is created — minutes before anything is published, and potentially days before
-# anyone promotes it. The badge therefore advertises a build `cli/stable` may not
-# serve, and nothing in this repository ever corrected it.
+# GitHub gives "Latest" to every new full release at creation. release-please
+# creates the release minutes before publication and days before a promote, so the
+# badge can name a build that `cli/stable` does not serve. On 2026-09-16 it named
+# v1.3.0 for 90 minutes while `cli/stable` served v1.2.7.
 #
-# IT HAS ALREADY MISLED. On 2026-09-16 v1.3.0 was released at 14:11, its promote
-# failed at 14:28 (run 35108775349), and `cli/stable` was rolled back to v1.2.7 at
-# 14:30. For the next hour and a half GitHub advertised v1.3.0 as "Latest" while
-# every `wego update` served 1.2.7 — the badge pointing at the one build that had
-# just been rolled back away from. Nothing flagged it, because nothing checks it.
+# Rule:
+#   the release `cli/stable` serves      full release, "Latest"
+#   every release created after it       prerelease
+#   older releases                        not changed
 #
-# WHY A RECONCILER, AND NOT A STEP IN EACH LANE. The badge is DERIVED state: its
-# true value is a function of exactly one fact, what `cli/stable` serves. Writing
-# it from the release lane, from promote and from rollback would instead make it
-# an obligation every future author of every ring-writing lane has to remember —
-# which is precisely the shape `allow_not_next` had, and precisely how wego/cli#48
-# broke rollback silently. #61 deleted that mode rather than guarding it. This
-# file evaluates the function in ONE place, so a new lane that moves `cli/stable`
-# has nothing to remember and nothing to forget.
+# This is a reconciler, not a step in each lane. The badge depends on one fact, and
+# one place evaluates it. It re-reads the ring on every run and does not trust the
+# event.
 #
-# IT CANNOT TOUCH THE RELEASE PIPELINE, by construction rather than by care:
+# Isolation. This workflow writes no ring: no `environment:`, no store token, no
+# `id-token`. A `workflow_run` conclusion does not propagate to the run that
+# triggered it, so this cannot block a release, a promote or a rollback. Its
+# concurrency group is its own. Do not move it to `ring-stable`. A failure here
+# leaves the badge stale, nothing more.
 #
-#   - it writes no ring. No `environment:`, no BLOB_READ_WRITE_TOKEN, no cosign,
-#     no `id-token`. Its only writes are `prerelease` / `make_latest` on release
-#     objects, so it shares no mutable state with the store;
-#   - a `workflow_run` run's conclusion does NOT propagate to the run that
-#     triggered it, so this cannot fail, block or delay a release, a promote or a
-#     rollback;
-#   - its concurrency group is its OWN. NEVER move it onto `ring-stable`: a badge
-#     update would then queue behind — or block — a promote, importing exactly
-#     the risk everything above is shaped to avoid.
-#
-# The worst a total failure of this file can do is leave the badge stale, which
-# is the state it exists to fix. Deleting the file restores the previous
-# behaviour exactly, with no residue in any lane.
-#
-# NO CHECKOUT, deliberately: `github-script` needs no working tree, so there is
-# no repository credential in this job to persist or leak (artipacked).
-#
-# THIS REPOSITORY IS PUBLIC, and `workflow_run` + `contents: write` is the shape
-# of a "pwn request" — a privileged job that consumes something an outside
-# contributor controls. This one consumes NOTHING: no checkout, so no fork code
-# is fetched or run; no artifact download, which is the usual poisoning path for
-# `workflow_run`; and no read of `github.event.*` anywhere — the script uses
-# `context.repo` and one hardcoded URL. There is no attacker-controlled input at
-# any point, which is the property to preserve if this file ever grows a step.
+# `workflow_run` with `contents: write` is a privileged consumer. This job reads
+# nothing from the triggering run: no checkout, no artifact download, no
+# `github.event.*`. Keep it that way.
 on:
-  # The badge goes wrong for exactly two reasons, and each gets a trigger.
-  #
-  # ONE — a release is born wearing "Latest" (see the header). This is the native
-  # event, and the only trigger here that couples to no workflow name.
+  # A new release is created with "Latest".
   release:
     types: [published]
 
-  # TWO — `cli/stable` moved. There is no GitHub event for "a blob pointer moved",
-  # so the lanes that move it are observed instead.
+  # `cli/stable` moved. There is no event for a pointer move, so the three lanes
+  # that move it are observed. `completed`, not `success`: a run can move the
+  # pointer and then fail (run 35108775349).
   #
-  # `completed`, NOT `success`: run 35108775349 advanced the pointer and THEN went
-  # red. What the badge needs is the ring's value, not the run's verdict — and
-  # because this job re-reads the ring rather than trusting the event, a run that
-  # moved nothing (a failed gate, a `plan_only` rollback rehearsal) is a harmless
-  # no-op rather than a case to special-case.
-  #
-  # `Release (cli)` is belt for the brace above: an App-created release is
-  # expected to fire `release: published`, but if it ever did not, the release
-  # lane completing covers the same ground a few minutes later.
-  #
-  # NEVER ADD A FORK-REACHABLE WORKFLOW TO THIS LIST. This is the one edit that
-  # turns this file from unreachable-by-outsiders into fork-triggerable, and it
-  # would look entirely reasonable in review.
-  #
-  # All three below need WRITE access to start: `Release (cli)` runs on a `v*`
-  # tag push, and `Promote (cli)` / `Rollback (cli)` are `workflow_dispatch` only,
-  # behind a named-promoter allow-list. `ci-cli` and `fulcio-pin-check` are the
-  # two workflows in this repository that run on `pull_request`, so ANY outside
-  # contributor can start them from a fork — putting either here would hand a
-  # stranger a trigger into a `contents: write` job. The header explains why that
-  # would still not be exploitable today; do not spend that margin.
+  # Do not add a workflow that a fork can trigger (`ci-cli`, `fulcio-pin-check`).
+  # A rename of a lane breaks its trigger without an error; `workflow_dispatch`
+  # is the repair.
   workflow_run:
     workflows: ["Release (cli)", "Promote (cli)", "Rollback (cli)"]
     types: [completed]
 
-  # The repair lever. Renaming one of the workflows above silently breaks that
-  # trigger — into "the badge is stale", never "the release is broken" — and this
-  # is how a human fixes it in one click, at no recurring cost.
   workflow_dispatch:
 
-# contents:write is the FLOOR for editing a release; GitHub has no finer-grained
-# releases scope. This workflow does nothing else with it.
+# `contents: write` is the minimum for editing a release.
 permissions:
   contents: write
 
-# Its own group, never a lane's — see the header. `cancel-in-progress` is safe
-# here because this job is stateless and idempotent: it derives everything from
-# the ring on each run, so a cancelled run is repaired by its successor, which by
-# definition holds the fresher read.
+# Own group. Cancel is safe: each run re-reads the ring.
 concurrency:
   group: release-badge
   cancel-in-progress: true
@@ -108,30 +56,16 @@ jobs:
   reconcile:
     name: Point "Latest" at what cli/stable serves
     runs-on: ubuntu-latest
-    # Comfortably past the single re-check below; nothing here is in a lane's
-    # critical path, so the bound is generous on purpose.
     timeout-minutes: 10
     steps:
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            // THE RULE, entire:
-            //   the release `cli/stable` serves  -> prerelease:false, Latest
-            //   any release published after it   -> prerelease:true
-            //   everything older                 -> untouched
-            //
-            // Older releases are left alone on purpose. They are the historical
-            // record, rewriting their flags would churn watchers' notifications
-            // for nothing, and they cannot take the badge anyway: the award below
-            // is explicit, and GitHub's own fallback ("creation date and higher
-            // semantic version") does not reach past the target either.
             const RING = "https://api.wego.com/install?dl=VERSION&ring=stable";
             const { owner, repo } = context.repo;
 
-            // FAIL CLOSED ON AN UNREADABLE RING. An unreachable route or a body
-            // that is not a plain X.Y.Z means the truth is unknown, and the only
-            // safe move is to leave the badge exactly as it is. Never guess: a
-            // wrong demotion here would strip "Latest" from a good release.
+            // Fail closed. If the ring is unreadable or not a plain X.Y.Z, leave the
+            // badge as it is.
             const readStable = async () => {
               let res;
               try {
@@ -158,11 +92,8 @@ jobs:
               });
               const target = releases.find((r) => r.tag_name === `v${version}`);
 
-              // NO TARGET, NO CHANGES. `cli/stable` can serve a version with no
-              // release in THIS repository — wego-ai published `cli-vX.Y.Z` up to
-              // 1.1.0 (see docs/release.md), so a deep enough rollback lands
-              // outside this repo's tag grammar. Demoting everything and awarding
-              // nothing would leave the repository with no "Latest" at all.
+              // No target, no changes. wego-ai published `cli-vX.Y.Z` up to 1.1.0,
+              // so a rollback to one of those has no release in this repository.
               if (!target) {
                 core.warning(
                   `cli/stable serves ${version}, which has no v${version} release here — ` +
@@ -172,10 +103,8 @@ jobs:
                 return;
               }
 
-              // DEMOTE BEFORE AWARDING, always. A prerelease is ineligible for
-              // "Latest", so clearing the field first means even a cancelled run
-              // leaves GitHub's fallback pointing somewhere correct — never at a
-              // release ahead of what ships.
+              // Demote first. A prerelease cannot be "Latest", so a cancelled run
+              // still leaves GitHub's fallback on a correct release.
               let writes = 0;
               for (const r of releases) {
                 if (r.draft || r.prerelease) continue;
@@ -193,9 +122,7 @@ jobs:
                 const { data } = await github.rest.repos.getLatestRelease({ owner, repo });
                 latestTag = data.tag_name;
               } catch (e) {
-                // 404 is "this repository has no latest release", which is a
-                // perfectly ordinary state to arrive in — every candidate may
-                // just have been demoted above.
+                // 404: no latest release. Possible after the demotions above.
                 if (e.status !== 404) throw e;
               }
 
@@ -217,24 +144,10 @@ jobs:
             if (first === null) return;
             await reconcile(first);
 
-            // THE ONE RACE THAT DOES NOT REPAIR ITSELF, closed here.
-            //
-            // Every ring object is written with `cacheControlMaxAge: 60`
-            // (`upload-release-blob.ts`), and the promote lane's settle barrier
-            // and this job resolve `api.wego.com` INDEPENDENTLY — they need not
-            // land on the same POP, which #63 says in as many words about its own
-            // retry. So a read taken the instant a promote completes can still be
-            // served the PREVIOUS `VERSION`, and this job would then award the old
-            // release and demote the newly promoted one. Every other race here is
-            // repaired by the event that caused it; this one is not, because the
-            // promote has already finished and will not trigger us again.
-            //
-            // A stale read is only ever BEHIND, never ahead: `VERSION` is copied
-            // last, after the ring can already serve what it advertises. So the
-            // failure this closes is a lagging badge, never one pointing at bytes
-            // nobody is being given.
-            //
-            // The wait is free — nothing here is in a lane's critical path.
+            // Ring objects have `cacheControlMaxAge: 60`. A read taken as a promote
+            // completes can still return the previous VERSION, and the promote will
+            // not trigger this workflow again. Wait past the cache age and re-read.
+            // A stale read is only ever behind, never ahead.
             await new Promise((resolve) => setTimeout(resolve, 65_000));
             const second = await readStable();
             if (second !== null && second !== first) {
