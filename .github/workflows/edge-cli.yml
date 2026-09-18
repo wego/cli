@@ -9,9 +9,9 @@ name: edge-cli
 # nothing.
 #
 # Three jobs. `build` makes the binaries. `sign` signs the manifest. `publish` writes
-# the store. No job holds both the signing token and the store token. No job holds
-# both the signing token and third-party code. `scripts/workflow-shape.test.ts`
-# asserts this.
+# the store. No job holds both the signing token and the store token, and no job
+# holds both the signing token and the project's dependencies.
+# `scripts/workflow-shape.test.ts` asserts this.
 #
 # Signing identity (the Fulcio SAN):
 #   https://github.com/wego/cli/.github/workflows/edge-cli.yml@refs/heads/main
@@ -140,9 +140,11 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # The only job that can sign. It installs nothing: no Bun, no `node_modules`.
-  # Every step of a job with `id-token: write` can get a Fulcio certificate, so no
-  # third-party code runs here. No `environment:`, so no store token.
+  # The only job that can sign. It installs no project dependencies: no Bun, no
+  # `node_modules`. Every step of a job with `id-token: write` can get a Fulcio
+  # certificate, so every action it runs is pinned by commit SHA: the checkout and
+  # artifact actions here, and `cosign-installer` inside `sign-manifest`, which is
+  # loaded from the checked-out revision. No `environment:`, so no store token.
   sign:
     name: Sign the edge manifest
     needs: build
