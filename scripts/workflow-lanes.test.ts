@@ -139,11 +139,53 @@ describe("the two lanes serialise against each other", () => {
  * rather than by growing a gate it could not usefully hold (its `publish` job is
  * the one holding the token, and it must run unattended on every merge).
  */
+interface Job {
+  needs?: string | string[];
+  steps?: { run?: string; env?: Record<string, unknown> }[];
+}
+
+/**
+ * The step/job keys that can change WHETHER or HOW the gate runs, as opposed to
+ * what it checks. Asserted absent on the approve job and every one of its steps.
+ */
+const OVERRIDES: string[] = [
+  "continue-on-error",
+  "if",
+  "shell",
+  "working-directory",
+];
+
+const needsOf = (job: Job | undefined): string[] =>
+  job?.needs === undefined ? [] : [job.needs].flat();
+
+/**
+ * Is `approve` anywhere in this job's dependency chain? Depth-first over `needs`,
+ * with a seen-set: GitHub rejects a cycle, but this parses YAML that GitHub has
+ * not necessarily accepted yet, and a cycle here would otherwise hang the suite.
+ */
+const reachesApprove = (start: string, jobs: Record<string, Job>): boolean => {
+  const seen = new Set<string>();
+  const stack = needsOf(jobs[start]);
+  while (stack.length > 0) {
+    const next = stack.pop() as string;
+    if (next === "approve") return true;
+    if (seen.has(next)) continue;
+    seen.add(next);
+    stack.push(...needsOf(jobs[next]));
+  }
+  return false;
+};
+
 describe("every store-writing lane with a manual trigger gates on both actors", () => {
+  // BOTH EXTENSIONS. GitHub Actions recognises `.yml` and `.yaml` alike, so an
+  // `.yml`-only filter would drop a token-bearing `.yaml` lane out of this scan
+  // silently — the suite would go green having asserted nothing about it. Matches
+  // the idiom `workflow-contexts.test.ts` already uses.
+  //
   // Sorted: `readdirSync` returns filesystem order, so the exact-set assertion
   // below would otherwise pass or fail depending on the machine.
   const workflowFiles = readdirSync(".github/workflows")
-    .filter((f) => f.endsWith(".yml"))
+    .filter((f) => /\.ya?ml$/.test(f))
     .sort();
 
   // Scoped to `jobs`, not the whole file: several workflows DISCUSS the token in
@@ -168,13 +210,7 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
     it(`${file}: no manual trigger, or an approve job reading both actors`, () => {
       const wf = workflow(file) as {
         on?: Record<string, unknown>;
-        jobs?: Record<
-          string,
-          {
-            needs?: string | string[];
-            steps?: { run?: string; env?: Record<string, unknown> }[];
-          }
-        >;
+        jobs?: Record<string, Job>;
       };
 
       if (!holdsStoreToken(wf)) return;
@@ -186,6 +222,31 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
         `${file} holds the store token and is manually dispatchable, so it needs an approve job`,
       ).toBeDefined();
       const steps = approve?.steps ?? [];
+
+      // A GATE THAT CAN BE SWITCHED OFF IS NOT A GATE. Everything below reads the
+      // gate's CONTENT; none of it would notice the gate being neutered from the
+      // outside. `continue-on-error: true` is the sharp one — GitHub treats a
+      // failed-but-continued job as satisfied for `needs:`, so the actor check
+      // could exit 1 on an outsider and the privileged job would still run, with
+      // every assertion here still green. `if:` can make the gate conditional on
+      // whatever the author picks (including the actor it is supposed to judge);
+      // `shell:` can replace the interpreter whose `set -euo pipefail` and `exit 1`
+      // the checks below assume; `working-directory:` moves where it all runs.
+      //
+      // None has a legitimate use on this job, so the invariant is that they are
+      // absent — on the job and on each of its steps.
+      for (const override of OVERRIDES) {
+        expect(
+          (approve as Record<string, unknown> | undefined)?.[override],
+          `${file}: approve sets '${override}', which can neutralise the gate`,
+        ).toBeUndefined();
+        for (const [i, step] of steps.entries()) {
+          expect(
+            (step as Record<string, unknown>)[override],
+            `${file}: approve step ${i} sets '${override}', which can neutralise the gate`,
+          ).toBeUndefined();
+        }
+      }
 
       // ASSERT ON THE EXECUTABLE SURFACE, NOT THE STEP TEXT. A `run:` body is one
       // YAML string, so the shell comments inside it survive parsing — and this
@@ -239,6 +300,25 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
 
         // And the branch must be able to refuse.
         expect(code.join("\n")).toContain("exit 1");
+      }
+
+      // A GATE NOTHING DEPENDS ON IS DECORATION. Everything above establishes that
+      // `approve` refuses the wrong actor; none of it establishes that the job
+      // holding the token cannot start without it. So walk the dependency graph:
+      // every token-bearing job must have `approve` as an ancestor.
+      //
+      // TRANSITIVELY, not just directly. The property that matters is "approve is
+      // an ancestor", and demanding the literal `needs: approve` on the
+      // token-bearing job asserts a stricter proxy — it would fail a perfectly
+      // sound `approve -> validate -> promote` chain and push a future author to
+      // weaken the test rather than keep the chain.
+      for (const [name, job] of Object.entries(wf.jobs ?? {})) {
+        if (name === "approve") continue;
+        if (!JSON.stringify(job).includes("BLOB_READ_WRITE_TOKEN")) continue;
+        expect(
+          reachesApprove(name, wf.jobs ?? {}),
+          `${file}: job '${name}' reaches the store without approve anywhere in its needs chain`,
+        ).toBe(true);
       }
     });
   }
