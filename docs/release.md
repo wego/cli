@@ -396,7 +396,13 @@ a read taken the instant a promote completes can still be served the previous
 ## The four lane environments
 
 There used to be one shared `production` environment, entered by four jobs across
-four workflows. It is gone. Each publishing lane now has its **own** environment:
+four workflows. No workflow enters it any more. It is **not deleted yet**: it still
+exists and still holds a copy of the store token, and it is removed only once the
+lanes have been observed running on their own environments. Deleting it also
+destroys its deployment history, so that is a one-way step worth taking
+deliberately rather than in the same change that stops using it.
+
+Each publishing lane has its **own** environment:
 
 | Environment | Entered by | Deployment branch policy |
 |---|---|---|
