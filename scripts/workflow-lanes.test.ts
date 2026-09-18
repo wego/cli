@@ -121,24 +121,6 @@ describe("the two lanes serialise against each other", () => {
   });
 });
 
-/**
- * THE INVARIANT THIS REPOSITORY LEARNED THE HARD WAY.
- *
- * `github.actor` is the user who triggered the INITIAL run, and it does NOT change
- * on a re-run. `github.triggering_actor` is whoever started THIS run. Re-running an
- * existing run needs only write access — a far larger set than the promoter
- * allow-list — so an `approve` job reading `github.actor` alone passes a replay on
- * the ORIGINAL promoter's name, with that run's original `inputs.tag`. Replaying a
- * rollback puts `cli/stable` back on an old tag; replaying a promote is a downgrade
- * the moment `stable` has advanced past it. Neither needs a stolen account.
- *
- * So: a lane that can reach the store with a manual trigger must gate on BOTH.
- * A lane with no manual trigger is out of scope by construction — the only way to
- * start it is the event itself, and re-running it re-runs that event's own commit.
- * That is why `edge-cli.yml` answers this by having no `workflow_dispatch` at all
- * rather than by growing a gate it could not usefully hold (its `publish` job is
- * the one holding the token, and it must run unattended on every merge).
- */
 interface Job {
   needs?: string | string[];
   steps?: { run?: string; env?: Record<string, unknown> }[];
@@ -209,11 +191,39 @@ const branchRefuses = (lines: string[], startIdx: number): boolean => {
       depth--;
       if (depth <= 0) return false;
     }
-    if (depth >= 1 && i > startIdx && /\bexit\s+[1-9]/.test(line)) return true;
+    // THE WHOLE LINE MUST BE THE EXIT, not merely contain it. A substring match
+    // accepts `echo "exit 1"` - text that describes a refusal instead of
+    // performing one, which is the same trap as reading the gate's comments and
+    // calling them a check. Anchored, with an optional trailing comment.
+    if (
+      depth >= 1 &&
+      i > startIdx &&
+      /^exit\s+[1-9]\d*\s*(?:#.*)?$/.test(line)
+    ) {
+      return true;
+    }
   }
   return false;
 };
 
+/**
+ * THE INVARIANT THIS REPOSITORY LEARNED THE HARD WAY.
+ *
+ * `github.actor` is the user who triggered the INITIAL run, and it does NOT change
+ * on a re-run. `github.triggering_actor` is whoever started THIS run. Re-running an
+ * existing run needs only write access — a far larger set than the promoter
+ * allow-list — so an `approve` job reading `github.actor` alone passes a replay on
+ * the ORIGINAL promoter's name, with that run's original `inputs.tag`. Replaying a
+ * rollback puts `cli/stable` back on an old tag; replaying a promote is a downgrade
+ * the moment `stable` has advanced past it. Neither needs a stolen account.
+ *
+ * So: a lane that can reach the store with a manual trigger must gate on BOTH.
+ * A lane with no manual trigger is out of scope by construction — the only way to
+ * start it is the event itself, and re-running it re-runs that event's own commit.
+ * That is why `edge-cli.yml` answers this by having no `workflow_dispatch` at all
+ * rather than by growing a gate it could not usefully hold (its `publish` job is
+ * the one holding the token, and it must run unattended on every merge).
+ */
 describe("every store-writing lane with a manual trigger gates on both actors", () => {
   // BOTH EXTENSIONS. GitHub Actions recognises `.yml` and `.yaml` alike, so an
   // `.yml`-only filter would drop a token-bearing `.yaml` lane out of this scan
