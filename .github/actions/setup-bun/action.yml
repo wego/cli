@@ -1,19 +1,17 @@
 name: Setup Bun
-description: Install Bun, restore the bun install cache, and run a frozen install (cache saved on main only).
+description: Install Bun, restore the bun install cache, and run a frozen install. The cache is saved on main only.
 
 runs:
   using: composite
   steps:
-    # Pin bun to the root package.json `packageManager` field — the same pin
-    # Vercel reads — so lockfile writer/parser versions never skew.
+    # Bun version from the `packageManager` field in package.json, so the lockfile
+    # writer and reader never differ.
     - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       with:
         bun-version-file: package.json
 
-    # setup-bun caches the bun binary but NOT downloaded packages. Restore bun's
-    # global install cache, keyed on the lockfile, so `bun install` links from
-    # cache instead of re-downloading every run (cold install was ~40-70s; warm
-    # is ~10s). Restore-only: see the main-gated save step below.
+    # setup-bun caches the bun binary, not the packages. Restore bun's global install
+    # cache, keyed on the lockfile. Cold install is 40 to 70 s; warm is about 10 s.
     - name: Restore bun install cache
       id: restore-bun-cache
       uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -26,20 +24,12 @@ runs:
     - run: bun install --frozen-lockfile
       shell: bash
 
-    # Populate the shared cache from main ONLY. A cache saved on a PR branch is
-    # readable only by that branch, so PR-side saves are wasted work that also
-    # adds a ~1min save tail to the PR's own wall-clock. main's cache is readable
-    # by every PR, so one producer keeps all PRs warm at zero PR-side cost.
+    # Save on main only. A cache saved on a PR branch is readable only by that
+    # branch. main's cache is readable by every PR.
     #
-    # Skip the save on an EXACT restore hit (cache-hit == 'true'): the cache is
-    # content-addressed by bun.lock, so an existing key already holds identical
-    # bytes — re-saving would re-tar ~1 GB (minutes, on the critical path) only
-    # to lose the `actions/cache` reservation race to a sibling job writing the
-    # same key ("Unable to reserve cache … another job may be creating this
-    # cache"). cache-hit is 'true' only on an exact primary-key match, so when
-    # bun.lock changes (exact miss, restore-keys prefix fallback) we still save
-    # the new key. This is the common case on release/main runs — the lockfile
-    # rarely moves — so the save runs only when it has new bytes to store.
+    # Skip the save on an exact hit. The key is content-addressed by bun.lock, so an
+    # existing key already holds the same bytes, and a second save loses the
+    # reservation race to a sibling job.
     - name: Save bun install cache
       if: github.ref == 'refs/heads/main' && steps.restore-bun-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5

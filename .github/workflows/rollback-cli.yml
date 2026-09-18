@@ -1,41 +1,17 @@
 name: Rollback (cli)
 
-# PUT `cli/stable` BACK ON A NAMED EARLIER RELEASE.
+# Move `cli/stable` back to a named earlier release.
 #
-# A SEPARATE LANE FROM `promote-cli.yml`, ON PURPOSE. Rollback used to be an input
-# on the promote lane (`allow_not_next`), and that input was the defect: a boolean
-# a human types which silently changes the meaning of twenty downstream steps.
-# Every gate added to the promote lane had to REMEMBER to opt rollback out, the
-# guard was documented per-step in prose and nowhere as a whole, and the first gate
-# whose author did not reconstruct that invariant broke the rollback path outright -
-# silently, because nothing exercises rollback until an incident (wego/cli#48 added
-# two `cli/next`-coupled gates without the guard; both hard-failed every rollback).
+# A separate workflow from `promote-cli.yml`. Rollback used to be an input on the
+# promote lane that removed gates. Two gates added without that guard broke every
+# rollback (wego/cli#48). This file has no executable reference to `cli/next`, so
+# no gate here can depend on it. `scripts/workflow-lanes.test.ts` asserts that.
 #
-# THE FIX IS DELETING THE MODE, NOT GUARDING IT. Promote now has no branches: it
-# only ever moves `stable` onto what `next` serves, so every gate there may assume
-# `next == tag` unconditionally. This file never mentions `next` at all, so no gate
-# added here can couple to the thing that broke. Neither lane can break the other,
-# and `scripts/workflow-lanes.test.ts` asserts both halves.
+# Posture. A blocked rollback extends exposure to a bad build. Two cheap checks
+# block. Everything else runs after the move. The promote gates are not repeated:
+# the target already served `cli/stable`, and that is stronger evidence than a gate.
 #
-# THE POSTURE IS INVERTED FROM PROMOTE, WHICH IS THE WHOLE POINT. The promote lane
-# is fail-closed by design - "almost everything it checks runs before the pointer
-# moves, because a failure there costs a re-run". That is correct for promote,
-# where a blocked run costs a re-run. It is WRONG here: a blocked rollback costs
-# continued exposure to a build you have already decided is bad. So this lane
-# carries two blocking checks, both cheap, and everything else runs AFTER the move
-# where it cannot buy exposure with its own runtime.
-#
-# WHY THE BATTERY IS NOT REPEATED HERE. A rollback target is bytes that already
-# served `cli/stable`. That is stronger evidence than any gate can manufacture -
-# it shipped to the entire install base and survived. Re-running the promote gates
-# against it can only produce false negatives, and it costs exposure minutes while
-# it does. What is NOT already known is whether the frozen prefix is still intact,
-# and that is what this lane checks.
-#
-# THE TAG IS MANDATORY. There is no default and no auto-resolution: computing "the
-# previous stable" means reconstructing history from the Actions API, which adds a
-# dependency the move itself does not have, for a fact the person dispatching
-# already knows. `plan_only` is how you check yourself, not a lookup table.
+# The tag has no default. Use `plan_only` to rehearse without moving anything.
 on:
   workflow_dispatch:
     inputs:
@@ -53,28 +29,20 @@ on:
         default: false
         type: boolean
 
-# contents:read - this lane creates no tag and no Release, and unlike the promote
-# lane it queries no API. It reads the store over HTTPS and writes one pointer.
+# No tag and no Release is created. This lane reads the store over HTTPS and writes
+# one pointer.
 permissions:
   contents: read
 
 jobs:
-  # THE HUMAN GATE, and nothing else. Identical in shape and reasoning to the
-  # promote lane's: not an environment, because required-reviewer protection is
-  # Enterprise-only on a private repo and declaring the environment anyway would
-  # create it UNPROTECTED and wave every dispatch through (wego/foundations#128).
+  # The human gate. Same shape and same reasoning as `promote-cli.yml`: not an
+  # environment with required reviewers (see that file). The list below is the
+  # authority. `main` requires a code-owner review, so a change to it is reviewed.
+  # This job holds no secrets and no variables.
   #
-  # What gates a rollback instead, both enforced: this workflow has no trigger but
-  # `workflow_dispatch`, and this job refuses anyone not on the list - both the
-  # person who dispatched the run and the person who started THIS run of it. The
-  # two differ on a re-run, which needs only write access, and a replay here is
-  # not a no-op: it puts `cli/stable` back on this run's `inputs.tag`, which is a
-  # downgrade of the whole install base once stable has moved on. The list is
-  # meaningful because `main` requires a code-owner review, so widening it is a
-  # reviewed change.
-  #
-  # Holds NO secrets and NO variables - there is nothing in it to leak - and
-  # `rollback` cannot begin until it has passed.
+  # Both actors must be promoters, as in the promote lane. A replay matters more
+  # here: it puts `cli/stable` back on this run's `inputs.tag`, which moves the
+  # whole install base onto an older release once stable has advanced past it.
   approve:
     name: Approve rolling cli/stable back to ${{ inputs.tag }}
     runs-on: ubuntu-latest
@@ -123,19 +91,13 @@ jobs:
     needs: approve
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # THE SAME GROUP STRING AS `promote-cli.yml`. Concurrency groups are scoped to
-    # the repository, not the workflow, so naming the group `ring-stable` in both
-    # files is what serialises a rollback against a promote. Two lanes, one queue
-    # slot, because they write the same pointer.
-    #
-    # cancel-in-progress is FALSE for the reason it is there in the promote lane: a
-    # move aborted between copying the binaries and copying the manifest leaves
-    # `stable` half-written.
+    # Same group string as `promote-cli.yml`. Concurrency groups are repository-wide,
+    # so this serialises a rollback against a promote. Do not cancel a move in
+    # progress: it leaves `cli/stable` half-written.
     concurrency:
       group: ring-stable
       cancel-in-progress: false
-    # The store token lives here. `approve` gated entry; this environment is what
-    # actually holds the credential that selects a store.
+    # The store token lives here.
     environment:
       name: production
     permissions:
@@ -143,25 +105,16 @@ jobs:
     env:
       WEGO_CLI_TELEMETRY: "0"
     steps:
-      # `main`, NOT the tag - the opposite of the promote lane, deliberately.
-      #
-      # `promote-cli.yml` checks out `ref: inputs.tag` because its plugin publisher
-      # reads the tag's own tree. This lane publishes no plugin (see the header of
-      # the summary step), so it reads nothing from the tag's tree - and checking
-      # out `main` means a rollback always runs TODAY'S `upgrade-path.sh`,
-      # `verify-published.sh` and publisher, rather than whatever those scripts
-      # looked like at a tag cut months ago. A lane that runs an old tag's scripts
-      # against today's interfaces is a failure waiting for the one day it matters.
+      # `main`, not the tag. This lane reads nothing from the tag's tree, so it runs
+      # today's scripts against today's store.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-bun
 
-      # BLOCKING, ~1s, NO NETWORK. The tag is the only thing a human can get wrong
-      # now that there is no default, so it is the only input-shaped gate this lane
-      # needs. `validate-release-tag.ts` is the same authority the release and
-      # promote lanes use, so all three agree on what a tag is.
+      # Blocking. No network. The tag is the only input a person can get wrong.
+      # Same parser as the release and promote lanes.
       - name: Validate the tag
         env:
           TAG: ${{ inputs.tag }}
@@ -175,13 +128,11 @@ jobs:
           esac
           echo "ok: $TAG is a plain release version."
 
-      # NON-BLOCKING, ON PURPOSE. This is the build being rolled back FROM, and the
-      # only consumer is the rescue check after the move, which asks whether
-      # machines already on it can get off it.
+      # Not blocking. Only the rescue check after the move uses this value. If the
+      # route does not answer, the rollback still proceeds.
       #
-      # An informational read must never stand between a person and the fix. If
-      # `api.wego.com` will not answer, the rollback is still both possible and
-      # correct - the rescue check simply cannot run, and says so.
+      # Tag grammar: wego-ai published `cli-vX.Y.Z` up to 1.1.0. This repository
+      # publishes `vX.Y.Z` from 1.2.0.
       - name: Record what cli/stable serves today
         id: outgoing
         run: |
@@ -193,10 +144,6 @@ jobs:
             echo "version=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # THE TAG GRAMMAR CHANGED AT THE RELAY: wego-ai published `cli-vX.Y.Z` up
-          # to 1.1.0, wego/cli publishes `vX.Y.Z` from 1.2.0 on. The rescue check
-          # below fetches the outgoing binary by its frozen prefix, so it needs the
-          # right spelling for the version it actually found.
           case "$version" in
             1.0.*|1.1.*) tag="cli-v$version" ;;
             *)           tag="v$version" ;;
@@ -205,19 +152,11 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "cli/stable serves $version today (frozen prefix cli/$tag)."
 
-      # BLOCKING, ~2s, TWO CURLS. The one thing a rollback target's own history
-      # CANNOT vouch for: that its frozen prefix is still intact TODAY. An object
-      # can be collected, and a release lane can have written a short manifest.
-      #
-      # THE ASSET SET IS PINNED AS A LITERAL, not derived from the manifest being
-      # checked - it is the assertion, not a restatement of the thing asserted.
-      # `verify-published.sh` only checksums what the manifest lists, so a prefix
-      # missing a platform passes every hash check and strands every install on
-      # that platform with a download that 404s, forever.
-      #
-      # The store origin is read out of the install route's redirect rather than
-      # hardcoded, exactly as the promote lane does it: nothing in either lane
-      # names a store host.
+      # Blocking. Two requests. Require the frozen prefix to exist and to carry
+      # exactly the expected asset set. `verify-published.sh` checks only what the
+      # manifest lists, so a prefix that lost a platform would pass it. The list is
+      # a literal on purpose. The store origin is read from the install route's
+      # redirect; no store host is named in this file.
       - name: Require the rollback target to be intact
         id: target
         env:
@@ -238,7 +177,7 @@ jobs:
             exit 1
           fi
 
-          # Every platform this project ships, raw and gzipped, plus VERSION.
+          # Every platform, raw and gzipped, plus VERSION.
           expected='VERSION
           wego-darwin-arm64
           wego-darwin-arm64.gz
@@ -258,6 +197,7 @@ jobs:
           fi
           echo "ok: cli/$TAG is intact and carries every expected platform."
 
+      # `plan_only` stops here.
       - name: Plan
         if: ${{ inputs.plan_only }}
         env:
@@ -277,22 +217,13 @@ jobs:
             echo "The target is published and intact. Re-dispatch without \`plan_only\` to move the pointer."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # THE MOVE. A server-side copy of the frozen cli/<tag> blobs onto cli/stable.
+      # The move: a server-side copy of `cli/<tag>/` to `cli/stable`.
       #
-      # NO `--require-serving`. The promote lane passes `--require-serving next`
-      # because its whole premise is that the bytes have been exercised on that
-      # ring. Here there is no ring serving this target - that is precisely why
-      # this lane exists, and asserting otherwise is what broke rollback before.
+      # No `--require-serving`: no ring serves the target, and that is why this
+      # lane exists. REQUIRE_PUBLISH: a missing token fails instead of exit 0.
       #
-      # REQUIRE_PUBLISH: an absent token must FAIL here rather than exit 0 having
-      # moved nothing. A rollback that reports success while the whole install base
-      # is still on the broken build is the worst outcome this lane can produce.
-      #
-      # EVERY INSTALL IS ON THE OLD BYTES FROM THE MOMENT THIS STEP RETURNS.
-      # `wego update` compares CHECKSUMS, not versions (`src/update.ts`), so an
-      # earlier release is taken exactly the way a later one is - no reinstall, no
-      # deadline, no version ordering anywhere. Everything below this point is
-      # verification and costs nobody any exposure.
+      # `wego update` compares checksums, not versions. Every install on stable takes
+      # the target bytes at its next check. Everything below is verification.
       - name: Move cli/stable back to ${{ inputs.tag }}
         id: move
         if: ${{ !inputs.plan_only }}
@@ -304,25 +235,13 @@ jobs:
           set -euo pipefail
           bun run scripts/upload-release-blob.ts --promote "$TAG" --to stable
 
-      # THE QUESTION THE WHOLE OPERATION EXISTS TO ANSWER, and the one nothing in
-      # the promote lane asks: can the machines that already took the bad build get
-      # OFF it?
+      # Can machines on the bad build reach the target? Runs after the move because
+      # `cli/stable` must serve the target first. Not blocking: the move is done
+      # either way.
       #
-      # The promote lane's install-base walks drive 1.1.0 and 1.0.1 - the OLD
-      # population. The population a rollback is trying to rescue is the one on the
-      # build being rolled back FROM, and its route is exactly this: outgoing
-      # binary, ring stable, one hop, onto the target.
-      #
-      # POST-MOVE ON PURPOSE, and it could not be otherwise: `cli/stable` has to
-      # already serve the target for this to mean anything. It therefore costs zero
-      # exposure - the fix is already propagating while this runs.
-      #
-      # NON-BLOCKING. The move happened and was correct either way; this step's job
-      # is to tell you WHICH incident you are now in:
-      #   passes - every affected machine self-heals on its next check. Done.
-      #   fails  - this rollback protected everyone who had not updated yet and
-      #            nobody who had. Those machines need a manual reinstall, and you
-      #            need to know that in minutes rather than from support tickets.
+      #   pass   every affected machine self-heals at its next update.
+      #   fail   the rollback protected machines that had not updated. Machines
+      #          already on the bad build need a manual reinstall.
       - name: Can machines on the bad build reach this rollback
         id: rescue
         if: ${{ !inputs.plan_only && steps.move.outcome == 'success' }}
@@ -352,16 +271,11 @@ jobs:
           fi
           echo "verdict=failed" >> "$GITHUB_OUTPUT"
           echo "::error::machines already on $OUTGOING CANNOT reach ${TAG#v} on cli/stable. THE ROLLBACK ITSELF IS DONE AND IS CORRECT for everyone who had not yet updated - but it did not rescue anyone who had. Those machines cannot be reached by a further pointer move either (a binary that cannot take an update cannot take the fix): they need a manual reinstall. Exit 6 means a signed record $OUTGOING does not accept."
-          # Fails the STEP (red, with the annotation above) but not the job:
-          # `continue-on-error` is what keeps the summary and the rest running. A
-          # green step carrying a red annotation would read as "fine" at a glance,
-          # which is the opposite of what this result means.
+          # Exit 1 marks the step red. continue-on-error keeps the summary running.
           exit 1
 
-      # Verification, not a gate. Every asset on the ring hash-checked against the
-      # manifest the move just committed. Last because it is ~440MB of downloads
-      # and the least time-critical thing here - by now the fix has been live for
-      # a minute.
+      # Not blocking. Hash-check every asset on the ring. Last, because it downloads
+      # about 440 MB.
       - name: Verify cli/stable
         if: ${{ !inputs.plan_only && steps.move.outcome == 'success' }}
         continue-on-error: true
@@ -370,32 +284,11 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: sh scripts/verify-published.sh "$ORIGIN/cli/stable" "${TAG#v}" all
 
-      # NO PLUGIN PUBLISH, DELIBERATELY.
+      # No plugin publish. The SKILL.md ships inside the binary, and `update` runs
+      # `skill install --owned-only` after the swap. `wego/skills` serves third-party
+      # discovery only and stays one version ahead until the next promote.
       #
-      # `promote-cli.yml` pushes the tag's plugin content to `wego/skills`. This
-      # lane does not, because the two channels serve different populations and
-      # only one of them needs anything from a rollback:
-      #
-      #   CLI installs  - the SKILL.md ships EMBEDDED in the binary, and `update`
-      #                   re-runs the freshly swapped binary's own
-      #                   `skill install --owned-only` (src/update.ts:325). A
-      #                   machine taking the rollback therefore gets that release's
-      #                   skills automatically. Nothing to publish.
-      #   wego/skills   - third-party discovery reads the plugin content from there
-      #                   (scripts/plugin-publish.ts). Those consumers never follow
-      #                   `cli/stable`, so a rollback does not reach them either
-      #                   way; the repo simply sits one version ahead until the
-      #                   next forward promote resynchronises it.
-      #
-      # `promote-cli.yml` already makes this call in its own words: "a rollback
-      # that cannot run is a worse failure than a plugin repo that lags by one
-      # tag". Keeping the publisher out of this lane also keeps the App token, the
-      # `wego/skills` dependency and the tag checkout out of an emergency path.
-
-      # THE ONLY RECORD THIS LANE KEEPS, and it is enough. The Actions run list
-      # already carries the tag and the timestamp in this job's NAME, so the run
-      # history IS the rollback history - no ledger file, no artifact upload, no
-      # store write, nothing that can fail and nothing new to read back.
+      # The run history is the rollback record. There is no ledger.
       - name: Summary
         if: ${{ !inputs.plan_only && steps.move.outcome == 'success' }}
         env:
