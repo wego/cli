@@ -199,8 +199,21 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The store token lives here, and only here in this lane. This job cannot sign:
+    # with no `id-token: write` there is no OIDC token to exchange for a certificate,
+    # so a compromised dependency here can write bytes to the store but cannot
+    # produce a record clients accept.
+    #
+    # `edge` is this lane's own environment and admits `main` only. It is not a
+    # weaker credential: the same `BLOB_READ_WRITE_TOKEN` value sits in all four lane
+    # environments and still has write access to the whole store. The split changes
+    # who can reach it and from which ref, not what it can do.
+    #
+    # No required reviewers, deliberately. This job runs on every qualifying merge,
+    # and the artifacts it consumes carry `retention-days: 1`, so an approval delay
+    # past a day would not delay a publish, it would fail one.
     environment:
-      name: production
+      name: edge
     permissions:
       contents: read
     env:

@@ -104,9 +104,23 @@ jobs:
     concurrency:
       group: ring-stable
       cancel-in-progress: false
-    # The store token lives here.
+    # The store token lives here, with `SKILLS_PUBLISH_APP_PRIVATE_KEY` and the
+    # `SKILLS_PUBLISH_*` variables the plugin publish below reads. This is the only
+    # lane that publishes a plugin, so the only environment carrying them.
+    #
+    # `stable-promote` admits `main` only. A deployment branch policy evaluates the
+    # workflow run's ref, not the checkout: this run is dispatched on `main` while
+    # the `ref:` below checks out `inputs.tag`. A `v*` policy here would reject every
+    # promote.
+    #
+    # Separate from `stable-rollback`, though both run from `main` and hold the same
+    # token value. The two lanes have opposite latency requirements, and a shared
+    # environment is the coupling this split removes.
+    #
+    # Not cryptographic separation: the same value, with write access to the whole
+    # store, sits in all four lane environments.
     environment:
-      name: production
+      name: stable-promote
     permissions:
       contents: read
       # For the release-run check below.

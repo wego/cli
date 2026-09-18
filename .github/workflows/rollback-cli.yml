@@ -97,9 +97,20 @@ jobs:
     concurrency:
       group: ring-stable
       cancel-in-progress: false
-    # The store token lives here.
+    # The store token lives here. `approve` gated entry to this job.
+    #
+    # `stable-rollback` admits `main` only - the workflow run's ref, which for a
+    # dispatch of this file is always `main`.
+    #
+    # Separate from `stable-promote`, though both run from `main` and hold the same
+    # token value. This is the break-glass lane and has to stay fast, so it must not
+    # inherit a protection rule added for the promote lane. Required reviewers on the
+    # old shared `production` did exactly that.
+    #
+    # Not cryptographic separation: the same value, with write access to the whole
+    # store, sits in all four lane environments.
     environment:
-      name: production
+      name: stable-rollback
     permissions:
       contents: read
     env:

@@ -312,15 +312,24 @@ jobs:
       store_origin: ${{ steps.publish.outputs.store_origin }}
       prev_usable: ${{ steps.prev_channel.outputs.usable }}
       prev_version: ${{ steps.prev_channel.outputs.prev_version }}
-    # The store token lives here. Only this job enters the environment. Its
-    # deployment policy admits `main` and `v*` only.
+    # The store token lives here. Only this job enters the environment. `release`
+    # admits `v*` tags only, so nothing but a release cut from a tag can read it -
+    # the edge, promote and rollback lanes each have their own environment.
+    #
+    # Not cryptographic separation: the same `BLOB_READ_WRITE_TOKEN` value sits in
+    # all four lane environments and still has write access to the whole store. The
+    # split changes who can reach it and from which ref, not what it can do.
     environment:
-      name: production
+      name: release
     # No `id-token`: signing happened in `sign`. This job can write bytes to the
-    # store but cannot produce a record clients accept. `contents: write` is for the
-    # GitHub Release step.
+    # store but cannot produce a record clients accept.
+    #
+    # `contents: read`, not write. This job used to hold the store token and
+    # `contents: write` together, the only job in the repository with two meaningful
+    # write capabilities. The GitHub Release moved to `announce`, which holds
+    # `contents: write` and no environment. Do not give this job write back.
     permissions:
-      contents: write
+      contents: read
     env:
       WEGO_CLI_TELEMETRY: "0"
     steps:
@@ -503,12 +512,54 @@ jobs:
           prev-usable: ${{ steps.prev_channel.outputs.usable }}
           store-origin: ${{ steps.publish.outputs.store_origin }}
 
+      # No skill steps. The SKILL.md ships inside the binary.
+
+  # The GitHub Release, split out of `release` so no job holds both the store token
+  # and repository write.
+  #
+  #   release    environment: release   (store token)   contents: read
+  #   announce   no environment         (no token)      contents: write
+  #
+  # One job used to hold both. A compromised transitive dependency executing there
+  # got repository write and the ring together. There is nothing in this job to
+  # compromise either: one `github-script` step and an artifact download, no Bun, no
+  # `node_modules`, no `@vercel/blob`.
+  #
+  # No `environment:`, and it must stay that way. Do not hoist `environment:` to
+  # workflow level in this file: that would give this job the store token and give
+  # `sign` one too, collapsing the separation between signing and writing the ring.
+  # Nothing would visibly break.
+  #
+  # `needs: [prepare, release]`: `prepare` produces `tag` and `prev_tag`, and the
+  # bytes must be published before a Release announces them. Same order as when
+  # these steps sat at the end of `release`.
+  #
+  # `promote-cli.yml` gates on the release run's conclusion, not on one job, so a
+  # failure here holds the tag back from promote until it is re-run. This job is
+  # idempotent and writes no ring, so re-running it alone is safe.
+  announce:
+    name: Announce the release on GitHub
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # `contents: write` is for the Release step and is the only write grant here. No
+    # `id-token`: signing belongs to `sign`.
+    permissions:
+      contents: write
+    steps:
+      # Only SHA256SUMS.txt is needed; the binaries went to the store in `release`.
+      # `cli-checksums` has `retention-days: 1`, which this job is inside: it starts
+      # as soon as `release` finishes.
+      - name: Download the manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-checksums
+          path: dist
+
       # The human record. Idempotent: a release that already has SHA256SUMS.txt is
       # skipped; one without it gets the asset attached; a missing release is
       # created. release-please normally creates the release, so the create branch
       # is a fallback. Notes span prev_tag to this tag.
-      #
-      # No skill steps. The SKILL.md ships inside the binary.
       - name: GitHub Release (changelog + record)
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
