@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.yaml
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 #
 # Written for THIS repository, not copied from wego-ai. Three things differ, and
 # each one is load-bearing:
@@ -6,11 +6,12 @@
 #  1. Every `knowledge_base` scope is pinned `local`. The default is `auto`,
 #     which resolves to GLOBAL for a private repo and local for a public one -
 #     so `auto` silently re-expands to org-wide the moment anyone flips this
-#     repo private for an afternoon. This repository IS STILL PRIVATE as of
-#     this commit, so `auto` would resolve global today, and every comment
-#     written under it becomes public the moment visibility flips. Pinned
-#     `local`, nothing wego-ai knows can reach a comment here. See the block
-#     at the end.
+#     repo private for an afternoon. This repository went PUBLIC on 2026-09-17,
+#     so `auto` would resolve local today and the pin looks redundant. It is
+#     not: it is what stops a temporary flip back to private from quietly
+#     widening the scope, and that flip would leave no trace in this file.
+#     Pinned `local`, nothing wego-ai knows can reach a comment here. See the
+#     block at the end.
 #  2. `request_changes_workflow` is OFF. Branch protection on `main` requires
 #     ONE approving review and code-owner review. CODEOWNERS covers only the
 #     release path (workflows, actions, `src/release-signing/`, `scripts/`,
@@ -22,12 +23,18 @@
 #  3. No wego-ai internals appear anywhere in this file. It is published the
 #     moment the repository is - path names and review instructions included.
 language: en-US
+# HARD LIMIT: 250 characters. Over it, the schema rejects the value and the
+# WHOLE file fails to parse - CodeRabbit then silently falls back to the
+# Organization UI settings, and every path_instruction, path_filter and
+# knowledge_base scope below is ignored with no error anywhere but a warning
+# inside a review comment. That is exactly what happened between 2026-09-17 and
+# 2026-09-18, when this value was 347 characters. It is 221 today; keep the
+# headroom, and put anything longer in a path_instruction, whose own cap is far
+# larger (CodeRabbit's docs give it as 20,000 characters).
 tone_instructions: >
   Be direct and concise. Focus on correctness, the stdout JSON contract, the
-  OAuth/PKCE surface, and the path by which a binary is installed, verified,
-  replaced and removed. Skip stylistic nits - biome handles formatting, import
-  order and the console ban, and it fails the build. Do not comment on
-  formatting, naming conventions or missing comments.
+  OAuth/PKCE surface, and how a binary is installed, verified, replaced and
+  removed. Skip stylistic nits - biome enforces them and fails the build.
 
 early_access: true
 
@@ -44,10 +51,11 @@ reviews:
   collapse_walkthrough: true
   auto_review:
     # Note this is aspirational until the repo has stars: on the free OSS tier,
-    # public repositories under 10 stars get MANUAL triggers only. This repo is
-    # private with 0 stars today, so until both change the review is summoned
-    # with `@coderabbitai review` and this flag does nothing. It is set
-    # correctly so that it starts working on its own.
+    # public repositories under 10 stars get MANUAL triggers only. This repo
+    # went public on 2026-09-17 with 0 stars, so that rule now APPLIES and the
+    # review is summoned with `@coderabbitai review`; this flag does nothing
+    # until the tenth star. It is set correctly so that it starts working on
+    # its own.
     enabled: true
     drafts: false
     # Re-review is manual: comment `@coderabbitai review`. With the approval
@@ -91,7 +99,7 @@ reviews:
     # security analyzer already referenced in `ci-cli.yml`), `actionlint`,
     # `skillspector` (scans AI agent skills - i.e. `skills/wego/SKILL.md`,
     # which ships inside the binary), and `presidio` + `gitleaks` for secrets
-    # and sensitive identifiers on a repo about to become public.
+    # and sensitive identifiers on a repo that is now public.
     #
     # `shellcheck` also defaults on and is newly load-bearing: `scripts/` now
     # carries four shell scripts that drive real installs and updates
@@ -407,6 +415,22 @@ reviews:
         The seeded `client_id` is a PUBLIC PKCE client with no secret and is
         meant to be in the tree. Never hardcode an actual secret.
 
+        Do not comment on formatting, naming conventions or missing comments
+        in any file this pattern matches. `biome.jsonc` is a required check on
+        `main` via `ci-cli`, it decides all three, and the build fails on them -
+        so a comment here is either duplicating a gate that already blocks the
+        merge or arguing with it.
+
+        Scope, stated rather than assumed: `**` does not reach a dotted
+        directory or a dotfile under default glob semantics, which is the same
+        thing the `.github/workflows/**` instruction above says about itself.
+        That is the right scope here and not a gap to close, because biome does
+        not format those files either - so outside this pattern the rule has no
+        gate behind it and the rationale does not carry.
+
+        This paragraph lives here rather than in `tone_instructions` because
+        that field is capped at 250 characters.
+
 knowledge_base:
   # The isolation boundary. `opt_out: false` keeps learnings and code
   # guidelines, both of which are useful; the SCOPES below are what stop
@@ -417,7 +441,9 @@ knowledge_base:
   # would resolve to `global` (org-wide) while this repository is private, and
   # to `local` once it is public - a distinction that depends on live
   # visibility, which is not a thing to hang a disclosure boundary on. This
-  # repository is private TODAY, so `auto` would resolve global right now.
+  # repository has been PUBLIC since 2026-09-17, so `auto` would resolve local
+  # right now and agree with the pin. That agreement is a coincidence of
+  # today's visibility, not a guarantee, which is the whole reason to pin.
   #
   # If you ever want the harder guarantee, `opt_out: true` disables every
   # knowledge-base feature that retains data - including Multi-Repo Analysis
