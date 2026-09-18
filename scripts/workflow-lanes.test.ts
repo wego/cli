@@ -173,40 +173,6 @@ const reachesApprove = (start: string, jobs: Record<string, Job>): boolean =>
 const BYPASSES_FAILURE = /\b(always|cancelled|failure)\s*\(\s*\)/;
 
 /**
- * Walking forward from the `if` line at `startIdx`, does THIS branch reach a
- * nonzero exit before its own `fi`?
- *
- * An `exit 1` somewhere else in the script is not evidence that this particular
- * actor is rejected - one refusal path would otherwise satisfy the assertion for
- * both actors, which is exactly the regression (a gate decaying to one actor)
- * this suite exists to catch. The depth counter keeps a nested `if` from ending
- * the scan early.
- */
-const branchRefuses = (lines: string[], startIdx: number): boolean => {
-  let depth = 0;
-  for (let i = startIdx; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (/^if\b/.test(line)) depth++;
-    else if (/^fi\b/.test(line)) {
-      depth--;
-      if (depth <= 0) return false;
-    }
-    // THE WHOLE LINE MUST BE THE EXIT, not merely contain it. A substring match
-    // accepts `echo "exit 1"` - text that describes a refusal instead of
-    // performing one, which is the same trap as reading the gate's comments and
-    // calling them a check. Anchored, with an optional trailing comment.
-    if (
-      depth >= 1 &&
-      i > startIdx &&
-      /^exit\s+[1-9]\d*\s*(?:#.*)?$/.test(line)
-    ) {
-      return true;
-    }
-  }
-  return false;
-};
-
-/**
  * THE INVARIANT THIS REPOSITORY LEARNED THE HARD WAY.
  *
  * `github.actor` is the user who triggered the INITIAL run, and it does NOT change
@@ -296,80 +262,121 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
         }
       }
 
-      // ASSERT ON THE EXECUTABLE SURFACE, NOT THE STEP TEXT. A `run:` body is one
-      // YAML string, so the shell comments inside it survive parsing — and this
-      // gate's comments necessarily NAME both contexts in order to explain the
-      // difference between them. A substring search over the step would therefore
-      // still pass with the binding deleted and only the prose left, which is the
-      // one regression this test exists to catch. So: read the `env:` mapping,
-      // which is the only place a context can actually enter the shell.
+      // TWO HALVES, AND THEY PROVE DIFFERENT THINGS.
+      //
+      // The `env:` mapping proves the gate reads the right GitHub CONTEXTS - the
+      // only place a context can enter the shell, and something running the script
+      // can never show, because the runner supplies those values.
+      //
+      // Then the script is EXECUTED with controlled actors, which proves it
+      // actually refuses. That half replaced a static reading of the shell, and the
+      // reason is worth keeping: every attempt to decide "does this branch refuse?"
+      // by looking at the text was defeated by text that merely LOOKED like a
+      // refusal - first the gate's own comments (which must name both contexts in
+      // order to explain them), then an `exit 1` belonging to the other actor's
+      // branch, then `echo "exit 1"`, then an `exit 1` inside a heredoc. Each fix
+      // was a better approximation of a shell lexer, and the next variation always
+      // existed. Running the thing has no such class of evasion: text that only
+      // looks like a refusal does not change the exit status.
       const bound = new Map<string, string>();
       for (const step of steps) {
         for (const [name, value] of Object.entries(step.env ?? {})) {
-          if (typeof value === "string")
-            bound.set(name, value.replace(/\s+/g, ""));
+          if (typeof value === "string") bound.set(name, value);
         }
       }
       const varFor = (context: string): string | undefined =>
-        [...bound].find(([, v]) => v === `\${{${context}}}`)?.[0];
+        [...bound].find(
+          ([, v]) => v.replace(/\s+/g, "") === `\${{${context}}}`,
+        )?.[0];
 
-      // The gate's shell, with whole-line comments stripped. They are stripped for
-      // the same reason the bindings are read from `env:` above: a `run:` body is
-      // one YAML string, so its comments survive parsing, and this gate's comments
-      // necessarily name both contexts in order to explain them.
-      const code = steps
-        .map((s) => s.run ?? "")
-        .join("\n")
-        .split("\n")
-        .filter((line) => !line.trimStart().startsWith("#"));
+      const actorVar = varFor("github.actor");
+      const triggeringVar = varFor("github.triggering_actor");
 
       // `github.actor` alone is the bug; `github.triggering_actor` alone would drop
       // the guarantee about who chose the tag in the first place. Both, or neither
       // property holds.
-      for (const context of ["github.actor", "github.triggering_actor"]) {
-        const name = varFor(context);
-        expect(
-          name,
-          `${file}: approve binds no env var to ${context}`,
-        ).toBeDefined();
-
-        // A bound-but-unread variable is not a gate, and neither is one that is
-        // merely echoed — the refusal has to hang off it. So require the variable
-        // to appear on a line that is part of a CONDITION.
-        //
-        // This is a shape check, not a proof: a deliberate rewrite into some other
-        // control flow would need this assertion updated alongside it, which is the
-        // intended cost. What it does catch is the silent regression — the gate
-        // decaying back to one actor while the comments still describe two.
-        const branchIdx = code.findIndex(
-          (line) => /\bif\b/.test(line) && line.includes(`$${name}`),
-        );
-        expect(
-          branchIdx,
-          `${file}: approve binds ${context} to $${name} but never branches on it`,
-        ).toBeGreaterThanOrEqual(0);
-
-        // AND THAT BRANCH MUST REFUSE - its own branch, not the script's.
-        // Checking `exit 1` anywhere in the combined script lets one actor's
-        // refusal path stand in as evidence for the other's: both variables could
-        // appear in non-enforcing conditions and pass on an unrelated exit. Each
-        // actor's failure path has to reach a nonzero exit on its own.
-        expect(
-          branchRefuses(code, branchIdx),
-          `${file}: the branch testing $${name} never reaches a nonzero exit, so this actor is not actually refused`,
-        ).toBe(true);
-      }
-
-      // The allow-list is what the branches above are testing against, so it has
-      // to be bound and read. This does not pin HOW the comparison is written -
-      // both lanes go through an `is_promoter` helper, and forcing the list into
-      // the `if` line would forbid that - only that the gate has a list at all.
-      const promoters = bound.get("PROMOTERS");
       expect(
-        promoters,
-        `${file}: approve binds no PROMOTERS allow-list`,
+        actorVar,
+        `${file}: approve binds no env var to github.actor`,
       ).toBeDefined();
-      expect(code.join("\n")).toContain("$PROMOTERS");
+      expect(
+        triggeringVar,
+        `${file}: approve binds no env var to github.triggering_actor`,
+      ).toBeDefined();
+
+      const promoterList = (bound.get("PROMOTERS") ?? "").trim();
+      expect(
+        promoterList,
+        `${file}: approve binds no PROMOTERS allow-list`,
+      ).not.toBe("");
+
+      // The gate step is the one that binds the actor contexts; `approve` may hold
+      // others (promote's second step records what was approved) and they are not
+      // the gate.
+      const gateStep = steps.find((s) =>
+        Object.keys(s.env ?? {}).includes(actorVar as string),
+      );
+      expect(
+        gateStep?.run,
+        `${file}: approve's gate step has no run body`,
+      ).toBeDefined();
+      const script = gateStep?.run ?? "";
+
+      // The gate must take its actors through `env:`, never by interpolating a
+      // `${{ }}` expression into the shell. That is what makes the values data
+      // rather than code, and it is also what makes this script safe to execute
+      // here: there is nothing left for the runner to substitute.
+      expect(
+        script.includes("${{"),
+        `${file}: approve's gate interpolates a \${{ }} expression into the shell instead of binding it through env:`,
+      ).toBe(false);
+
+      /** Run the real gate with these two actors; return its exit status. */
+      const runGate = (actor: string, triggering: string): number => {
+        const env: Record<string, string> = {
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+        };
+        for (const [k, v] of bound) env[k] = v;
+        env[actorVar as string] = actor;
+        env[triggeringVar as string] = triggering;
+        return (
+          Bun.spawnSync(["bash", "-c", script], {
+            env,
+            stdout: "pipe",
+            stderr: "pipe",
+          }).exitCode ?? -1
+        );
+      };
+
+      // Real names from the lane's own allow-list, against one that is plainly not
+      // on it. Each case isolates a single condition, so no case can pass for the
+      // reason another one does.
+      const promoter = promoterList.split(/\s+/)[0];
+      const outsider = "not-a-promoter-mutation-probe";
+
+      expect(
+        runGate(promoter, promoter),
+        `${file}: the gate refuses '${promoter}', who is on its own allow-list`,
+      ).toBe(0);
+
+      // THE ORIGINAL DISPATCHER IS NOT A PROMOTER.
+      expect(
+        runGate(outsider, promoter),
+        `${file}: the gate admits a run dispatched by '${outsider}'`,
+      ).not.toBe(0);
+
+      // THE RE-RUNNER IS NOT A PROMOTER - the vector this whole suite exists for.
+      // `github.actor` still names the original promoter on a re-run, so a gate
+      // reading it alone passes this case, and passing it is the bug.
+      expect(
+        runGate(promoter, outsider),
+        `${file}: the gate admits a re-run started by '${outsider}' because the original dispatcher was a promoter`,
+      ).not.toBe(0);
+
+      expect(
+        runGate(outsider, outsider),
+        `${file}: the gate admits a run with no promoter involved at all`,
+      ).not.toBe(0);
 
       // A GATE NOTHING DEPENDS ON IS DECORATION. Everything above establishes that
       // `approve` refuses the wrong actor; none of it establishes that the job
