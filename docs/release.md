@@ -121,7 +121,14 @@ a rollback does not reach a machine whose binary cannot take one.
 
 ## An edge build
 
-`edge-cli.yml` runs on every push to `main`. Version is `package.json` plus
+`edge-cli.yml` runs on every push to `main` — and on nothing else. It has no
+`workflow_dispatch`: its `publish` job holds `BLOB_READ_WRITE_TOKEN`, and a
+dispatch trigger let any collaborator start a job holding the store token on
+demand. An allow-list would be the wrong shape for a lane that must publish
+unattended on every qualifying merge, so the trigger is gone instead; a failed
+publish is re-run with GitHub's re-run button on the push run.
+
+Version is `package.json` plus
 `-edge.<sha>`, shallow checkout, `concurrency: group: ring-edge`,
 `environment: production`. It uses the same publisher as the release lane:
 `--freeze` to write the immutable prefix, then a separate `--promote --to edge`.
@@ -141,9 +148,21 @@ Putting `stable` back on an earlier release is `rollback-cli.yml`.
 Two jobs:
 
 **`approve`** holds no secrets and no variables, and `promote` cannot begin until
-it passes. It refuses unless the dispatcher is a named promoter. The list lives
-in `.github/workflows/promote-cli.yml` and that file is the authority; at the
-time of writing it is `sunny-wego`, `yeouchien-wego`, `chuyeowego`.
+it passes. It refuses unless *both* the dispatcher and whoever started this
+particular run are named promoters. The list lives in
+`.github/workflows/promote-cli.yml` and that file is the authority; at the time
+of writing it is `sunny-wego`, `yeouchien-wego`, `chuyeowego`.
+
+**Why two actors and not one.** Re-running an existing workflow run needs only
+write access, and on a re-run GitHub still reports the *original* dispatcher in
+`github.actor` — only `github.triggering_actor` names the person who pressed the
+button. A gate reading `github.actor` alone therefore passes a replay on the
+original promoter's name, which means anyone with write access could re-run a
+past promote and re-publish that run's `inputs.tag`. Idempotent on the day it was
+dispatched; a downgrade once `cli/stable` has advanced past it. So the check
+covers both, and names which of the two failed. Checking only the re-runner would
+be no better — it would drop the guarantee about who chose the tag in the first
+place.
 
 **Who may change it:** anyone opening a pull request, but `main` requires a
 code-owner review, so widening the list is always a reviewed change. That is the
@@ -203,6 +222,14 @@ rollback out. In wego/cli#48 two `cli/next`-coupled gates arrived without the
 guard and hard-failed every rollback — silently, because nothing exercises a
 rollback until an incident. Splitting the files removes the mode rather than
 guarding it, and `scripts/workflow-lanes.test.ts` keeps them apart.
+
+**The same `approve` gate as the promote lane**, for the same reason and with the
+same two-actor check: no secrets, no variables, and `rollback` cannot begin until
+it passes. The re-runner half matters more here than anywhere. A replayed
+rollback is not a no-op — it moves `cli/stable` back onto that run's `inputs.tag`
+a second time, and since `SECURITY.md` supports only what `cli/stable` serves and
+`wego update` compares checksums rather than versions, the whole install base
+follows it down to an older release on its next update.
 
 **The posture is inverted from a promote, deliberately.** A promote is
 fail-closed because a blocked run costs a re-run. A blocked rollback costs

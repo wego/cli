@@ -39,6 +39,10 @@ jobs:
   # environment with required reviewers (see that file). The list below is the
   # authority. `main` requires a code-owner review, so a change to it is reviewed.
   # This job holds no secrets and no variables.
+  #
+  # Both actors must be promoters, as in the promote lane. A replay matters more
+  # here: it puts `cli/stable` back on this run's `inputs.tag`, which moves the
+  # whole install base onto an older release once stable has advanced past it.
   approve:
     name: Approve rolling cli/stable back to ${{ inputs.tag }}
     runs-on: ubuntu-latest
@@ -47,17 +51,40 @@ jobs:
       - name: Only a named promoter may roll back
         env:
           ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           PROMOTERS: sunny-wego yeouchien-wego chuyeowego
         run: |
           set -euo pipefail
-          for promoter in $PROMOTERS; do
-            if [ "$promoter" = "$ACTOR" ]; then
-              echo "$ACTOR is a named promoter."
-              exit 0
-            fi
-          done
-          echo "::error::$ACTOR is not a named promoter. Allowed: $PROMOTERS"
-          exit 1
+
+          is_promoter() {
+            candidate="$1"
+            for p in $PROMOTERS; do
+              if [ "$p" = "$candidate" ]; then return 0; fi
+            done
+            return 1
+          }
+
+          # `github.actor` is the ORIGINAL dispatcher and does NOT change on a
+          # re-run; `github.triggering_actor` is whoever started THIS run. Both
+          # must be promoters. Checking only the first lets anyone with write
+          # access re-run a past run of this lane and have the gate pass on the
+          # original promoter's name - which for the rollback lane is a replay
+          # that moves `cli/stable` onto an old tag.
+          #
+          # Call `is_promoter` inside an `if !` condition, never as a bare
+          # statement: `set -e` is suspended for a command used as a condition,
+          # and writing the loop body as `[ ... ] && return 0` would make a
+          # non-matching iteration return non-zero and trip `set -e`.
+          if ! is_promoter "$ACTOR"; then
+            echo "::error::$ACTOR is not a named promoter. Allowed: $PROMOTERS"
+            exit 1
+          fi
+          if ! is_promoter "$TRIGGERING_ACTOR"; then
+            echo "::error::$TRIGGERING_ACTOR re-ran this run and is not a named promoter. Allowed: $PROMOTERS"
+            exit 1
+          fi
+
+          echo "$ACTOR dispatched and $TRIGGERING_ACTOR ran this; both are named promoters."
 
   rollback:
     name: Rollback cli/stable to ${{ inputs.tag }}

@@ -40,7 +40,6 @@ on:
       - '.github/actions/setup-bun/**'
       - '.github/actions/sign-manifest/**'
       - '.github/workflows/edge-cli.yml'
-  workflow_dispatch:
 
 # No workflow-level `concurrency:`. Only `publish` moves the pointer, so only
 # `publish` has a group. Do not cancel a run in progress: the pointer move is a
@@ -54,9 +53,19 @@ permissions:
 jobs:
   build:
     name: Build edge binaries
-    # `workflow_dispatch` is for a re-run on main only. A dispatch on another branch
-    # must not move `cli/edge`. `sign` and `publish` need this job, so one guard
-    # covers all three jobs.
+    # This lane has no `workflow_dispatch`. `publish` holds
+    # `BLOB_READ_WRITE_TOKEN`, so the trigger let any collaborator start a job
+    # holding the store token. Re-run the failed push run instead.
+    #
+    # An allow-list job is the wrong shape here. This lane publishes unattended on
+    # every qualifying merge, so a gate would have to be conditional on
+    # `github.event_name` and would end up inside the job that already holds the
+    # token. `promote-cli.yml` and `rollback-cli.yml` keep their `approve` jobs
+    # because those lanes are dispatch-only.
+    #
+    # The ref guard below is kept as insurance: with only the `push` trigger,
+    # `github.ref` is always `refs/heads/main`. `sign` and `publish` need this job,
+    # so one guard covers all three jobs.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
