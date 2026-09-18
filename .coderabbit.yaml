@@ -29,7 +29,8 @@ language: en-US
 # knowledge_base scope below is ignored with no error anywhere but a warning
 # inside a review comment. That is exactly what happened between 2026-09-17 and
 # 2026-09-18, when this value was 347 characters. It is 221 today; keep the
-# headroom, and put anything longer in a path_instruction, which has no cap.
+# headroom, and put anything longer in a path_instruction, whose own cap is far
+# larger (CodeRabbit's docs give it as 20,000 characters).
 tone_instructions: >
   Be direct and concise. Focus on correctness, the stdout JSON contract, the
   OAuth/PKCE surface, and how a binary is installed, verified, replaced and
@@ -414,12 +415,21 @@ reviews:
         The seeded `client_id` is a PUBLIC PKCE client with no secret and is
         meant to be in the tree. Never hardcode an actual secret.
 
-        Do not comment on formatting, naming conventions or missing comments,
-        anywhere in the tree. `biome.jsonc` is a required check on `main` via
-        `ci-cli`, it decides all three, and the build fails on them - so a
-        comment here is either duplicating a gate that already blocks the merge
-        or arguing with it. This paragraph lives here rather than in
-        `tone_instructions` because that field is capped at 250 characters.
+        Do not comment on formatting, naming conventions or missing comments
+        in any file this pattern matches. `biome.jsonc` is a required check on
+        `main` via `ci-cli`, it decides all three, and the build fails on them -
+        so a comment here is either duplicating a gate that already blocks the
+        merge or arguing with it.
+
+        Scope, stated rather than assumed: `**` does not reach a dotted
+        directory or a dotfile under default glob semantics, which is the same
+        thing the `.github/workflows/**` instruction above says about itself.
+        That is the right scope here and not a gap to close, because biome does
+        not format those files either - so outside this pattern the rule has no
+        gate behind it and the rationale does not carry.
+
+        This paragraph lives here rather than in `tone_instructions` because
+        that field is capped at 250 characters.
 
 knowledge_base:
   # The isolation boundary. `opt_out: false` keeps learnings and code
