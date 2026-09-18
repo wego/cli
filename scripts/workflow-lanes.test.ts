@@ -339,8 +339,20 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
         for (const [k, v] of bound) env[k] = v;
         env[actorVar as string] = actor;
         env[triggeringVar as string] = triggering;
+        // `-e`, BECAUSE THAT IS WHAT THE RUNNER DOES. GitHub Actions executes a
+        // `run:` body as `bash -e {0}` unless the step sets `shell:` - and the
+        // OVERRIDES check above asserts this step does not. Both gates currently
+        // set `set -euo pipefail` themselves, so this changes nothing today; it
+        // keeps the harness faithful for a gate that validly leans on the
+        // runner-supplied `-e` instead.
+        //
+        // Without it such a gate would run to completion here and exit 0 where the
+        // runner would abort nonzero - so the failure would be this suite going
+        // RED against a gate that is correct in production, not a regression
+        // slipping through. A false alarm still costs the right thing eventually:
+        // it pressures whoever meets it into weakening the assertion.
         return (
-          Bun.spawnSync(["bash", "-c", script], {
+          Bun.spawnSync(["bash", "-e", "-c", script], {
             env,
             stdout: "pipe",
             stderr: "pipe",
