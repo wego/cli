@@ -1,84 +1,74 @@
 name: Verify the replace path
 description: >-
-  One platform's proof that a machine can ARRIVE at this release and LEAVE it
-  again, plus the install contract. Every step here ran twice before this action
-  existed — inline in `release` for linux-x64, and copied into `replace-macos`
-  for darwin-arm64 — so the two legs could drift without anything noticing. They
-  differed only by the asset name and by `sha256sum` vs `shasum -a 256`, which
-  is exactly the kind of difference a copy accumulates.
+  The post-pointer checks for one platform: a machine can arrive at this release,
+  a machine can leave it, and the install script writes where this build reads.
+  `release` runs them for wego-linux-x64 and `replace-macos` runs them for
+  wego-darwin-arm64.
 
 inputs:
   asset:
-    description: The built binary for this platform, e.g. wego-linux-x64.
+    description: The built binary for this platform, for example wego-linux-x64.
     required: true
   version:
-    description: The version this run is publishing.
+    description: The version this run publishes.
     required: true
   predecessor-dir:
-    description: Directory holding the previously-published binary and its SHA256SUMS.txt.
+    description: Directory that holds the previously published binary and its SHA256SUMS.txt.
     required: true
   prev-usable:
     description: >-
-      '1' when the ring held a usable predecessor. An empty ring is a clean skip,
-      not a failure — there is simply nothing older to update FROM.
+      '1' when the ring held a complete predecessor. An empty ring skips the
+      predecessor steps; there is nothing older to update from.
     required: true
   ring:
-    description: The ring this release advanced, and the one the smokes read from.
+    description: The ring this release moved. The checks download from it.
     required: false
     default: next
   install-url:
     description: >-
-      Fixed, never read from a caller's override. A gate that can be pointed at a
-      loopback shim passes having proved nothing about the real route.
+      The real install route. Fixed on purpose. A check pointed at a loopback stub
+      proves nothing about the route.
     required: false
     default: https://api.wego.com/install
 
   store-origin:
     description: >-
-      The Blob origin this run published under. Empty when nothing was published,
-      which skips the 1.1.0 hop rather than pointing it at a prefix that is not
-      there.
+      The Blob origin this run published to. Empty when nothing was published,
+      which skips the 1.1.0 hop.
     required: false
     default: ''
 
 runs:
   using: composite
   steps:
-    # VERIFY-THEN-EXECUTE, at every point of EXECUTION rather than once per job.
-    # The binaries reached this runner over an artifact hop and SMOKES 4-6 are about
-    # to run one. `release` checked them before publishing as well; repeating it
-    # costs nothing and is what makes a second job safe to have at all.
+    # The binaries arrived over an artifact hop. Check them against the manifest
+    # before anything runs them. The macOS image has no coreutils; `shasum -a 256`
+    # reads the same format.
     - name: Verify the binaries against the signed manifest (${{ inputs.asset }})
       shell: bash
       run: |
         set -euo pipefail
         cd dist
-        # One helper for both runners: linux has coreutils, the macOS image does not.
         if command -v sha256sum >/dev/null 2>&1; then
           sha256sum -c SHA256SUMS.txt
         else
           shasum -a 256 -c SHA256SUMS.txt
         fi
 
-    # VERIFY-THEN-EXECUTE, at every point of EXECUTION rather than once per job.
-    # The binaries reached this runner over an artifact hop and SMOKES 4-6 are about
-    # to run one. `release` checked them before publishing as well; repeating it
-    # costs nothing and is what makes a second job safe to have at all.
+    # Duplicate of the step above. Harmless. Remove it in a code change.
     - name: Verify the binaries against the signed manifest (${{ inputs.asset }})
       shell: bash
       run: |
         set -euo pipefail
         cd dist
-        # One helper for both runners: linux has coreutils, the macOS image does not.
         if command -v sha256sum >/dev/null 2>&1; then
           sha256sum -c SHA256SUMS.txt
         else
           shasum -a 256 -c SHA256SUMS.txt
         fi
 
-    # Verify-then-execute. The next step runs the predecessor as `wego update`, so
-    # its bytes are checked against the SHA256SUMS.txt captured beside it first —
-    # fail-closed, before anything is chmod'd or run.
+    # The next step runs the predecessor. Check its bytes against the manifest
+    # captured beside it first.
     - name: Verify predecessor checksum (${{ inputs.asset }})
       if: inputs.prev-usable == '1'
       shell: bash
@@ -92,23 +82,19 @@ runs:
         [ -f "$sums" ] || { echo "predecessor SHA256SUMS.txt missing — cannot verify before execution, failing." >&2; exit 1; }
         exp="$(awk -v f="$ASSET" '$2==f {print $1}' "$sums")"
         [ -n "$exp" ] || { echo "predecessor $ASSET not listed in SHA256SUMS.txt — failing." >&2; exit 1; }
-        # One helper for both runners: linux has sha256sum, macOS has shasum. The
-        # two copies this replaces each hardcoded their own, which is a difference
-        # that could only ever grow.
         if command -v sha256sum >/dev/null 2>&1; then
           act="$(sha256sum "$bin" | awk '{print $1}')"
         else
           act="$(shasum -a 256 "$bin" | awk '{print $1}')"
         fi
         [ "$exp" = "$act" ] || { echo "predecessor checksum mismatch (expected $exp, got $act) — failing before execution." >&2; exit 1; }
-        # The artifact hop does not carry the exec bit.
+        # The artifact hop drops the exec bit.
         chmod +x "$bin"
         echo "Predecessor verified fail-closed against SHA256SUMS.txt: $("$bin" version)"
 
-    # SMOKE 3 — machines can ARRIVE. A real previously-published binary runs its
-    # own real `update -y` against the ring this release just advanced.
-    # `--require-replace` fails instead of passing when the predecessor is already
-    # the expected version, so a release RERUN cannot greenwash.
+    # SMOKE 3: arrive. The predecessor runs its own `update -y` against the ring.
+    # `--require-replace` fails when the predecessor is already this version, so a
+    # re-run cannot pass without a real replace.
     - name: SMOKE 3 · predecessor self-updates onto this release (${{ inputs.asset }})
       if: inputs.prev-usable == '1'
       shell: bash
@@ -118,14 +104,10 @@ runs:
         RING: ${{ inputs.ring }}
       run: sh scripts/update-smoke.sh "$OLD_BINARY" "$VERSION" --require-replace --ring "$RING"
 
-    # SMOKE 4 — machines can LEAVE, the comparison half. The ring serves exactly
-    # these bytes, so the correct outcome is "already up to date" — asserted, so a
-    # run that silently replaced itself with something else fails.
-    #
-    # WEGO_BUILD_VERSION matters: `update` returns EXIT.OK without doing anything
-    # for a dev-versioned binary, so a gate handed one would go green having tested
-    # nothing. assert-self-update.ts refuses that case outright, and this keeps it
-    # from arising.
+    # SMOKE 4: leave, comparison half. The ring serves these bytes, so the expected
+    # result is "already up to date", asserted. WEGO_BUILD_VERSION is set because
+    # `update` exits 0 without acting for a dev-versioned binary, and
+    # `assert-self-update.ts` refuses that case.
     - name: SMOKE 4 · this build reports up to date against ${{ inputs.ring }} (${{ inputs.asset }})
       shell: bash
       env:
@@ -140,11 +122,9 @@ runs:
             "./dist/$ASSET" "$URL" "$RING" \
             --expect "$VERSION" --expect-unchanged
 
-    # SMOKE 5 — machines can LEAVE, the replace half, ACTUALLY EXECUTED. SMOKE 4
-    # returns on the up-to-date branch, above `downloadAndReplace`, so the fetch,
-    # checksum, chmod and atomic rename in THIS build's code never run there.
-    # `--force-replace` is what reaches them. Without it the replace half of every
-    # build shipped one full release ahead of its first execution.
+    # SMOKE 5: leave, replace half. SMOKE 4 returns before `downloadAndReplace`.
+    # `--force-replace` runs this build's own fetch, checksum, chmod and atomic
+    # rename. On darwin this reaches `clearQuarantine`, which no Linux runner can.
     - name: SMOKE 5 · forced in-place replace, this build's own code (${{ inputs.asset }})
       shell: bash
       env:
@@ -159,17 +139,10 @@ runs:
             "./dist/$ASSET" "$URL" "$RING" \
             --expect "$VERSION" --force-replace
 
-    # THE LEGACY BRIDGE ROUTE, which is not the same journey as SMOKE 3.
-    #
-    # `apps/api`'s bridge pin keys on the USER AGENT, not the platform: any `?dl=`
-    # for ring `stable` from an agent starting `Bun/` is served the frozen
-    # `cli/cli-v1.1.0/` prefix instead of the live pointer. So a 1.0.x machine
-    # cannot reach this release in one hop on EITHER platform - it lands on 1.1.0
-    # first, and only the next `update` carries it the rest of the way. That
-    # intermediate hop verifies a different repository's signature.
-    #
-    # Both legs run it against their own asset, from one definition, because the
-    # route is identical and only the bytes differ.
+    # The 1.1.0 hop. The legacy bridge pin lands every 1.0.x install on the frozen
+    # `cli/cli-v1.1.0/` prefix first, so 1.1.0 is the route for every older
+    # install. Pinned, not derived: SMOKE 3's predecessor moves forward with every
+    # release, and this one does not.
     - name: 1.1.0 upgrade path onto this release (${{ inputs.asset }})
       if: inputs.store-origin != ''
       shell: bash
@@ -186,11 +159,9 @@ runs:
           exit 1
         fi
 
-    # SMOKE 6 — the install contract, which nothing in either repository executes.
-    # SMOKES 3-5 all hand-place a binary and arrange its record; this one installs
-    # for real and asserts the record lands where the installed binary reads it.
-    # Platform-relevant on both legs: the script's own `uname` mapping picks the
-    # asset, so darwin and linux take different paths through it.
+    # SMOKE 6: the install contract. SMOKES 3 to 5 place a binary by hand. This one
+    # runs the install script for real and checks that the record lands where the
+    # installed binary reads it. The script's `uname` mapping differs per platform.
     - name: SMOKE 6 · the install script writes where this build reads (${{ inputs.asset }})
       shell: bash
       env:

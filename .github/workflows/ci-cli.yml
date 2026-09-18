@@ -1,14 +1,12 @@
 name: ci-cli
 
-# Lint/format + typecheck + unit tests. Everything in this repository is the CLI,
-# so there is no path filter and no aggregator job: in wego-ai this workflow
-# carried both because a change to another app had to skip the work while still
-# reporting a required check. One package, one job - and that job IS the required
-# status check on `main`, which is why it is named `ci-cli` and why the name must
-# not change without a ruleset edit.
+# Lint, typecheck and unit tests. Runs on every pull request and every push to main.
 #
-# No signing here. Signing belongs to the release lanes, which hold the identity
-# and the store token; CI runs on every pull request and holds neither.
+# The job name `ci-cli` is the required status check on `main`. Do not rename it
+# without a ruleset change. There is no path filter: a filtered workflow does not
+# report, and a required check that does not report blocks the pull request.
+#
+# This workflow does not sign. Only the release lanes sign.
 on:
   push:
     branches: [main]
@@ -31,11 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Read-only job (no git push / auth) - don't persist the token in
-          # .git/config (artipacked hardening; flagged by zizmor).
+          # Read-only job. Do not keep the token in .git/config.
           persist-credentials: false
 
-      # Composite action: setup-bun + restore cache + frozen install (+ save on main).
       - uses: ./.github/actions/setup-bun
 
       - name: Lint & format check (biome check)
@@ -44,8 +40,7 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      # Hermetic and network-free: every test runs against injected deps or a
-      # temp dir. The three suites that needed the real `apps/api` in the same
-      # tree stayed in wego-ai.
+      # The tests use no network. Each test runs against injected dependencies or a
+      # temporary directory.
       - name: Unit tests
         run: bun run test

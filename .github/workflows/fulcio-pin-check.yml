@@ -1,41 +1,22 @@
 name: fulcio-pin-check
 
-# IS THE PINNED SIGSTORE TRUST MATERIAL STILL WHAT FULCIO SERVES?
+# Compare the Fulcio roots pinned in `src/release-signing/sigstore-roots.ts` with
+# what https://fulcio.sigstore.dev/api/v1/rootCert serves.
 #
-# `src/release-signing/sigstore-roots.ts` pins both of Fulcio's public-good
-# certificates INTO EVERY BINARY at build time. The day Sigstore begins issuing
-# leaves under material a binary does not carry, that binary refuses every release
-# published from then on - silently, permanently, and without being able to take a
-# fix, because a binary that cannot verify an update cannot be updated into one
-# that can.
+# Every binary carries the pinned roots. If Sigstore starts to issue leaf
+# certificates under other material, every installed binary refuses every new
+# release and cannot take a fix. The release lanes stay green: they get a fresh
+# certificate on each run. This check is the only notice. A rotation is a code
+# change to `sigstore-roots.ts`, reviewed and released like any other.
 #
-# NOTHING ELSE IN THIS REPOSITORY WOULD NOTICE. The release lane keeps signing
-# fine: it gets fresh certificates every run, so CI stays green while every install
-# in the field quietly stops accepting new records. `docs/release.md` states the
-# gap plainly - "There is no automatic notice when Fulcio rotates" - and the only
-# standing mitigation is a QUARTERLY manual dependency check. A rotation happens on
-# the day it happens; a quarterly check finds it up to three months later.
-#
-# WHY A SCHEDULE RATHER THAN A GATE IN THE RELEASE LANES. The alternative is to
-# make every promote or rollback prove its candidate can still verify something
-# signed today, by driving a real binary through a real update before the pointer
-# moves. That was considered and rejected: it costs ~30s of exposure on the one
-# path where exposure is the thing being minimised, it asks the question one tag at
-# a time, and it only ever asks during an incident. This risk is rare, sudden, and
-# hits the whole install base at once - which a cheap scheduled check handles well
-# and an expensive per-operation gate handles badly.
-#
-# ~2 SECONDS, ONE HTTPS REQUEST. Cheap enough that weekly costs nothing, and
-# weekly is the right resolution for a change that arrives without warning.
+# A weekly schedule, not a gate in the release lanes: the risk is rare, sudden, and
+# hits every install at once. One HTTPS request, about 2 seconds.
 on:
   schedule:
-    # Mondays, 07:00 UTC - early in the week, so a rotation is found with five
-    # working days in front of it rather than over a weekend.
+    # Monday 07:00 UTC, so a rotation is found with the working week ahead.
     - cron: '0 7 * * 1'
   workflow_dispatch:
-  # Also on any change to the pin itself: a pull request that edits
-  # `sigstore-roots.ts` is exactly when you want this to say whether the new
-  # material is what Fulcio is actually serving.
+  # Also on a pull request that changes the pin or the checker.
   pull_request:
     paths:
       - 'src/release-signing/sigstore-roots.ts'
@@ -51,10 +32,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      # Only for the issue below. A red scheduled run reaches nobody: GitHub mails
-      # the last person to touch the cron file, if anyone, and otherwise the
-      # failure just sits on the Actions tab - which is the same silence this
-      # workflow exists to break.
+      # For the issue below. A red scheduled run reaches nobody on its own.
       issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,13 +41,11 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
 
+      # The script output is captured for the issue body.
       - name: Compare the pin against fulcio.sigstore.dev
         id: check
         run: |
           set -euo pipefail
-          # Capture for the issue body: the script's own message is the whole
-          # product of this check - it fires at most once every few years, to
-          # someone who has never seen it before.
           if bun run scripts/check-fulcio-pin.ts 2>&1 | tee "$RUNNER_TEMP/result.txt"; then
             exit 0
           fi
@@ -80,13 +56,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           exit 1
 
-      # ONE OPEN ISSUE, NOT ONE PER WEEK. The cron keeps firing while the pin is
-      # stale, and fifty-two issues about the same rotation is how a real alert
-      # gets muted. Reuses the open one if there is already an open one.
-      #
-      # Skipped on pull requests: a PR editing the pin has its own red check
-      # sitting on it, which is the notification, and a fork PR cannot write
-      # issues anyway.
+      # One open issue, not one per week. Skipped on pull requests: the red check
+      # on the PR is the notice, and a fork PR cannot write issues.
       - name: Open an issue if the pin has drifted
         if: failure() && github.event_name != 'pull_request'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -96,9 +67,7 @@ jobs:
         with:
           script: |
             const title = "Fulcio trust anchors have drifted from the pinned set";
-            // Matched on TITLE, not on the label: the label may not exist yet the
-            // first time this fires, and `listForRepo` filtered by a label nothing
-            // carries is a needlessly fragile way to ask "did we already say this".
+            // Match on the title. The label may not exist the first time this runs.
             const { data: open } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
