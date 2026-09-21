@@ -44,11 +44,10 @@ jobs:
   # who may move `cli/stable` is a diff: CODEOWNERS owns `.github/workflows/`, so
   # `main` will not take it without a release-signer review, and the change stays
   # visible in the history afterwards. An environment's reviewer list is a settings
-  # toggle any repository admin can flip in a browser, and with no organisation
-  # audit log on this account there is no record that anyone did - so its current
-  # value cannot be read from a checkout, and neither can its past. That is the
-  # property being bought here, and it is the reason to keep the list even though
-  # reviewers are now available.
+  # toggle any repository admin can flip in a browser, and nothing about it is
+  # legible from a checkout - not its current value, not who last changed it, not
+  # when. That is the property being bought here, and it is the reason to keep the
+  # list even though reviewers are now available.
   #
   # One person dispatches and approves. There is no four-eyes rule. This job holds
   # no secrets and no variables.

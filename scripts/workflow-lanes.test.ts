@@ -351,7 +351,7 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
       // Sets, not strings: `PROMOTERS` is one space-separated line and CODEOWNERS
       // repeats the handles across nineteen rules, so order and spacing are not the
       // property. The remote team is out of scope here - it cannot be read without
-      // the network, and REPO-10's periodic sweep is what reconciles it.
+      // the network, and a periodic out-of-band sweep is what reconciles it.
       const promoters = new Set(promoterList.split(/\s+/).map(normaliseHandle));
       const owners = codeownersOwners();
 
