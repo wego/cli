@@ -257,3 +257,102 @@ describe("every `bun install` goes through the composite action", () => {
     expect(action).toContain("HUSKY: 0");
   });
 });
+
+/**
+ * DEPENDABOT COVERAGE: every composite action that uses a third-party action
+ * has an entry in `.github/dependabot.yml` naming its directory.
+ *
+ * WHY THIS IS NOT COVERED ELSEWHERE. The dependency graph parses GitHub Actions
+ * manifests only under `.github/workflows/`, so an action named only inside a
+ * a `.github/actions/<dir>/action.yml` is invisible to it - and therefore invisible to
+ * Dependabot alerts. Three were, before `.github/dependabot.yml` existed:
+ * `oven-sh/setup-bun` and `actions/cache` in `setup-bun`, and
+ * `sigstore/cosign-installer` in `sign-manifest`. The last one runs in the `sign`
+ * job, the only job in this repository holding `id-token: write`.
+ *
+ * Every one of them is SHA-pinned. A pin stops a compromised publisher pushing
+ * new code at us; it cannot tell us the pinned version has since been disclosed
+ * vulnerable. `.github/dependabot.yml` is what tells us, and only for the
+ * directories it names.
+ *
+ * WHY A TEST. The failure is silent in both directions:
+ *
+ *   - Add a composite action, or a third-party `uses:` to an existing one, and
+ *     forget the entry: the action is watched by nothing, the checks stay green,
+ *     and nobody finds out until a disclosure nobody was told about.
+ *   - Rename or delete a composite directory and leave the entry: Dependabot
+ *     keeps an update job pointed at a path that no longer exists. It does not
+ *     fail the config; it just covers nothing.
+ *
+ * Both assertions below are the same invariant `#77` added for PROMOTERS vs
+ * CODEOWNERS: the config and the thing it covers must not drift.
+ *
+ * `directory: "/"` is deliberately NOT accepted as coverage for these. In
+ * dependabot-core's `github_actions` file fetcher, `/` is a special case that
+ * fetches a ROOT-level `action.yml` and then scans `.github/workflows/`; every
+ * other directory scans that directory itself. A composite action is only
+ * reached by an entry that names its own directory.
+ */
+describe("dependabot watches every composite action's third-party uses", () => {
+  const actionFileFor = (dir: string): string | undefined =>
+    [
+      `.github/actions/${dir}/action.yml`,
+      `.github/actions/${dir}/action.yaml`,
+    ].find((path) => existsSync(path));
+
+  /**
+   * A `uses:` that resolves outside this repository. `./...` is a local
+   * composite action - its own directory is checked on its own iteration, and
+   * it has no version to bump.
+   */
+  const thirdPartyUses = (dir: string): string[] => {
+    const action = Bun.YAML.parse(
+      readFileSync(actionFileFor(dir) as string, "utf8"),
+    ) as { runs?: { steps?: { uses?: string }[] } };
+
+    return (action.runs?.steps ?? [])
+      .map((step) => step.uses)
+      .filter((uses): uses is string => uses !== undefined)
+      .filter((uses) => !uses.startsWith("./"));
+  };
+
+  const dependabot = Bun.YAML.parse(
+    readFileSync(".github/dependabot.yml", "utf8"),
+  ) as { updates?: { "package-ecosystem"?: string; directory?: string }[] };
+
+  const watched = new Set(
+    (dependabot.updates ?? [])
+      .filter((u) => u["package-ecosystem"] === "github-actions")
+      .map((u) => u.directory)
+      .filter((d): d is string => d !== undefined),
+  );
+
+  const composites = readdirSync(".github/actions").filter(
+    (d) => actionFileFor(d) !== undefined,
+  );
+
+  const needsWatching = composites.filter((d) => thirdPartyUses(d).length > 0);
+
+  it("finds composite actions with third-party uses to check", () => {
+    // Guards the loops below against an empty list passing vacuously - a moved
+    // directory would otherwise turn this whole block into a no-op.
+    expect(composites.length).toBeGreaterThan(0);
+    expect(needsWatching.length).toBeGreaterThan(0);
+  });
+
+  it.each(
+    needsWatching,
+  )("the %s action has a dependabot entry for its own directory", (dir) => {
+    expect(watched).toContain(`/.github/actions/${dir}`);
+  });
+
+  it("has no dependabot entry pointing at a directory it need not watch", () => {
+    const stale = [...watched]
+      .filter((d) => d.startsWith("/.github/actions/"))
+      .filter(
+        (d) => !needsWatching.includes(d.slice("/.github/actions/".length)),
+      );
+
+    expect(stale).toEqual([]);
+  });
+});
