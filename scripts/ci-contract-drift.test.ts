@@ -156,10 +156,26 @@ describe("package.json: the contract scripts", () => {
 
   it("refreshes the contract by hand, never on a schedule", () => {
     expect(scripts["api-contract:refresh"]).toBe(
-      "bun run scripts/refresh-api-contract.ts",
+      "bun run scripts/refresh-api-contract.ts && bun run api-types:generate",
     );
     expect(scripts["api-types:generate"]).toBe(
       "bun run scripts/generate-api-types.ts",
+    );
+  });
+
+  it("regenerates the types as part of the refresh, and only on success", () => {
+    // `postinstall` generated the types from the OLD contract. A refresh that
+    // stopped at the JSON would leave them behind it, and the very next
+    // `bun run typecheck` would run Checks A and C against shapes the API no
+    // longer publishes - the stale-snapshot failure this whole PR exists to
+    // end, reintroduced one step later.
+    //
+    // `&&`, not `;`: a failed fetch must leave the tree exactly as it was.
+    const refresh = scripts["api-contract:refresh"] ?? "";
+    expect(refresh).toContain("&& bun run api-types:generate");
+    expect(refresh).not.toContain("; bun run api-types:generate");
+    expect(refresh.indexOf("refresh-api-contract")).toBeLessThan(
+      refresh.indexOf("api-types:generate"),
     );
   });
 });

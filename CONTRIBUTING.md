@@ -162,10 +162,15 @@ match the contract in the tree.
 When the API ships a change you need:
 
 ```bash
-bun run api-contract:refresh   # fetch https://api.wego.com/openapi, print old and new version
+bun run api-contract:refresh   # fetch https://api.wego.com/openapi, print old and new version, regenerate the types
 bun run typecheck              # Checks A and C: the CLI parses what the API returns, and sends what it accepts
 bun test ./src/api-contract.test.ts   # Check B: the fields the CLI's behaviour reads are still published
 ```
+
+The refresh regenerates `src/api-types.d.ts` for you, and only if the fetch
+succeeded. Without that, the types on disk would still be the ones `postinstall`
+built from the previous contract, and the typecheck below would check the wrong
+shapes.
 
 Commit the `contract/openapi.json` diff on its own, so the contract change is
 reviewable separately from whatever you do about it. Then fix what the checks

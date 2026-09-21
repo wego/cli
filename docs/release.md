@@ -622,10 +622,15 @@ by `postinstall`, so it is never committed and never stale relative to the tree.
 Refreshing is a person's job, done when the API ships something the CLI needs:
 
 ```bash
-bun run api-contract:refresh   # fetch production, write the file, print old and new version
+bun run api-contract:refresh   # fetch production, write the file, regenerate the types, print old and new version
 bun run typecheck              # Checks A and C, the compile-time halves
 bun test ./src/api-contract.test.ts   # Check B, the runtime walk
 ```
+
+The refresh chains `api-types:generate`, and only on a successful fetch: the
+types on disk were built by `postinstall` from the previous contract, so a
+refresh that stopped at the JSON would leave the typecheck comparing against
+shapes the API no longer publishes.
 
 Commit the JSON diff on its own. Then fix what the checks report, in a separate
 commit. A failing check is a finding about the API: report it, do not widen a

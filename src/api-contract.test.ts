@@ -234,16 +234,36 @@ function deref(node: SpecNode | undefined): SpecNode | undefined {
   return spec.components?.schemas?.[name];
 }
 
-/** Every alternative a node can be: itself, or each branch of a composition. */
-function variants(node: SpecNode | undefined): SpecNode[] {
+/**
+ * Every alternative the response can BE: itself, or each branch of an `anyOf` /
+ * `oneOf`. `allOf` is not an alternative - it is one shape assembled from parts
+ * - so it stays a single entry here.
+ *
+ * That distinction is what `everyVariant` rests on. Expanding `allOf` here too
+ * would make each part look like a competing response variant, and an
+ * `everyVariant` field carried by ONE part would then be reported missing from
+ * the others: a false failure on a perfectly valid contract.
+ */
+function alternatives(node: SpecNode | undefined): SpecNode[] {
   const resolved = deref(node);
   if (!resolved) return [];
   const branches = resolved.anyOf ?? resolved.oneOf;
-  if (branches) return branches.flatMap((branch) => variants(branch));
+  if (branches) return branches.flatMap((branch) => alternatives(branch));
+  return [resolved];
+}
+
+/**
+ * The shapes a property lookup may land on at one level: each alternative, plus
+ * each `allOf` part, because an assembled shape carries its parts' properties.
+ * This is the merge `alternatives` deliberately does not do.
+ */
+function lookupShapes(node: SpecNode | undefined): SpecNode[] {
+  const resolved = deref(node);
+  if (!resolved) return [];
+  const branches = resolved.anyOf ?? resolved.oneOf;
+  if (branches) return branches.flatMap((branch) => lookupShapes(branch));
   if (resolved.allOf) {
-    // `allOf` is one shape assembled from parts, not alternatives: a path
-    // resolves against it if it resolves against any part.
-    return [resolved, ...resolved.allOf.flatMap((part) => variants(part))];
+    return [resolved, ...resolved.allOf.flatMap((part) => lookupShapes(part))];
   }
   return [resolved];
 }
@@ -263,13 +283,13 @@ function resolves(node: SpecNode | undefined, path: string): boolean {
       intoItems = true;
     }
     // A property may sit on any branch of a composition at this level.
-    const candidates = variants(current)
+    const candidates = lookupShapes(current)
       .map((variant) => variant.properties?.[segment])
       .filter((child): child is SpecNode => child !== undefined);
     if (candidates.length === 0) return false;
     let next = deref(candidates[0]);
     if (intoItems) {
-      const items = variants(next)
+      const items = lookupShapes(next)
         .map((variant) => variant.items)
         .filter((item): item is SpecNode => item !== undefined)[0];
       if (!items) return false;
@@ -280,13 +300,15 @@ function resolves(node: SpecNode | undefined, path: string): boolean {
   return current !== undefined;
 }
 
-/** Why this declared path does not hold, or `undefined` when it does. */
-function unresolvedPath(field: PublishedField): string | undefined {
-  const body = bodySchema(field.operationId, field.status);
-  if (!body) {
-    return `${field.operationId} ${field.status} - the operation or status is not in the published contract at all`;
-  }
-  const branches = variants(body);
+/** Why this declared path does not hold in THIS body, or `undefined` when it
+ *  does. Split from `unresolvedPath` so the `everyVariant` rule can be tested
+ *  against a constructed body, not only against whatever the contract happens
+ *  to publish today. */
+function missingFrom(
+  body: SpecNode | undefined,
+  field: PublishedField,
+): string | undefined {
+  const branches = alternatives(body);
   if (branches.length === 0) {
     return `${field.operationId} ${field.status} - the published body has no resolvable schema`;
   }
@@ -298,6 +320,15 @@ function unresolvedPath(field: PublishedField): string | undefined {
     ? ` (present in ${hits.length}/${branches.length} response variants; the CLI reads it whichever variant it asked for)`
     : "";
   return `"${field.path}" not found in ${field.operationId} ${field.status} body${variantNote} - ${field.because}`;
+}
+
+/** Why this declared path does not hold, or `undefined` when it does. */
+function unresolvedPath(field: PublishedField): string | undefined {
+  const body = bodySchema(field.operationId, field.status);
+  if (!body) {
+    return `${field.operationId} ${field.status} - the operation or status is not in the published contract at all`;
+  }
+  return missingFrom(body, field);
 }
 
 describe("Check B - the fields the CLI's behaviour depends on are published", () => {
@@ -340,6 +371,40 @@ describe("Check B - the fields the CLI's behaviour depends on are published", ()
     // not resolve, or `[]` would be decoration and every array path a false
     // pass.
     expect(resolves(rates, "rates.id")).toBe(false);
+  });
+
+  it("reads an `allOf` as one assembled shape, not as competing variants", () => {
+    // The bug this kills: expanding `allOf` into "variants" made each part look
+    // like an alternative response, so an `everyVariant` field carried by ONE
+    // part was reported missing from the others - a failure on a contract that
+    // publishes the field on every response it can return.
+    const assembled: SpecNode = {
+      allOf: [
+        { properties: { searchComplete: {} } },
+        { properties: { metadata: { properties: { totalCandidates: {} } } } },
+      ],
+    };
+    expect(alternatives(assembled)).toHaveLength(1);
+    expect(resolves(assembled, "searchComplete")).toBe(true);
+    expect(resolves(assembled, "metadata.totalCandidates")).toBe(true);
+    expect(resolves(assembled, "metadata.notAField")).toBe(false);
+
+    const field: PublishedField = {
+      operationId: "getHotelSearchResults",
+      status: 200,
+      path: "searchComplete",
+      because: "a field one `allOf` part supplies is still published",
+      everyVariant: true,
+    };
+    expect(missingFrom(assembled, field)).toBeUndefined();
+
+    // And the rule it must not weaken: a genuine `anyOf` still has to carry the
+    // field in every branch.
+    const union: SpecNode = {
+      anyOf: [{ properties: { searchComplete: {} } }, { properties: {} }],
+    };
+    expect(alternatives(union)).toHaveLength(2);
+    expect(missingFrom(union, field)).toContain("present in 1/2");
   });
 });
 
