@@ -21,8 +21,16 @@ runs:
         restore-keys: |
           bun-${{ runner.os }}-
 
+    # `HUSKY=0` stops the `prepare` script from pointing `core.hooksPath` at
+    # `.husky/_` on a runner. The hooks are a local fast path, not a control:
+    # `ci-cli` runs the full `biome check` itself. Without this, the lanes that
+    # commit - release-please, the badge, edge - would fire a pre-commit hook
+    # inside a job that has no reason to lint, and a hook failure there would
+    # fail a release for a file the lane did not write.
     - run: bun install --frozen-lockfile
       shell: bash
+      env:
+        HUSKY: 0
 
     # Save on main only. A cache saved on a PR branch is readable only by that
     # branch. main's cache is readable by every PR.

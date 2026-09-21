@@ -77,6 +77,26 @@ ran your own code. If you would rather not use direnv, either go through
 `bun run dev --` every time, or `bun link` once. Either way, check `which wego`
 before you trust a result.
 
+### The pre-commit hook
+
+`bun install` installs a Git hook through [husky](https://typicode.github.io/husky).
+It runs `biome check` over the files you staged, and nothing else, so it costs
+well under a second. That is the same check `ci-cli` runs; the hook only narrows
+it to your change.
+
+The hook reports, it does not rewrite. When it fails, run `bun run format`, look
+at what changed, and stage it. A hook that wrote and re-staged for you would
+commit hunks you never staged out of a partially staged file.
+
+```bash
+git commit --no-verify        # skip the hook for one commit
+HUSKY=0 bun install           # do not install hooks at all
+```
+
+`ci-cli` skips neither, so `--no-verify` moves the failure, it does not remove
+it. If you use a GUI Git client and the hook fails with `bun: command not found`,
+your client is not loading your shell's `PATH`; husky documents the fix.
+
 ## Before you open a pull request
 
 ```bash

@@ -1,0 +1,10 @@
+# Biome over the staged files only. This is the same `biome check` that `ci-cli`
+# runs as a required check, narrowed to what you are about to commit, so it
+# finishes in well under a second on a normal change.
+#
+# It checks, it does not write. A hook that rewrote your files would have to
+# re-stage them, and on a partially staged file that means committing hunks you
+# never staged. When this fails, run `bun run format`, read the diff, stage it.
+#
+# `git commit --no-verify` skips this. `ci-cli` does not skip.
+bun run lint:staged
