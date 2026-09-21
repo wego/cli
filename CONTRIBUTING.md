@@ -86,15 +86,25 @@ commits make the merge box say *"Commits must have verified signatures"*, and it
 stays that way until you fix it.
 
 This is not the release signing described in `docs/release.md`. That is
-[cosign](https://docs.sigstore.dev) proving which workflow built a published
-binary. This is git proving who wrote a line of source. Both exist because a
-release is only as trustworthy as the commit it was built from, and git's author
-field is free text: anyone can commit under your name and address, and nothing
-checks it. A signature is what turns that claim into something verifiable.
+[cosign](https://docs.sigstore.dev) signing the SHA256 manifest a release is built
+from, with a release-signing record naming the identity allowed to sign it. This is
+git binding one commit to a key GitHub can name.
+
+Be precise about what that buys, because it is easy to overstate: a signature
+proves who **committed**, not who wrote. Author and committer differ whenever one
+person rebases, amends or applies another's work, and it is the committer who
+signs — so what a signature records is who **vouched** for the change. That is
+exactly why it is worth having. Git's author field is free text: anyone can commit
+under your name and address, and nothing checks it. A signature is what turns that
+claim into something a person is accountable for.
 
 Setting it up is three steps, and **the third is the one people miss**.
 
 ### 1. Tell git to sign
+
+**Requires Git 2.34 or later.** SSH signing did not exist before it; an older git
+accepts the configuration below and then quietly fails to sign. Check with
+`git --version` first.
 
 SSH signing reuses the key you already push with, so there is no GPG keyring to
 manage:
@@ -135,9 +145,14 @@ git problem and is not one.
 
 ```bash
 PR=123     # your pull request number
-gh api "repos/wego/cli/pulls/$PR/commits" --jq \
+gh api --paginate "repos/wego/cli/pulls/$PR/commits?per_page=100" --jq \
   '.[] | "\(.sha[0:7])\t\(.commit.verification.verified)\t\(.commit.verification.reason)"'
 ```
+
+`--paginate` is not decoration: `gh api` returns 30 commits per page by default, so
+a branch with more than 30 would hide an unsigned one behind the first page and the
+check would report success. The question here is *does any commit violate this*, and
+a single page cannot answer it.
 
 | `reason` | What it means | Fix |
 | --- | --- | --- |
