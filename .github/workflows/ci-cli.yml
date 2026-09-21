@@ -44,3 +44,19 @@ jobs:
       # temporary directory.
       - name: Unit tests
         run: bun run test
+
+      # GitHub's dependency graph does not resolve `bun.lock`. The SBOM for this
+      # repository lists 16 packages - the manifest plus the pinned Actions - where
+      # `bun.lock` resolves 100, so Dependabot's 0 open alerts describe under a tenth
+      # of what installs, not a clean tree. `bun audit` reads the lockfile, and is the
+      # only control in this repository that sees the other 91.
+      #
+      # No `|| true`, no `continue-on-error`: `ci-cli` is the required check on `main`
+      # and has no path filter, so a finding blocks the merge by design, and a job that
+      # goes green while reporting findings is filtered out of everyone's notifications
+      # inside a fortnight. Running on push to `main` as well as on pull requests
+      # re-audits the whole tree on every merge, which is what stands in for a scheduled
+      # scan. `edge-cli.yml` is deliberately left alone: it fires on the same push event,
+      # so it would audit the same commit concurrently.
+      - name: Audit the installed dependency tree (bun.lock)
+        run: bun audit --audit-level=high
