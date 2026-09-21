@@ -1,0 +1,131 @@
+# yaml-language-server: $schema=https://json.schemastore.org/dependabot-2.0.json
+#
+# What this file is for: the dependency graph for this repository returns 16
+# packages - the 9 declared in `package.json`, the 6 action repos named directly
+# in `.github/workflows/`, and the root package itself. `bun.lock` resolves 100,
+# and that whole tree is covered by `bun audit` in `ci-cli` and in the release
+# lane (#75).
+#
+# What nothing covered before this file: GitHub Actions that appear ONLY inside
+# a composite definition under `.github/actions/`. Three of them:
+#
+#   oven-sh/setup-bun          .github/actions/setup-bun/action.yml
+#   actions/cache              .github/actions/setup-bun/action.yml
+#   sigstore/cosign-installer  .github/actions/sign-manifest/action.yml
+#
+# The last one is the reason this is worth doing. `sign-manifest` runs in the
+# `sign` job, the only job in the repository that holds `id-token: write`. Every
+# action in this repository is SHA-pinned, which stops a compromised publisher
+# from pushing new code at us - but a pin cannot tell you that the version you
+# pinned has since been DISCLOSED vulnerable. Nothing here did.
+#
+# `verify-build/action.yml` and `verify-replace/action.yml` contain no
+# third-party `uses:` and so need no entry.
+#
+# Deliberately NOT here: a `bun` ecosystem entry. Considered and rejected. One
+# runtime dependency means near-zero churn, `bun audit` already watches that
+# tree for disclosures, and `/package.json` and `/bun.lock` sit at the
+# release-signer bar in CODEOWNERS - so every lockfile bump would spend one of
+# three named reviewers on a PR with no prose to review.
+
+version: 2
+
+updates:
+  # 1. The workflows. `directory: "/"` is where the `github-actions` ecosystem
+  #    looks for `.github/workflows/*.yml`, and this is the entry that covers
+  #    the 6 action repos the dependency graph already sees.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Singapore"
+    # Small on purpose. Grouped below, so the steady state is one open PR; the
+    # headroom is for a week where a group member is held back by a failing
+    # check and a second bump lands behind it.
+    open-pull-requests-limit: 5
+    # Without this, Dependabot titles its pull requests `Bump <dep> from <a> to
+    # <b>`, which is not a Conventional Commit. Pull requests here are squashed
+    # and release-please reads the squash subject, so an untyped subject
+    # produces no release entry at all. `prefix` + `include: "scope"` gives
+    # `chore(deps): ...`, which `scripts/commit-convention.ts` accepts today -
+    # it treats scopes as an open set.
+    #
+    # `.github/workflows/ci-cli.yml` still SKIPS bots in its title check, and
+    # that is not redundant with this: a title gate on a bot fails a required
+    # check on a pull request no human can retitle.
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    # One pull request for all workflow-level action bumps. These are read by
+    # the same reviewers in the same sitting and there is nothing to learn from
+    # splitting them. The composite entries below are deliberately left OUT of
+    # this group - see the note there.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # 2 and 3. The composite actions. These entries exist because the
+  #    `github-actions` ecosystem is DIRECTORY-SCOPED, and the `/` entry above
+  #    does not reach `.github/actions/*/action.yml`.
+  #
+  #    The mechanism, from `github_actions/lib/dependabot/github_actions/
+  #    file_fetcher.rb` in dependabot-core, because it is not in the published
+  #    docs and it is what makes these two entries work:
+  #
+  #      - `directory: "/"` is a special case. It fetches a ROOT-level
+  #        `action.yml`/`action.yaml` if one exists, then scans
+  #        `.github/workflows/`. Nothing else. There is no root `action.yml`
+  #        in this repository, so that entry sees the workflows and only the
+  #        workflows.
+  #      - Any OTHER directory sets the scan root to that directory itself and
+  #        takes every file matching `/\.ya?ml$/` in it. Point an entry at
+  #        `/.github/actions/setup-bun` and the file it picks up is that
+  #        directory's `action.yml`.
+  #
+  #    So one entry per composite-action directory is not a workaround, it is
+  #    the supported shape. It is also why a `directories:` glob is not used
+  #    here: it would be shorter, and a glob that silently matches nothing is
+  #    precisely the failure this file exists to prevent. Two directories do
+  #    not need the brevity.
+  #
+  #    They are NOT grouped with the workflow bumps above, and not with each
+  #    other. Each one should be visibly attributable to its own directory, so
+  #    that "did this entry ever produce a pull request?" has an answer.
+  #
+  #    NOTE: Dependabot reads this file from the DEFAULT BRANCH only. Nothing
+  #    below takes effect, and `/network/updates` reports nothing about it,
+  #    until this is merged to `main`.
+
+  # `oven-sh/setup-bun` and `actions/cache` (as `actions/cache/restore` and
+  # `actions/cache/save`). Neither appears in the dependency graph.
+  - package-ecosystem: "github-actions"
+    directory: "/.github/actions/setup-bun"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Singapore"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  # `sigstore/cosign-installer`. This one runs in the `sign` job - the only job
+  # in this repository holding `id-token: write`, and therefore the only one
+  # that can mint an OIDC token Fulcio will issue a signing certificate against.
+  # A disclosed vulnerability in the installer is a disclosed vulnerability in
+  # the release signer.
+  - package-ecosystem: "github-actions"
+    directory: "/.github/actions/sign-manifest"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Singapore"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+      include: "scope"

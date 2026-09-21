@@ -48,12 +48,13 @@ jobs:
       #
       # The title goes through the environment, never into the `run:` string. It is
       # attacker-controlled text on a public repository.
-      # Bots are skipped, not trusted: Dependabot's unconfigured title is
-      # `Bump <dep> from <a> to <b>`, which this gate rejects, and there is no
-      # `.github/dependabot.yml` here to give it a `chore(deps):` prefix. Gating
-      # a bot's title would fail the required check on a pull request no human
-      # can retitle. release-please already titles its own `chore(cli): release
-      # X.Y.Z`, so nothing is lost.
+      # Bots are skipped, not trusted: `.github/dependabot.yml` now sets
+      # `commit-message.prefix: chore` with `include: scope`, so Dependabot
+      # titles arrive as `chore(deps): ...` rather than the unconfigured
+      # `Bump <dep> from <a> to <b>` this gate rejects. The skip stays anyway,
+      # on its own second reason: gating a bot's title would fail the required
+      # check on a pull request no human can retitle. release-please already
+      # titles its own `chore(cli): release X.Y.Z`, so nothing is lost.
       - name: Pull request title is a Conventional Commit
         if: github.event_name == 'pull_request' && github.event.pull_request.user.type != 'Bot'
         env:
