@@ -9,7 +9,9 @@
 #
 # Husky runs this under `sh -e`, so any failing command ends the commit.
 #
-# Total on a normal change: well under a second, plus ~2.7s when typecheck runs.
+# Measured on this repository: 0.18s for a docs-only commit, 0.28s when a workflow
+# is staged, 0.57s when TypeScript is staged, 0.91s for a commit that trips every
+# stanza at once.
 
 staged() {
   git diff --cached --name-only --diff-filter=ACM -- "$@"
@@ -51,10 +53,13 @@ bun run lint:staged
 
 # The four shell scripts drive real installs and updates on machines that are not
 # yours. CodeRabbit runs shellcheck too, after the push.
-staged_sh=$(staged '*.sh')
-if [ -n "$staged_sh" ]; then
+#
+# Null-delimited, like the ci-cli step: a filename with a space in it would
+# otherwise arrive at shellcheck as two arguments, and the file it named would go
+# unchecked while the hook still passed.
+if [ -n "$(staged '*.sh')" ]; then
   if command -v shellcheck >/dev/null 2>&1; then
-    echo "$staged_sh" | xargs shellcheck
+    git diff --cached --name-only --diff-filter=ACM -z -- '*.sh' | xargs -0 shellcheck
   else
     echo 'husky: shellcheck not installed, shell scripts unchecked (brew install shellcheck)' >&2
   fi
@@ -62,7 +67,7 @@ fi
 
 # --- targeted tests --------------------------------------------------------
 
-# 50 tests, ~150ms, over the workflow files. These read YAML and assert lane
+# 60 tests, ~135ms, over the workflow files. These read YAML and assert lane
 # properties; they are the slowest thing in this repository to learn from CI,
 # because a broken release lane reports when the release runs.
 if [ -n "$(staged .github)" ]; then
@@ -75,9 +80,9 @@ if [ -n "$(staged .github)" ]; then
     scripts/workflow-contexts.test.ts
 fi
 
-# 95 tests, ~47ms: the release, ring, plugin and tag contracts. Pure file reading,
-# no network, no subprocesses - which is why these are worth running here and the
-# other 16 files in scripts/ (9.3s) are not.
+# 126 tests, ~40ms: the release, ring, plugin, tag and commit-message contracts.
+# Pure file reading, no network, no subprocesses - which is why these are worth
+# running here and the other 12 test files in scripts/ (9.3s together) are not.
 if [ -n "$(staged scripts plugin)" ]; then
   bun --env-file=.env.local.example test \
     scripts/plugin-conformance.test.ts \
@@ -90,9 +95,8 @@ fi
 
 # --- the expensive one -----------------------------------------------------
 
-# ~2.7s, and the most common `ci-cli` failure after lint. tsc is whole-program, so
-# there is no staged-only version of it: it runs when any TypeScript is staged.
-# If this is the stanza that makes the hook feel slow, delete it - CI still runs it.
+# ~0.32s warm, and the most common `ci-cli` failure after lint. tsc is whole-program,
+# so there is no staged-only version of it: it runs when any TypeScript is staged.
 if [ -n "$(staged '*.ts')" ]; then
   bun run typecheck
 fi

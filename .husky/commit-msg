@@ -6,4 +6,4 @@
 # this hook has run. So this does not protect release-please; the `ci-cli` check
 # does. What it does is stop you building a habit that the gate will reject, and
 # catch the typo while the message is still in your editor.
-bun run scripts/commit-convention.ts "$1"
+bun run scripts/commit-convention.ts --file "$1"

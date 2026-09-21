@@ -48,11 +48,17 @@ jobs:
       #
       # The title goes through the environment, never into the `run:` string. It is
       # attacker-controlled text on a public repository.
+      # Bots are skipped, not trusted: Dependabot's unconfigured title is
+      # `Bump <dep> from <a> to <b>`, which this gate rejects, and there is no
+      # `.github/dependabot.yml` here to give it a `chore(deps):` prefix. Gating
+      # a bot's title would fail the required check on a pull request no human
+      # can retitle. release-please already titles its own `chore(cli): release
+      # X.Y.Z`, so nothing is lost.
       - name: Pull request title is a Conventional Commit
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.type != 'Bot'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: bun run scripts/commit-convention.ts "$PR_TITLE"
+        run: bun run scripts/commit-convention.ts --title "$PR_TITLE"
 
       - name: Lint & format check (biome check)
         run: bun run lint
@@ -89,7 +95,10 @@ jobs:
       # root automatically.
       #
       # The binary is pinned by version AND by checksum: an unpinned download is a
-      # supply-chain hole in the job that is supposed to be closing one.
+      # supply-chain hole in the job that is supposed to be closing one. The digest
+      # below is the one gitleaks publishes for that asset, taken from
+      # https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
+      # - re-take it from the same file when the version moves.
       - name: Scan every ref for secrets (gitleaks)
         env:
           GITLEAKS_VERSION: 8.30.1

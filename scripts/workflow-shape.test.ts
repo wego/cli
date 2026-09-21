@@ -49,7 +49,7 @@
  *     workflow -> "the signing call stays in the lane file".
  */
 import { describe, expect, it } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 
 /**
  * The two lanes that sign. `promote-cli.yml` copies an already-signed record
@@ -197,15 +197,27 @@ describe.each(SIGNING_LANES)("%s: the signing identity", (file) => {
  * a lane nobody runs on a pull request.
  *
  * The mutation this kills: a `run: bun install` step added anywhere outside the
- * composite action.
+ * composite action - in a workflow, or in one of the OTHER composite actions,
+ * which is the half a workflows-only scan misses.
  */
+const INSTALL = /\bbun\s+install\b/;
+
+/** The one action allowed to install; it is the action that carries `HUSKY=0`. */
+const INSTALLER = "setup-bun";
+
 describe("every `bun install` goes through the composite action", () => {
   const files = readdirSync(".github/workflows").filter((f) =>
     /\.ya?ml$/.test(f),
   );
 
-  it("finds workflows to check", () => {
+  /** Every composite action except the installer itself. */
+  const actions = readdirSync(".github/actions").filter(
+    (d) => d !== INSTALLER && existsSync(`.github/actions/${d}/action.yml`),
+  );
+
+  it("finds workflows and composite actions to check", () => {
     expect(files.length).toBeGreaterThan(0);
+    expect(actions.length).toBeGreaterThan(0);
   });
 
   it.each(files)("%s runs no bare `bun install`", (file) => {
@@ -213,7 +225,19 @@ describe("every `bun install` goes through the composite action", () => {
     const installs = Object.values(wf.jobs ?? {})
       .flatMap((job) => job.steps ?? [])
       .map((step) => step.run ?? "")
-      .filter((run) => /\bbun\s+install\b/.test(run));
+      .filter((run) => INSTALL.test(run));
+
+    expect(installs).toEqual([]);
+  });
+
+  it.each(actions)("the %s action runs no bare `bun install`", (dir) => {
+    const text = readFileSync(`.github/actions/${dir}/action.yml`, "utf8");
+    const action = Bun.YAML.parse(text) as {
+      runs?: { steps?: { run?: string }[] };
+    };
+    const installs = (action.runs?.steps ?? [])
+      .map((step) => step.run ?? "")
+      .filter((run) => INSTALL.test(run));
 
     expect(installs).toEqual([]);
   });

@@ -12,9 +12,9 @@
 //     enforce this. It can only stop you arriving with a habit that the gate
 //     then rejects.
 //
-// `.coderabbit.yaml` states the same convention in prose for the reviewer bot.
-// commit-convention.test.ts asserts the type list appears there too, so the prose
-// cannot drift away from what is enforced.
+// `.coderabbit.yaml` states the same convention in prose for the reviewer bot, now
+// at `mode: error`. commit-convention.test.ts asserts both lists below appear in
+// that prose, so a list the bot blocks on cannot drift from the one enforced here.
 
 /**
  * Types release-please understands. `fix` produces a patch, `feat` a minor, and
@@ -42,8 +42,9 @@ export const TYPES = [
  * A closed list would reject honest work and teach people to reach for
  * `--no-verify`, which costs more than a typo in a scope ever will.
  *
- * So the shape is checked and the spelling is not. These are the ones in use,
- * quoted back in the error so a typo is obvious next to them.
+ * So the shape is checked and the spelling is not. The list below is NOT all 22:
+ * it is the common ones, quoted back in the error so a typo is obvious next to
+ * them, and asserted against `.coderabbit.yaml` so the two stay in step.
  */
 export const KNOWN_SCOPES = [
   "cli",
@@ -87,14 +88,22 @@ export type Problem = { readonly line: string; readonly hint?: string };
  * Check one Conventional Commits header. Takes the header alone or a whole
  * commit message; only the first line is a contract, the body is free text.
  *
+ * `exempt` applies the EXEMPT list, and only a commit message may ask for it. A
+ * pull request title is never a header git wrote, so on that call site the
+ * exemptions are a hole: `Merge the two release docs` and `Bumps the timeout`
+ * are ordinary titles that would walk straight past the gate.
+ *
  * Returns every problem rather than the first, so one run tells you everything
  * you have to fix.
  */
-export function checkHeader(message: string): Problem[] {
+export function checkHeader(
+  message: string,
+  { exempt = false } = {},
+): Problem[] {
   const header = message.split("\n", 1)[0]?.trim() ?? "";
 
   if (header === "" || header.startsWith("#")) return [];
-  if (EXEMPT.some((pattern) => pattern.test(header))) return [];
+  if (exempt && EXEMPT.some((pattern) => pattern.test(header))) return [];
 
   const match = HEADER.exec(header);
   if (!match?.groups) {
@@ -147,20 +156,31 @@ export function checkHeader(message: string): Problem[] {
 }
 
 /**
- * `bun run scripts/commit-convention.ts <file-or-title>` - a path when git
- * hands one over (commit-msg), the literal text otherwise (the pull request
- * title in CI). Exit 1 on a problem, and say which.
+ * Two callers, two explicit modes, and no guessing between them:
+ *
+ *   commit-convention.ts --file <path>    a commit message git wrote out
+ *   commit-convention.ts --title <text>   a pull request title
+ *
+ * The mode is named because the earlier version inferred it - it read the
+ * argument as a file when that path existed, and as literal text otherwise.
+ * On the CI call site the argument is the pull request title: attacker-chosen
+ * text on a public repository. A title of `package.json`, or of any path the
+ * runner can read, made the gate open that file, check ITS first line, and
+ * print that line into a public log. Verified: the title `package.json`
+ * printed `{`.
+ *
+ * Exit 1 on a problem, and say which.
  */
 if (import.meta.main) {
-  const argument = process.argv[2];
-  if (argument === undefined) {
-    console.error("usage: commit-convention.ts <path-to-message-file|title>");
+  const [mode, value] = process.argv.slice(2);
+  if ((mode !== "--file" && mode !== "--title") || value === undefined) {
+    console.error("usage: commit-convention.ts --file <path> | --title <text>");
     process.exit(2);
   }
 
-  const file = Bun.file(argument);
-  const message = (await file.exists()) ? await file.text() : argument;
-  const problems = checkHeader(message);
+  const fromFile = mode === "--file";
+  const message = fromFile ? await Bun.file(value).text() : value;
+  const problems = checkHeader(message, { exempt: fromFile });
 
   if (problems.length > 0) {
     console.error(`\n  ${message.split("\n", 1)[0]?.trim()}\n`);

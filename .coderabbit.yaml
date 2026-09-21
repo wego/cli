@@ -96,7 +96,8 @@ reviews:
         docs, test, chore, refactor, perf, ci, build. Scope is the area it
         touches, as used in this repo's history: cli, release, release-signing,
         signing, edge, promote, rollback, update, notice, runbook, skill, auth,
-        ci. A breaking change to the wire contract, to a command's stdout, or
+        ci, hooks, deps. The scope list is open - a new area is fine when it
+        names something real. A breaking change to the wire contract, to a command's stdout, or
         to what a published ring serves carries `!` before the colon. Subject
         is imperative and lowercase.
   tools:

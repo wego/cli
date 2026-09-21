@@ -8,8 +8,9 @@
 #
 #   gitleaks git --log-opts="--all" --redact .
 #
-# (`detect` and `protect` were removed in gitleaks 8.19; 8.x now takes `git`,
-# `dir` or `stdin`. `ci-cli` runs the line above on every pull request and every
+# (The old `gitleaks detect --source .` no longer parses: 8.30.1 takes `git`,
+# `dir` or `stdin`, verified against the installed binary's own `--help`, and
+# `detect`/`protect` are gone. `ci-cli` runs the line above on every pull request and every
 # push to main, and `.husky/pre-commit` runs `gitleaks git --staged` before a
 # commit exists, which is the last moment a secret can still be un-leaked.)
 #

@@ -1,14 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkHeader, TYPES } from "./commit-convention";
+import { checkHeader, KNOWN_SCOPES, TYPES } from "./commit-convention";
 
 // The mutations this suite kills:
 //   - the header regex loosened to accept a missing colon or unbalanced scope parens
 //     -> a "rejects" case passes.
 //   - a type dropped from TYPES -> release-please stops seeing that release; the parity
 //     test against .coderabbit.yaml goes red.
-//   - the merge/revert/fixup exemptions removed -> git's own headers start failing commits.
+//   - the merge/revert/fixup exemptions applied unconditionally -> a pull request titled
+//     "Merge the two release docs" walks past the gate release-please reads.
 //   - the check made to return on the first problem -> "reports every problem" fails.
 //   - the scope check tightened back into a closed list -> `feat(hotels)`, the example
 //     CONTRIBUTING.md gives contributors, stops being accepted.
@@ -78,16 +79,35 @@ describe("headers that would cost a release", () => {
   });
 });
 
-describe("headers git writes for you", () => {
+describe("headers git writes for you, in a commit message", () => {
   it.each([
     "Merge branch 'main' into feature",
     'Revert "fix(cli): keep the ring"',
     "fixup! fix(cli): keep the ring",
     "squash! fix(cli): keep the ring",
+  ])("leaves %s alone when exempt is on", (header) => {
+    expect(checkHeader(header, { exempt: true })).toEqual([]);
+  });
+
+  it.each([
     "# comment-only message, the commit is being aborted",
     "",
-  ])("leaves %s alone", (header) => {
+  ])("leaves %s alone whatever the mode", (header) => {
     expect(checkHeader(header)).toEqual([]);
+  });
+});
+
+// The exemptions exist for headers GIT wrote. A pull request title is written by a
+// person, so the same prefixes are just words - and the title is the one string
+// release-please reads. `ci-cli` calls `--title`, which leaves exempt off.
+describe("the same prefixes in a pull request title", () => {
+  it.each([
+    "Merge the two release docs",
+    "Bumps the update timeout to 30s",
+    'Revert "the flaky retry"',
+    "fixup! the help text",
+  ])("rejects %s", (title) => {
+    expect(checkHeader(title)).not.toEqual([]);
   });
 });
 
@@ -102,12 +122,27 @@ describe("the body is free text", () => {
 // `.coderabbit.yaml` asks the reviewer bot to enforce this convention in prose, and
 // `ci-cli` enforces it as a gate. Prose and code drift. This is what stops them.
 describe("the convention the reviewer bot is told about", () => {
+  // The `requirements:` block alone, not the whole file: `hooks` and `deps` both
+  // occur in unrelated comments, so a file-wide search passes while the list the
+  // bot actually judges against is missing them.
   const coderabbit = readFileSync(
     join(import.meta.dir, "..", ".coderabbit.yaml"),
     "utf8",
   );
+  const requirements =
+    /title:[\s\S]*?requirements: >\n([\s\S]*?)\n {2}[a-z_]+:/.exec(
+      coderabbit,
+    )?.[1] ?? "";
+
+  it("finds the title requirements block", () => {
+    expect(requirements).toContain("Conventional Commits");
+  });
 
   it.each([...TYPES])("names the type %s", (type) => {
-    expect(coderabbit).toContain(type);
+    expect(requirements).toContain(type);
+  });
+
+  it.each([...KNOWN_SCOPES])("names the scope %s", (scope) => {
+    expect(requirements).toContain(scope);
   });
 });
