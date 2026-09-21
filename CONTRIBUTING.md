@@ -172,6 +172,11 @@ succeeded. Without that, the types on disk would still be the ones `postinstall`
 built from the previous contract, and the typecheck below would check the wrong
 shapes.
 
+`.husky/pre-commit` runs Check B and the contract shape tests when you stage the
+contract, the contract scripts, `ci-cli.yml` or the files they read, so the
+common mistakes surface before the push rather than in CI. It is early feedback,
+not a gate, like everything else in that hook.
+
 Commit the `contract/openapi.json` diff on its own, so the contract change is
 reviewable separately from whatever you do about it. Then fix what the checks
 report. If Check A, B or C fails, that is a finding about the API, not a check
