@@ -36,8 +36,12 @@ permissions:
 
 jobs:
   # The human gate. Same shape and same reasoning as `promote-cli.yml`: not an
-  # environment with required reviewers (see that file). The list below is the
-  # authority. `main` requires a code-owner review, so a change to it is reviewed.
+  # environment with required reviewers, though this repository could have them -
+  # it is public, and `stable-rollback` is its own environment (see that file for
+  # the full reasoning). The list below is the authority because it lives in
+  # version control: CODEOWNERS owns `.github/workflows/`, so a change to it is a
+  # diff that `main` will not take without a release-signer review, where an
+  # environment's reviewer list is a settings toggle that leaves no record here.
   # This job holds no secrets and no variables.
   #
   # Both actors must be promoters, as in the promote lane. A replay matters more
