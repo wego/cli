@@ -152,6 +152,34 @@ bypasses file permission checks. If you are in a container that runs as root you
 will see those fail locally while CI is green. Run as an unprivileged user to get
 a true result.
 
+## When the API changes
+
+The Wego API lives in another repository, so this one vendors its published
+contract at `contract/openapi.json`. `src/api-types.d.ts` is generated from that
+file on `bun install` and is not committed, so a fresh clone gets types that
+match the contract in the tree.
+
+When the API ships a change you need:
+
+```bash
+bun run api-contract:refresh   # fetch https://api.wego.com/openapi, print old and new version
+bun run typecheck              # Checks A and C: the CLI parses what the API returns, and sends what it accepts
+bun test ./src/api-contract.test.ts   # Check B: the fields the CLI's behaviour reads are still published
+```
+
+Commit the `contract/openapi.json` diff on its own, so the contract change is
+reviewable separately from whatever you do about it. Then fix what the checks
+report. If Check A, B or C fails, that is a finding about the API, not a check
+to loosen: say so in the pull request rather than widening a schema to make it
+go green.
+
+`ci-cli` runs a "Contract drift (warning only)" step that compares the committed
+contract against the live one and annotates the run when they differ. It is a
+reminder, not a gate: it never fails the job, and a pull request with the
+warning on it is still mergeable. The real check is tier B in wego-ai, which
+runs the released CLI against the real API at release time regardless of what
+this repository has vendored.
+
 ## Commit messages
 
 This repository uses [Conventional Commits](https://www.conventionalcommits.org).

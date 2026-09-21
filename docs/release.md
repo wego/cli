@@ -611,6 +611,40 @@ gate handles badly.
 
 ---
 
+## When the API changes
+
+The Wego API ships from another repository on its own cadence, and nothing in a
+release lane reads it. What this repository holds is a **vendored copy** of the
+published contract at `contract/openapi.json`, fetched from
+`https://api.wego.com/openapi`. `src/api-types.d.ts` is generated from that file
+by `postinstall`, so it is never committed and never stale relative to the tree.
+
+Refreshing is a person's job, done when the API ships something the CLI needs:
+
+```bash
+bun run api-contract:refresh   # fetch production, write the file, print old and new version
+bun run typecheck              # Checks A and C, the compile-time halves
+bun test ./src/api-contract.test.ts   # Check B, the runtime walk
+```
+
+Commit the JSON diff on its own. Then fix what the checks report, in a separate
+commit. A failing check is a finding about the API: report it, do not widen a
+schema to silence it.
+
+**`ci-cli` warns, it does not gate.** Its "Contract drift (warning only)" step
+fetches the live document, drops `servers` from both sides and compares. On a
+difference it annotates the run with the two versions and the command to run; on
+a fetch that does not answer it leaves a notice and passes. It never fails the
+job, and `scripts/ci-contract-drift.test.ts` is what keeps that true. A gate
+there would block every CLI pull request opened after an unrelated API release.
+
+The warning is a reminder that the vendored copy has fallen behind, nothing
+more. It says nothing about whether the released CLI still works: that is tier B
+in wego-ai, which runs the real CLI against the real API at release, whatever
+this repository has vendored.
+
+---
+
 ## Quarterly dependency check
 
 The Fulcio comparison that used to lead this list is automated: see
@@ -635,6 +669,11 @@ Once a quarter, and always before a release that changes the verifier:
 
 ## Not yet documented here
 
-The `notify` job on `release-cli.yml` and the `contract-drift.yml` lane do not
-exist yet; they are built in wego/foundations#139. This document covers the lanes
-as they are, and gains those two sections when that issue lands.
+The `notify` job on `release-cli.yml` does not exist yet; it is built in
+wego/foundations#139. This document covers the lanes as they are, and gains that
+section when the job lands.
+
+The contract-drift half of that issue is done and documented above. It landed as
+a warning-only step inside `ci-cli.yml` rather than a `contract-drift.yml` lane:
+a vendored contract with a manual refresh needs a reminder on the check people
+already read, not a workflow of its own.
