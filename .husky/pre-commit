@@ -122,6 +122,15 @@ fi
 
 # ~0.32s warm, and the most common `ci-cli` failure after lint. tsc is whole-program,
 # so there is no staged-only version of it: it runs when any TypeScript is staged.
-if [ -n "$(staged '*.ts')" ]; then
+#
+# `contract` is in the condition for a case that stages no TypeScript at all. A
+# refresh commit is `contract/openapi.json` alone - CONTRIBUTING says to commit
+# that diff on its own, and the regenerated src/api-types.d.ts is gitignored, so
+# it is never staged beside it. Yet that commit is precisely the one Checks A and
+# C exist for: they are compile-time comparisons in src/api-contract.ts against
+# the types the refresh just regenerated, and this is the only local check that
+# compiles against them. Without `contract` here, the commit that changes what
+# the CLI is checked against is the one commit that never checks it.
+if [ -n "$(staged '*.ts' contract)" ]; then
   bun run typecheck
 fi

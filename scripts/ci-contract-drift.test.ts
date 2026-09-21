@@ -216,6 +216,23 @@ describe("the vendored contract is committed", () => {
     expect(generator).not.toContain("--filter cli");
   });
 
+  it("is typechecked locally even when it is the only staged file", () => {
+    // A refresh commit is `contract/openapi.json` alone: CONTRIBUTING says to
+    // commit that diff on its own, and the regenerated `src/api-types.d.ts` is
+    // gitignored, so no `*.ts` is staged beside it. The pre-commit typecheck
+    // stanza used to key on `*.ts` only, which made the commit that changes
+    // what the CLI is checked against the one commit that never checked it.
+    //
+    // Matched on the stanza's own line, not the whole file, so an unrelated
+    // hook edit does not trip this.
+    const hook = readFileSync(".husky/pre-commit", "utf8");
+    const typecheckStanza = hook
+      .split("\n")
+      .find((line) => line.includes("staged") && line.includes("'*.ts'"));
+    expect(typecheckStanza).toBeDefined();
+    expect(typecheckStanza).toContain("contract");
+  });
+
   it("is formatted by biome, like every other committed file", () => {
     // The vendored contract used to be exempted from biome, because biome
     // reformats it and the refresh script wrote a different shape - so every
