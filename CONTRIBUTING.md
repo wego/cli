@@ -77,6 +77,88 @@ ran your own code. If you would rather not use direnv, either go through
 `bun run dev --` every time, or `bun link` once. Either way, check `which wego`
 before you trust a result.
 
+## Signed commits
+
+**Every commit that reaches `main` must carry a signature GitHub can verify.** A
+repository ruleset enforces it, and that ruleset has an empty bypass list — no
+maintainer, no administrator and no organisation owner can merge past it. Unsigned
+commits make the merge box say *"Commits must have verified signatures"*, and it
+stays that way until you fix it.
+
+This is not the release signing described in `docs/release.md`. That is
+[cosign](https://docs.sigstore.dev) proving which workflow built a published
+binary. This is git proving who wrote a line of source. Both exist because a
+release is only as trustworthy as the commit it was built from, and git's author
+field is free text: anyone can commit under your name and address, and nothing
+checks it. A signature is what turns that claim into something verifiable.
+
+Setting it up is three steps, and **the third is the one people miss**.
+
+### 1. Tell git to sign
+
+SSH signing reuses the key you already push with, so there is no GPG keyring to
+manage:
+
+```bash
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+git config --global commit.gpgsign true
+```
+
+Use your own public key's path if it differs. To scope this to one repository
+rather than your whole machine, drop `--global` and run it inside your checkout.
+
+### 2. Confirm git is actually signing
+
+Deliberately without `-S`, so this tests the configuration rather than bypassing
+it:
+
+```bash
+git commit --allow-empty -m "chore: signing check"
+git log --show-signature -1
+git reset --soft HEAD~1      # discard it; the commit was empty, so nothing is lost
+```
+
+### 3. Register the key with GitHub — as a *signing* key
+
+Go to [github.com/settings/ssh/new](https://github.com/settings/ssh/new), paste
+the contents of your `.pub` file, and **change the "Key type" dropdown to Signing
+Key**. It defaults to *Authentication Key*, and an authentication entry does
+nothing for signatures — even when it is the same key you already push with. A key
+GitHub knows for access is not a key GitHub will verify signatures against; it
+needs its own entry.
+
+Miss this and your commit is signed but reports `unknown_key`, which reads like a
+git problem and is not one.
+
+### Checking, and fixing what you already pushed
+
+```bash
+PR=123     # your pull request number
+gh api "repos/wego/cli/pulls/$PR/commits" --jq \
+  '.[] | "\(.sha[0:7])\t\(.commit.verification.verified)\t\(.commit.verification.reason)"'
+```
+
+| `reason` | What it means | Fix |
+| --- | --- | --- |
+| `valid` | Nothing to do | — |
+| `unsigned` | git is not signing | Step 1 |
+| `unknown_key` | Signed, but GitHub does not know the key | Step 3 |
+
+**`unknown_key` needs no new commit.** GitHub verifies at read time, so registering
+the key retroactively verifies what is already pushed. Re-run the check above.
+
+`unsigned` does need the commits rewriting:
+
+```bash
+git rebase --exec 'git commit --amend --no-edit -S' origin/main
+git push --force-with-lease
+```
+
+Only on a branch you own — rewriting a branch someone else has checked out breaks
+their copy. The ruleset covers `main` only, so your feature branch takes a
+force-push without complaint.
+
 ## Before you open a pull request
 
 ```bash
@@ -118,7 +200,9 @@ what release-please actually reads.
 ## What happens next
 
 `main` requires a review from a code owner, so every change is reviewed before it
-merges. CI must be green.
+merges. CI must be green, and every commit must be signed — see
+[Signed commits](#signed-commits) if the merge box is asking for verified
+signatures.
 
 **We will do our best to respond, but we cannot promise when.** This repository
 is maintained by a team with its own roadmap and on-call load, and issues and
