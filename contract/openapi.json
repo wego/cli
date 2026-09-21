@@ -3,7 +3,7 @@
   "info": {
     "title": "Wego API",
     "description": "Wego's travel API: places, flights, hotels and fares. Please see https://docs.wego.com for more details.",
-    "version": "0.18.0"
+    "version": "0.19.1"
   },
   "tags": [
     {
