@@ -39,6 +39,13 @@ const ATTEMPTS = 4;
 /** Between attempts. Short: this is a person waiting at a terminal. */
 const RETRY_DELAY_MS = 1_000;
 
+/** A whole-request deadline per attempt. `fetch` has none of its own, so a
+ *  connection that opens and then stalls hangs the refresh forever - and never
+ *  reaches the retry below, which is the one thing that would have saved it.
+ *  15s is generous for a ~200KB document and still bounded; the CI drift step
+ *  bounds its own fetch the same way with `curl --max-time 20`. */
+const FETCH_TIMEOUT_MS = 15_000;
+
 /** The minimum shape that makes a body a contract rather than an error page.
  *  A 200 carrying HTML from a misrouted edge would otherwise be committed. */
 export interface ContractDocument {
@@ -110,6 +117,7 @@ async function fetchContract(): Promise<ContractDocument> {
     try {
       const response = await fetch(CONTRACT_URL, {
         headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
       if (!response.ok) {
         lastFailure = `HTTP ${response.status} ${response.statusText}`;

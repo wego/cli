@@ -644,9 +644,9 @@ job, and `scripts/ci-contract-drift.test.ts` is what keeps that true. A gate
 there would block every CLI pull request opened after an unrelated API release.
 
 The warning is a reminder that the vendored copy has fallen behind, nothing
-more. It says nothing about whether the released CLI still works: that is tier B
-in wego-ai, which runs the real CLI against the real API at release, whatever
-this repository has vendored.
+more. It says nothing about whether the released CLI still works: that is settled
+at release time, by a separate check that exercises the released CLI against the
+live API, whatever this repository has vendored.
 
 ---
 

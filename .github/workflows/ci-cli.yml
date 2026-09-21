@@ -88,8 +88,8 @@ jobs:
       # API deploys on its own cadence: a gate here would block every CLI pull
       # request opened after an unrelated API release, for a contract the author
       # never touched. The reminder belongs to whoever reads it, not to the merge
-      # button. Tier B in wego-ai runs the real CLI against the real API at
-      # release, and that is what actually catches a break.
+      # button. A separate release-time check exercises the released CLI against
+      # the live API, and that is what actually catches a break.
       #
       # `servers` is dropped from both sides before the comparison: it names the
       # host the document was served from, which is not drift.

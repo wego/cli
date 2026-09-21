@@ -291,9 +291,9 @@ go green.
 `ci-cli` runs a "Contract drift (warning only)" step that compares the committed
 contract against the live one and annotates the run when they differ. It is a
 reminder, not a gate: it never fails the job, and a pull request with the
-warning on it is still mergeable. The real check is tier B in wego-ai, which
-runs the released CLI against the real API at release time regardless of what
-this repository has vendored.
+warning on it is still mergeable. The real check happens at release time, where
+the released CLI is exercised against the live API regardless of what this
+repository has vendored.
 
 ## Commit messages
 
