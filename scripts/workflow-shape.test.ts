@@ -49,7 +49,7 @@
  *     workflow -> "the signing call stays in the lane file".
  */
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 /**
  * The two lanes that sign. `promote-cli.yml` copies an already-signed record
@@ -180,5 +180,46 @@ describe.each(SIGNING_LANES)("%s: the signing identity", (file) => {
       (s.uses ?? "").includes(SIGN_ACTION),
     );
     expect(step?.uses).toStartWith("./");
+  });
+});
+
+/**
+ * `bun install` runs this repository's `prepare` script, and `prepare` is husky:
+ * it points `core.hooksPath` at `.husky/_`. On a runner that is at best pointless
+ * and at worst load-bearing in the wrong direction - `release-please.yml`,
+ * `release-badge.yml` and the promote lane all commit, and a pre-commit hook
+ * firing inside a release job would fail a release over a file the lane did not
+ * write and cannot fix.
+ *
+ * `.github/actions/setup-bun` sets `HUSKY=0` for exactly that reason. The guard
+ * only holds while every install goes through the composite, and the next
+ * workflow to add a bare `bun install` would undo it silently, months later, in
+ * a lane nobody runs on a pull request.
+ *
+ * The mutation this kills: a `run: bun install` step added anywhere outside the
+ * composite action.
+ */
+describe("every `bun install` goes through the composite action", () => {
+  const files = readdirSync(".github/workflows").filter((f) =>
+    /\.ya?ml$/.test(f),
+  );
+
+  it("finds workflows to check", () => {
+    expect(files.length).toBeGreaterThan(0);
+  });
+
+  it.each(files)("%s runs no bare `bun install`", (file) => {
+    const wf = lane(file);
+    const installs = Object.values(wf.jobs ?? {})
+      .flatMap((job) => job.steps ?? [])
+      .map((step) => step.run ?? "")
+      .filter((run) => /\bbun\s+install\b/.test(run));
+
+    expect(installs).toEqual([]);
+  });
+
+  it("keeps HUSKY=0 on the composite action's install step", () => {
+    const action = readFileSync(".github/actions/setup-bun/action.yml", "utf8");
+    expect(action).toContain("HUSKY: 0");
   });
 });

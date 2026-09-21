@@ -31,8 +31,28 @@ jobs:
         with:
           # Read-only job. Do not keep the token in .git/config.
           persist-credentials: false
+          # Full history, for the gitleaks step below. It scans every ref, which is
+          # what the .gitleaksignore fingerprints (commit:file:rule:line) are keyed
+          # to; a shallow clone would scan one commit and silently pass.
+          fetch-depth: 0
 
       - uses: ./.github/actions/setup-bun
+
+      # The pull request TITLE is the release contract, not the commit messages:
+      # pull requests here are squashed, the squash subject comes from the title,
+      # and release-please reads that subject to compute the next version. A
+      # mistyped type produces no release at all, silently.
+      #
+      # `.husky/commit-msg` runs the same file locally, but cannot see the title -
+      # it is edited here, after every local hook. This step is where it is enforced.
+      #
+      # The title goes through the environment, never into the `run:` string. It is
+      # attacker-controlled text on a public repository.
+      - name: Pull request title is a Conventional Commit
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: bun run scripts/commit-convention.ts "$PR_TITLE"
 
       - name: Lint & format check (biome check)
         run: bun run lint
@@ -44,6 +64,44 @@ jobs:
       # temporary directory.
       - name: Unit tests
         run: bun run test
+
+      # `scripts/` carries four shell scripts that drive real installs and updates on
+      # other people's machines, and `.husky/` now carries the hooks. CodeRabbit runs
+      # shellcheck too, but as a review comment on a pull request that can still be
+      # merged. Here it blocks. shellcheck ships on the runner image, so there is
+      # nothing to install and nothing to pin.
+      #
+      # The hooks have no extension and no shebang - husky supplies `sh -e` - so the
+      # shell has to be named.
+      - name: Shell scripts (shellcheck)
+        run: |
+          shellcheck scripts/*.sh
+          find .husky -maxdepth 1 -type f -print0 | xargs -0 shellcheck --shell=sh
+
+      # `.husky/pre-commit` scans staged changes before a commit exists, which is the
+      # only moment a secret can still be un-leaked. This is the other half: whatever
+      # arrived without the hook - `--no-verify`, a clone that never ran `bun install`,
+      # a commit authored in the GitHub UI - is caught here, and blocks.
+      #
+      # Scans every ref, the same way .gitleaks.toml documents, because the
+      # .gitleaksignore baseline from #73 is keyed to commit:file:rule:line and only
+      # matches a history scan. Both config files are picked up from the repository
+      # root automatically.
+      #
+      # The binary is pinned by version AND by checksum: an unpinned download is a
+      # supply-chain hole in the job that is supposed to be closing one.
+      - name: Scan every ref for secrets (gitleaks)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --log-opts=--all --redact --no-banner .
 
       # GitHub's dependency graph does not resolve `bun.lock`. The SBOM for this
       # repository lists 16 packages - the manifest plus the pinned Actions - where

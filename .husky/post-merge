@@ -1,0 +1,13 @@
+# Keep node_modules honest after a pull.
+#
+# The failure this removes: someone lands a dependency change, you pull, and your
+# next run uses the tree you installed last week. It fails in a way that has
+# nothing to do with what you are working on, and `ci-cli` cannot reproduce it
+# because CI always installs from the lockfile it just checked out.
+#
+# `--frozen-lockfile` so this can only ever make your tree match `bun.lock`; it
+# will not write one.
+if git diff --name-only "HEAD@{1}" HEAD 2>/dev/null | grep -q '^bun\.lock$'; then
+  echo 'husky: bun.lock changed in that merge - installing'
+  bun install --frozen-lockfile
+fi

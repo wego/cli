@@ -10,14 +10,14 @@
   },
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build": "bunx --package @typescript/native tsc --noEmit",
     "build:binaries": "bun run scripts/build-release.ts",
     "api-types:generate": "bun run scripts/generate-api-types.ts",
     "lint": "biome check",
     "lint:staged": "biome check --staged --no-errors-on-unmatched",
-    "format": "biome format --write",
+    "format": "biome check --write",
     "typecheck": "bunx --package @typescript/native tsc --noEmit",
     "test": "bun --env-file=.env.local.example test ./src ./scripts",
+    "check": "bun run lint && bun run typecheck && bun run test",
     "prepare": "husky"
   },
   "dependencies": {

@@ -6,7 +6,12 @@
 # Run it the way the acceptance criterion means it, over the whole history rather
 # than the working tree, from a full clone so every ref is present locally:
 #
-#   gitleaks detect --source . --log-opts="--all" --redact
+#   gitleaks git --log-opts="--all" --redact .
+#
+# (`detect` and `protect` were removed in gitleaks 8.19; 8.x now takes `git`,
+# `dir` or `stdin`. `ci-cli` runs the line above on every pull request and every
+# push to main, and `.husky/pre-commit` runs `gitleaks git --staged` before a
+# commit exists, which is the last moment a secret can still be un-leaked.)
 #
 # --redact matters: without it the report and the terminal hold the matched values
 # in cleartext, and the output of this scan is meant to be pasted somewhere.

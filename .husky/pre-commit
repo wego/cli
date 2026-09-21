@@ -1,10 +1,98 @@
-# Biome over the staged files only. This is the same `biome check` that `ci-cli`
-# runs as a required check, narrowed to what you are about to commit, so it
-# finishes in well under a second on a normal change.
+# Early feedback, not a gate. `git commit --no-verify` skips every line of this,
+# `HUSKY=0` turns it off entirely, and a clone that has not run `bun install` never
+# had it. `ci-cli` is the gate, and it runs the same checks over the whole tree.
 #
-# It checks, it does not write. A hook that rewrote your files would have to
-# re-stage them, and on a partially staged file that means committing hunks you
-# never staged. When this fails, run `bun run format`, read the diff, stage it.
+# So nothing here is load-bearing for `main`. Each stanza is only the cheapest
+# place to find a particular mistake. The order is by cost: the instant refusals
+# first, then the staged-file scans, then the targeted tests, with the one stanza
+# that costs whole seconds last.
 #
-# `git commit --no-verify` skips this. `ci-cli` does not skip.
+# Husky runs this under `sh -e`, so any failing command ends the commit.
+#
+# Total on a normal change: well under a second, plus ~2.7s when typecheck runs.
+
+staged() {
+  git diff --cached --name-only --diff-filter=ACM -- "$@"
+}
+
+# --- instant ---------------------------------------------------------------
+
+# The ruleset refuses the push anyway. This just saves you the rewind.
+branch=$(git symbolic-ref --short HEAD 2>/dev/null || true)
+if [ "$branch" = "main" ]; then
+  echo 'husky: this is main. Branch first - git switch -c <name>' >&2
+  exit 1
+fi
+
+# src/api-types.d.ts is generated from the published OpenAPI document by
+# scripts/generate-api-types.ts. A hand edit survives exactly until the next
+# generate, and then leaves without telling anyone what it was holding up.
+if [ -n "$(staged src/api-types.d.ts)" ]; then
+  echo 'husky: src/api-types.d.ts is generated - run: bun run api-types:generate' >&2
+  exit 1
+fi
+
+# --- staged-file scans -----------------------------------------------------
+
+# The only check here whose value depends on running BEFORE the object exists.
+# CI and CodeRabbit both scan for secrets, but by the time either speaks the
+# commit is on GitHub and the key needs rotating, not fixing. Reads
+# .gitleaks.toml and the .gitleaksignore baseline from the repository root.
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --staged --redact --no-banner
+else
+  echo 'husky: gitleaks not installed, staged secret scan skipped (brew install gitleaks)' >&2
+fi
+
+# Formatter, lint rules and import order, from biome.jsonc. Reports, never writes:
+# a hook that rewrote a partially staged file would commit hunks you never staged.
+# When it fails, run `bun run format`, read the diff, stage it.
 bun run lint:staged
+
+# The four shell scripts drive real installs and updates on machines that are not
+# yours. CodeRabbit runs shellcheck too, after the push.
+staged_sh=$(staged '*.sh')
+if [ -n "$staged_sh" ]; then
+  if command -v shellcheck >/dev/null 2>&1; then
+    echo "$staged_sh" | xargs shellcheck
+  else
+    echo 'husky: shellcheck not installed, shell scripts unchecked (brew install shellcheck)' >&2
+  fi
+fi
+
+# --- targeted tests --------------------------------------------------------
+
+# 50 tests, ~150ms, over the workflow files. These read YAML and assert lane
+# properties; they are the slowest thing in this repository to learn from CI,
+# because a broken release lane reports when the release runs.
+if [ -n "$(staged .github)" ]; then
+  if command -v zizmor >/dev/null 2>&1; then
+    zizmor .github/workflows
+  fi
+  bun --env-file=.env.local.example test \
+    scripts/workflow-shape.test.ts \
+    scripts/workflow-lanes.test.ts \
+    scripts/workflow-contexts.test.ts
+fi
+
+# 95 tests, ~47ms: the release, ring, plugin and tag contracts. Pure file reading,
+# no network, no subprocesses - which is why these are worth running here and the
+# other 16 files in scripts/ (9.3s) are not.
+if [ -n "$(staged scripts plugin)" ]; then
+  bun --env-file=.env.local.example test \
+    scripts/plugin-conformance.test.ts \
+    scripts/release-config.test.ts \
+    scripts/ring-rules.test.ts \
+    scripts/release-platform-coverage.test.ts \
+    scripts/validate-release-tag.test.ts \
+    scripts/commit-convention.test.ts
+fi
+
+# --- the expensive one -----------------------------------------------------
+
+# ~2.7s, and the most common `ci-cli` failure after lint. tsc is whole-program, so
+# there is no staged-only version of it: it runs when any TypeScript is staged.
+# If this is the stanza that makes the hook feel slow, delete it - CI still runs it.
+if [ -n "$(staged '*.ts')" ]; then
+  bun run typecheck
+fi
