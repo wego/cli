@@ -173,13 +173,25 @@ export function checkHeader(
  */
 if (import.meta.main) {
   const [mode, value] = process.argv.slice(2);
-  if ((mode !== "--file" && mode !== "--title") || value === undefined) {
+  // An empty value is rejected here rather than in `checkHeader`, which treats an
+  // empty header as an aborted commit message and passes it. A pull request with
+  // no title is not that.
+  if ((mode !== "--file" && mode !== "--title") || !value) {
     console.error("usage: commit-convention.ts --file <path> | --title <text>");
     process.exit(2);
   }
 
   const fromFile = mode === "--file";
-  const message = fromFile ? await Bun.file(value).text() : value;
+  let message = value;
+  if (fromFile) {
+    try {
+      message = await Bun.file(value).text();
+    } catch {
+      console.error(`commit-convention.ts: cannot read ${value}`);
+      process.exit(2);
+    }
+  }
+
   const problems = checkHeader(message, { exempt: fromFile });
 
   if (problems.length > 0) {

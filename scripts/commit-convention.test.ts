@@ -125,14 +125,17 @@ describe("the convention the reviewer bot is told about", () => {
   // The `requirements:` block alone, not the whole file: `hooks` and `deps` both
   // occur in unrelated comments, so a file-wide search passes while the list the
   // bot actually judges against is missing them.
-  const coderabbit = readFileSync(
-    join(import.meta.dir, "..", ".coderabbit.yaml"),
-    "utf8",
-  );
+  //
+  // Parsed, not matched. A regex for this block has to hard-code the indent of the
+  // key that ends it, and a reformatted file would then over-capture into the
+  // comments this test exists to exclude - passing, vacuously.
+  const coderabbit = Bun.YAML.parse(
+    readFileSync(join(import.meta.dir, "..", ".coderabbit.yaml"), "utf8"),
+  ) as {
+    reviews?: { pre_merge_checks?: { title?: { requirements?: string } } };
+  };
   const requirements =
-    /title:[\s\S]*?requirements: >\n([\s\S]*?)\n {2}[a-z_]+:/.exec(
-      coderabbit,
-    )?.[1] ?? "";
+    coderabbit.reviews?.pre_merge_checks?.title?.requirements ?? "";
 
   it("finds the title requirements block", () => {
     expect(requirements).toContain("Conventional Commits");

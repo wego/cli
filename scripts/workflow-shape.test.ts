@@ -210,9 +210,19 @@ describe("every `bun install` goes through the composite action", () => {
     /\.ya?ml$/.test(f),
   );
 
-  /** Every composite action except the installer itself. */
+  /**
+   * Every composite action except the installer itself. Both spellings: GitHub
+   * accepts `action.yaml`, and a guard that only knows `action.yml` would skip
+   * the file it was added to watch, silently and green.
+   */
+  const actionFile = (dir: string): string | undefined =>
+    [
+      `.github/actions/${dir}/action.yml`,
+      `.github/actions/${dir}/action.yaml`,
+    ].find((path) => existsSync(path));
+
   const actions = readdirSync(".github/actions").filter(
-    (d) => d !== INSTALLER && existsSync(`.github/actions/${d}/action.yml`),
+    (d) => d !== INSTALLER && actionFile(d) !== undefined,
   );
 
   it("finds workflows and composite actions to check", () => {
@@ -231,7 +241,7 @@ describe("every `bun install` goes through the composite action", () => {
   });
 
   it.each(actions)("the %s action runs no bare `bun install`", (dir) => {
-    const text = readFileSync(`.github/actions/${dir}/action.yml`, "utf8");
+    const text = readFileSync(actionFile(dir) as string, "utf8");
     const action = Bun.YAML.parse(text) as {
       runs?: { steps?: { run?: string }[] };
     };
