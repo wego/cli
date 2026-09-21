@@ -1,0 +1,13 @@
+# The same lockfile drift as post-merge, on the other way of moving: switching
+# branches, and `git worktree add`, which this repository's workflow leans on.
+#
+# $3 is 1 for a branch checkout and 0 for a file checkout (`git checkout -- path`),
+# which must not trigger an install. On a fresh clone or worktree $1 is the null
+# commit and the diff simply fails, so the install is skipped - `bun install` is
+# the first thing you run there anyway.
+[ "$3" = "1" ] || exit 0
+
+if git diff --name-only "$1" "$2" 2>/dev/null | grep -q '^bun\.lock$'; then
+  echo 'husky: bun.lock differs on that branch - installing'
+  bun install --frozen-lockfile
+fi

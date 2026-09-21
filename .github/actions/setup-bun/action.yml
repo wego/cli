@@ -21,8 +21,27 @@ runs:
         restore-keys: |
           bun-${{ runner.os }}-
 
+    # `HUSKY=0` stops the `prepare` script from pointing `core.hooksPath` at
+    # `.husky/_` on a runner. The hooks are a local fast path, not a control:
+    # `ci-cli` runs the same checks itself, over the whole tree.
+    #
+    # This is precaution, not a fix for a live failure. No lane commits into this
+    # checkout today: `release-please.yml` and `release-badge.yml` never check the
+    # repository out at all (release-please commits through the GitHub API, the
+    # badge calls `repos.updateRelease`), and the one `git commit` in the tree -
+    # `scripts/publish-plugin.ts`, driven by the promote lane - runs inside a
+    # throwaway `git clone` of `wego/skills`, whose fresh `.git` never inherits
+    # this repository's `core.hooksPath`.
+    #
+    # It is kept because that is a statement about today's lanes. A lane that
+    # later commits into its own checkout would fire a pre-commit hook inside a
+    # release job, and fail a release over a file it did not write.
+    # `scripts/workflow-shape.test.ts` holds the other half: no bare `bun install`
+    # outside this action.
     - run: bun install --frozen-lockfile
       shell: bash
+      env:
+        HUSKY: 0
 
     # Save on main only. A cache saved on a PR branch is readable only by that
     # branch. main's cache is readable by every PR.
