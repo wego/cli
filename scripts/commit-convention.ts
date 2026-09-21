@@ -67,15 +67,20 @@ export const KNOWN_SCOPES = [
 /** Lowercase kebab, which is every scope this repository has ever used. */
 const SCOPE_SHAPE = /^[a-z][a-z0-9-]*$/;
 
-/** A header git itself writes or rewrites. Checking these helps nobody. */
-const EXEMPT = [
-  /^Merge /,
-  /^Revert "/,
-  /^fixup! /,
-  /^squash! /,
-  /^amend! /,
-  /^Bumps /,
-] as const;
+/**
+ * Headers git writes for an autosquash. `git commit --fixup` produces them, and
+ * the rebase that consumes them throws them away, so they are never a subject
+ * anyone reads.
+ */
+const AUTOSQUASH = [/^fixup! /, /^squash! /, /^amend! /] as const;
+
+/**
+ * Headers git offers during a merge or a revert - and ONLY then. `Merge the two
+ * release docs` and `Revert "the flaky retry"` are ordinary subjects a person
+ * might write on an ordinary commit, so the words alone cannot earn the pass:
+ * the repository state has to agree that a merge or a revert is in progress.
+ */
+const IN_PROGRESS = [/^Merge /, /^Revert "/] as const;
 
 const HEADER =
   /^(?<type>[a-z]+)(?:\((?<scope>[^()]+)\))?(?<breaking>!)?: (?<subject>.+)$/;
@@ -88,22 +93,30 @@ export type Problem = { readonly line: string; readonly hint?: string };
  * Check one Conventional Commits header. Takes the header alone or a whole
  * commit message; only the first line is a contract, the body is free text.
  *
- * `exempt` applies the EXEMPT list, and only a commit message may ask for it. A
- * pull request title is never a header git wrote, so on that call site the
- * exemptions are a hole: `Merge the two release docs` and `Bumps the timeout`
- * are ordinary titles that would walk straight past the gate.
+ * `exempt` says this is a commit message, so the headers git writes are allowed
+ * through - including a `#`-prefixed one, which is how git tells you the commit
+ * was aborted. A pull request title is never a header git wrote, so none of that
+ * applies to it: `Merge the two release docs` and `# release` are just titles,
+ * and both used to walk straight past the gate release-please reads.
+ *
+ * `inProgress` is the repository state behind the `Merge `/`Revert "` pass. The
+ * caller reads it; this function stays pure.
  *
  * Returns every problem rather than the first, so one run tells you everything
  * you have to fix.
  */
 export function checkHeader(
   message: string,
-  { exempt = false } = {},
+  { exempt = false, inProgress = false } = {},
 ): Problem[] {
   const header = message.split("\n", 1)[0]?.trim() ?? "";
 
-  if (header === "" || header.startsWith("#")) return [];
-  if (exempt && EXEMPT.some((pattern) => pattern.test(header))) return [];
+  if (header === "") return [];
+  if (exempt && header.startsWith("#")) return [];
+  if (exempt && AUTOSQUASH.some((pattern) => pattern.test(header))) return [];
+  if (exempt && inProgress && IN_PROGRESS.some((p) => p.test(header))) {
+    return [];
+  }
 
   const match = HEADER.exec(header);
   if (!match?.groups) {
@@ -192,7 +205,18 @@ if (import.meta.main) {
     }
   }
 
-  const problems = checkHeader(message, { exempt: fromFile });
+  // The marker files git writes while a merge, a revert or a cherry-pick is
+  // unfinished. Their presence is what lets a `Merge ...` subject through; their
+  // absence means the word is just the first word of an ordinary subject.
+  const inProgress =
+    fromFile &&
+    (await Promise.all(
+      ["MERGE_HEAD", "REVERT_HEAD", "CHERRY_PICK_HEAD"].map((marker) =>
+        Bun.file(`${process.env.GIT_DIR ?? ".git"}/${marker}`).exists(),
+      ),
+    ).then((found) => found.includes(true)));
+
+  const problems = checkHeader(message, { exempt: fromFile, inProgress });
 
   if (problems.length > 0) {
     console.error(`\n  ${message.split("\n", 1)[0]?.trim()}\n`);

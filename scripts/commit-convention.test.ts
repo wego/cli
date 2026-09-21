@@ -81,33 +81,62 @@ describe("headers that would cost a release", () => {
 
 describe("headers git writes for you, in a commit message", () => {
   it.each([
-    "Merge branch 'main' into feature",
-    'Revert "fix(cli): keep the ring"',
     "fixup! fix(cli): keep the ring",
     "squash! fix(cli): keep the ring",
-  ])("leaves %s alone when exempt is on", (header) => {
+  ])("leaves the autosquash header %s alone", (header) => {
     expect(checkHeader(header, { exempt: true })).toEqual([]);
   });
 
+  it("leaves a comment-only message alone - git writes that when you abort", () => {
+    expect(
+      checkHeader("# please enter the commit message", { exempt: true }),
+    ).toEqual([]);
+  });
+
+  it("leaves an empty message alone", () => {
+    expect(checkHeader("")).toEqual([]);
+  });
+});
+
+// `Merge ...` and `Revert "..."` are ordinary English. The words alone cannot earn
+// the pass, so the repository state has to agree that a merge or a revert is what
+// is happening.
+describe("merge and revert headers, in a commit message", () => {
   it.each([
-    "# comment-only message, the commit is being aborted",
-    "",
-  ])("leaves %s alone whatever the mode", (header) => {
-    expect(checkHeader(header)).toEqual([]);
+    "Merge branch 'main' into feature",
+    'Revert "fix(cli): keep the ring"',
+  ])("accepts %s while a merge or revert is in progress", (header) => {
+    expect(checkHeader(header, { exempt: true, inProgress: true })).toEqual([]);
+  });
+
+  it.each([
+    "Merge the two release docs",
+    'Revert "the flaky retry" by hand',
+  ])("rejects %s on an ordinary commit", (header) => {
+    expect(
+      checkHeader(header, { exempt: true, inProgress: false }),
+    ).not.toEqual([]);
   });
 });
 
 // The exemptions exist for headers GIT wrote. A pull request title is written by a
-// person, so the same prefixes are just words - and the title is the one string
-// release-please reads. `ci-cli` calls `--title`, which leaves exempt off.
+// person, so none of them apply - and the title is the one string release-please
+// reads. `ci-cli` calls `--title`, which leaves exempt off.
 describe("the same prefixes in a pull request title", () => {
   it.each([
     "Merge the two release docs",
-    "Bumps the update timeout to 30s",
     'Revert "the flaky retry"',
     "fixup! the help text",
+    "# release",
+    "#123 fix the ring",
   ])("rejects %s", (title) => {
     expect(checkHeader(title)).not.toEqual([]);
+  });
+
+  it("rejects a merge-shaped title even if a merge is somehow in progress", () => {
+    expect(
+      checkHeader("Merge the two release docs", { inProgress: true }),
+    ).not.toEqual([]);
   });
 });
 
