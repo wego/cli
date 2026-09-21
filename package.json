@@ -10,8 +10,10 @@
   },
   "scripts": {
     "dev": "bun run src/index.ts",
+    "postinstall": "bun run api-types:generate",
     "build:binaries": "bun run scripts/build-release.ts",
     "api-types:generate": "bun run scripts/generate-api-types.ts",
+    "api-contract:refresh": "bun run scripts/refresh-api-contract.ts",
     "lint": "biome check",
     "lint:staged": "biome check --staged --no-errors-on-unmatched",
     "format": "biome check --write",

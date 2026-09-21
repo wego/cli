@@ -7,7 +7,18 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!node_modules", "!dist", "!src/api-types.d.ts"]
+    // `contract/` holds the API's published document, vendored verbatim by
+    // `api-contract:refresh`. Formatting it would rewrite every refresh into a
+    // second, unreviewable diff, and leave `bun run lint` red until someone ran
+    // `bun run format`. `src/api-types.d.ts` is generated from that document
+    // and stays listed for the same reason.
+    "includes": [
+      "**",
+      "!node_modules",
+      "!dist",
+      "!contract",
+      "!src/api-types.d.ts"
+    ]
   },
   "formatter": {
     "enabled": true,
