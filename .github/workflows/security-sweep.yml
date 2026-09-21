@@ -45,11 +45,6 @@ on:
     # too long is the signal this workflow exists to produce.
     - cron: '0 2 1 * *'
   workflow_dispatch:
-  # TEMPORARY - dry-run proof only, removed before merge. `workflow_dispatch`
-  # cannot reach a workflow that is not yet on the default branch.
-  push:
-    branches:
-      - ci/security-sweep
 
 # No `pull_request:` trigger. There is no file whose change should run a sweep -
 # the checklist is prose, and `docs/security-sweep.md` changing is a docs review,
