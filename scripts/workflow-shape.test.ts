@@ -67,6 +67,23 @@ const STORE_TOKEN = "BLOB_READ_WRITE_TOKEN";
 /** The composite action both lanes sign with; a local path, never a package. */
 const SIGN_ACTION = ".github/actions/sign-manifest";
 
+/**
+ * Does this `uses:` name an action inside THIS repository?
+ *
+ * Two spellings, and both are local. `./path` is relative to the workspace, so
+ * it needs a checkout first. `$/path` is the self repository reference: it
+ * resolves to this repository at the RUNNING COMMIT with no checkout, it may
+ * not carry an `@ref`, and GitHub now recommends it over `./` precisely because
+ * `./` resolves against whatever the caller happened to check out.
+ *
+ * Both guards below have to know both spellings, or adopting the recommended
+ * one breaks them in opposite directions: the signing assertion would reject a
+ * correct local call, and the dependabot check would demand an update entry for
+ * an action that has no version to bump. Neither failure would be true.
+ */
+const isLocalUses = (uses: string): boolean =>
+  uses.startsWith("./") || uses.startsWith("$/");
+
 interface Step {
   uses?: string;
   run?: string;
@@ -179,7 +196,7 @@ describe.each(SIGNING_LANES)("%s: the signing identity", (file) => {
     const step = (wf.jobs[name as string]?.steps ?? []).find((s) =>
       (s.uses ?? "").includes(SIGN_ACTION),
     );
-    expect(step?.uses).toStartWith("./");
+    expect(step?.uses ?? "").toSatisfy(isLocalUses);
   });
 });
 
@@ -284,8 +301,8 @@ describe("every `bun install` goes through the composite action", () => {
  *     keeps an update job pointed at a path that no longer exists. It does not
  *     fail the config; it just covers nothing.
  *
- * Both assertions below are the same invariant `#77` added for PROMOTERS vs
- * CODEOWNERS: the config and the thing it covers must not drift.
+ * Both assertions below are the same invariant `wego/cli#77` added for PROMOTERS
+ * vs CODEOWNERS: the config and the thing it covers must not drift.
  *
  * `directory: "/"` is deliberately NOT accepted as coverage for these. In
  * dependabot-core's `github_actions` file fetcher, `/` is a special case that
@@ -301,9 +318,9 @@ describe("dependabot watches every composite action's third-party uses", () => {
     ].find((path) => existsSync(path));
 
   /**
-   * A `uses:` that resolves outside this repository. `./...` is a local
-   * composite action - its own directory is checked on its own iteration, and
-   * it has no version to bump.
+   * A `uses:` that resolves OUTSIDE this repository, and so has a version worth
+   * watching. A local composite action - either spelling, see `isLocalUses` -
+   * has its own directory checked on its own iteration and nothing to bump.
    */
   const thirdPartyUses = (dir: string): string[] => {
     const action = Bun.YAML.parse(
@@ -313,7 +330,7 @@ describe("dependabot watches every composite action's third-party uses", () => {
     return (action.runs?.steps ?? [])
       .map((step) => step.uses)
       .filter((uses): uses is string => uses !== undefined)
-      .filter((uses) => !uses.startsWith("./"));
+      .filter((uses) => !isLocalUses(uses));
   };
 
   const dependabot = Bun.YAML.parse(
