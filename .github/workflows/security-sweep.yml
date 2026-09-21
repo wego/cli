@@ -1,0 +1,176 @@
+name: security-sweep
+
+# Open an issue holding the periodic security sweep checklist. That is all this
+# workflow does.
+#
+# It performs no checks, and it is not meant to. Every endpoint the sweep reads is
+# org-admin or repo-admin scoped - org secrets and variables, org rulesets, org
+# installations, team membership, repo rulesets, environments, branch protection,
+# private vulnerability reporting, the dependency-graph SBOM - and `GITHUB_TOKEN`
+# has no `administration` permission key to grant. There is no set of `permissions:`
+# entries that makes these reads succeed: the workflow would parse, run green, and
+# 403 at runtime, which is the silent-failure mode this repository has already
+# recorded four separate ways.
+#
+# Closing that gap needs either a long-lived org-scoped PAT (the risk class ORG-6 is
+# about) or a purpose-built read-only GitHub App (what ORG-4 is about). Both are
+# decisions above this file. Neither is taken here.
+#
+# What is left is still worth running. ORG-7: the organisation has no audit log, so
+# nothing records who changed a secret, a ruleset, an environment or a team, or
+# when. The `cli-release-signers` team read four members minutes after creation and
+# three again afterwards, with no way to attribute either change. A closed issue
+# carrying pasted sweep output is the compensating record - timestamped,
+# attributable, searchable and durable - which is more than a green check leaves
+# behind. And a sweep issue that has been open for six weeks is itself the signal
+# that the sweep is not happening.
+#
+# Mechanics are lifted from `fulcio-pin-check.yml`, with one deliberate difference:
+# see "a new cycle came due" below.
+on:
+  schedule:
+    # 02:00 UTC on the 1st of each month - 10:00 in Singapore, the start of the
+    # working day for the people who hold the admin rights this needs.
+    #
+    # Monthly rather than quarterly: the team-membership change above happened
+    # inside an hour, and a quarter is a long time to not notice a new App holding
+    # `administration: write` with `bypass_mode: always`.
+    #
+    # Day-of-month only, deliberately. Pinning a weekday as well would mean
+    # restricting both day-of-month and day-of-week, which cron ORs rather than
+    # ANDs - turning one monthly run into roughly five weekly ones. The other way
+    # round, a weekly cron with a runtime "is it the first Tuesday" guard, buys a
+    # weekday by adding a step that silently does nothing on four runs in five.
+    # The 1st can land on a weekend; the issue simply waits, and an issue left open
+    # too long is the signal this workflow exists to produce.
+    - cron: '0 2 1 * *'
+  workflow_dispatch:
+
+# No `pull_request:` trigger. There is no file whose change should run a sweep -
+# the checklist is prose, and `docs/security-sweep.md` changing is a docs review,
+# not a reason to open an issue.
+
+permissions:
+  contents: read
+
+jobs:
+  open-sweep-issue:
+    name: Open the periodic security sweep issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # For the issue below. This is the only write this workflow performs.
+      issues: write
+    steps:
+      # The checklist is read from the repository rather than written into this
+      # file, so its content is reviewable as a diff.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Open the sweep issue, or note that a cycle came due
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const fs = require("fs");
+
+            const PREFIX = "Security sweep — ";
+            // The period, not a fixed string, so each cycle is findable on its own
+            // and the dedupe below is per-cycle rather than forever.
+            const period = new Date().toISOString().slice(0, 7); // YYYY-MM
+            const title = `${PREFIX}${period}`;
+
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100,
+            });
+
+            // Oldest first: if several are somehow open, the comment belongs on the
+            // one that has been unfinished longest.
+            const sweeps = open
+              .filter((i) => i.title.startsWith(PREFIX))
+              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+            // The deliberate difference from `fulcio-pin-check.yml`, which finds an
+            // open issue with the same title and returns silently. Silence here
+            // would hide exactly the failure this workflow exists to surface: a
+            // sweep that is not being run. A thread reading "cycle 3 came due,
+            // cycle 1 is still open" is the signal.
+            if (sweeps.length > 0) {
+              const oldest = sweeps[0];
+              const openedPeriod = oldest.title.slice(PREFIX.length);
+              const days = Math.floor(
+                (Date.now() - new Date(oldest.created_at)) / 86400000,
+              );
+              const samePeriod = openedPeriod === period;
+
+              const lines = samePeriod
+                ? [
+                    `The **${period}** sweep was triggered again (\`${context.eventName}\`) while this issue is still open.`,
+                    "",
+                    `This issue has been open for **${days} day(s)**. The cycle is not recorded until it is closed with the sweep output pasted in.`,
+                  ]
+                : [
+                    `A new sweep cycle — **${period}** — came due while this one (**${openedPeriod}**) is still unfinished.`,
+                    "",
+                    `This issue has been open for **${days} day(s)**. No issue was opened for ${period}; this thread is the record that the cycle came due and the previous one had not been run.`,
+                    "",
+                    "The checklist in `docs/security-sweep.md` may have changed since this issue was opened — read it there rather than from the body above.",
+                  ];
+
+              lines.push("", `Run: ${process.env.RUN_URL}`);
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: oldest.number,
+                body: lines.join("\n"),
+              });
+
+              core.notice(
+                `Sweep issue #${oldest.number} (${openedPeriod}) is still open after ${days} day(s) - commented rather than opening ${title}.`,
+              );
+              return;
+            }
+
+            const checklist = fs.readFileSync("docs/security-sweep.md", "utf8");
+
+            const body = [
+              `Periodic security sweep for **${period}**.`,
+              "",
+              "This workflow performs none of the checks below and cannot: every one of them",
+              "reads an org-admin or repo-admin scoped endpoint, and `GITHUB_TOKEN` has no",
+              "`administration` permission key. A human runs the checklist and pastes the output",
+              "into this thread.",
+              "",
+              "**Closing this issue with the output pasted in is the point.** The organisation has",
+              "no audit log (`ORG-7`), so this thread is the only durable, timestamped and",
+              "attributable record that the sweep happened and what it saw.",
+              "",
+              "Sections are marked with the role they need. If you hold only one of the two, run",
+              "your half and say so in a comment, so it is visible that the other half is still",
+              "outstanding.",
+              "",
+              "---",
+              "",
+              checklist,
+              "",
+              "---",
+              "",
+              `Opened by: ${process.env.RUN_URL}`,
+            ].join("\n");
+
+            const { data: created } = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["security"],
+            });
+
+            core.notice(`Opened ${title} as #${created.number}.`);
