@@ -216,6 +216,19 @@ describe("the vendored contract is committed", () => {
     expect(generator).not.toContain("--filter cli");
   });
 
+  it("is formatted by biome, like every other committed file", () => {
+    // The vendored contract used to be exempted from biome, because biome
+    // reformats it and the refresh script wrote a different shape - so every
+    // refresh left `bun run lint` red. The fix is to let biome own the
+    // formatting and have the refresh run it, not to carve the file out: an
+    // exemption is a rule nobody can see from the file itself, and this
+    // repository has exactly one formatter.
+    const biome = readFileSync("biome.jsonc", "utf8");
+    expect(biome).not.toContain('"!contract"');
+    const refresher = readFileSync("scripts/refresh-api-contract.ts", "utf8");
+    expect(refresher).toContain('"biome", "format", "--write"');
+  });
+
   it("is refreshed from production and nowhere else", () => {
     const refresher = readFileSync("scripts/refresh-api-contract.ts", "utf8");
     const hosts = refresher.match(/https?:\/\/[^\s"'`)]+/g) ?? [];

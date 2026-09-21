@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { fileURLToPath } from "node:url";
+
 /**
  * Refresh the vendored API contract at `contract/openapi.json`.
  *
@@ -14,6 +16,10 @@
  * contract. A refresh that stopped here would leave them behind, and the next
  * `bun run typecheck` would compare the CLI against shapes the API no longer
  * publishes - which is the stale-snapshot failure this file exists to end.
+ *
+ * The written file is formatted by biome, the same formatter every other file
+ * in this repository goes through, so `contract/` needs no exemption and a
+ * refresh never leaves `bun run lint` red.
  *
  * Always production. The document carries a `servers` block naming the host it
  * was served from, so a staging or preview URL would rewrite that line on every
@@ -63,11 +69,39 @@ export function contractProblem(body: unknown): string | undefined {
   return undefined;
 }
 
-/** The committed contract as written to disk: two-space indent, one trailing
- *  newline. The generator, Check B and the CI drift step all read this file, so
- *  the formatting is fixed here and nowhere else. */
+/** A first pass at the file: valid JSON, two-space indent, trailing newline.
+ *  Biome then owns the final shape - see `formatContract`. This exists so the
+ *  file on disk is already sane if the format step is what fails. */
 export function serializeContract(document: ContractDocument): string {
   return `${JSON.stringify(document, null, 2)}\n`;
+}
+
+/**
+ * Hand the written file to biome, the repository's one formatter.
+ *
+ * The contract is committed, so it is subject to `bun run lint` like every
+ * other file. Formatting it here rather than exempting `contract/` is what
+ * keeps a refresh from leaving the tree lint-red until someone remembers
+ * `bun run format`, and it means nobody has to know that this one file is
+ * special. Biome's output is deterministic, so a refresh that fetches an
+ * unchanged document produces no diff.
+ *
+ * Throws on failure: a contract that lint would reject must not be committed.
+ */
+function formatContract(): void {
+  const formatted = Bun.spawnSync(
+    ["bunx", "biome", "format", "--write", "contract/openapi.json"],
+    {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  if (formatted.exitCode !== 0) {
+    throw new Error(
+      `biome could not format contract/openapi.json: ${formatted.stderr.toString().trim()}`,
+    );
+  }
 }
 
 async function fetchContract(): Promise<ContractDocument> {
@@ -118,6 +152,7 @@ if (import.meta.main) {
   const before = await committedVersion();
   const document = await fetchContract();
   await Bun.write(OUTPUT, serializeContract(document));
+  formatContract();
   console.log(`contract/openapi.json <- ${CONTRACT_URL}`);
   console.log(`  was: ${before ?? "(no committed contract)"}`);
   console.log(`  now: ${document.info.version}`);

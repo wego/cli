@@ -68,25 +68,14 @@
             }
           }
         },
-        "x-default-scopes": [
-          "openid",
-          "profile",
-          "users"
-        ]
+        "x-default-scopes": ["openid", "profile", "users"]
       }
     },
     "schemas": {
       "Problem": {
         "type": "object",
         "description": "RFC 9457 Problem Details, served as application/problem+json.",
-        "required": [
-          "type",
-          "title",
-          "status",
-          "instance",
-          "code",
-          "trace_id"
-        ],
+        "required": ["type", "title", "status", "instance", "code", "trace_id"],
         "properties": {
           "type": {
             "type": "string",
@@ -158,9 +147,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "status"
-                  ]
+                  "required": ["status"]
                 }
               }
             }
@@ -171,9 +158,7 @@
     "/v1/user": {
       "get": {
         "operationId": "getCurrentUser",
-        "tags": [
-          "User"
-        ],
+        "tags": ["User"],
         "summary": "Get the authenticated user",
         "description": "Returns the caller's own identity, read from the verified access-token claims. Profile fields (email, name, country) appear only when the token carries them.",
         "responses": {
@@ -228,9 +213,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "sub"
-                  ]
+                  "required": ["sub"]
                 }
               }
             }
@@ -261,9 +244,7 @@
     "/v1/feedback": {
       "post": {
         "operationId": "submitFeedback",
-        "tags": [
-          "Feedback"
-        ],
+        "tags": ["Feedback"],
         "summary": "Submit feedback",
         "description": "Records feedback about the Wego CLI/API experience – a rating (1-5), a category, and/or a free-text message. At least one of rating or message is required. Fire-and-forget: returns 202 and never blocks on recording.",
         "responses": {
@@ -280,9 +261,7 @@
                       "description": "The feedback was accepted."
                     }
                   },
-                  "required": [
-                    "status"
-                  ]
+                  "required": ["status"]
                 }
               }
             }
@@ -335,11 +314,7 @@
                   "category": {
                     "description": "Which area the feedback is about.",
                     "type": "string",
-                    "enum": [
-                      "flights",
-                      "hotels",
-                      "other"
-                    ]
+                    "enum": ["flights", "hotels", "other"]
                   },
                   "message": {
                     "example": "Fare options were exactly what I needed.",
@@ -364,9 +339,7 @@
     "/v1/places/nearby": {
       "get": {
         "operationId": "getNearbyPlaces",
-        "tags": [
-          "Places"
-        ],
+        "tags": ["Places"],
         "summary": "Airports and cities near a point",
         "description": "The airports (and optionally cities) closest to a place or a coordinate pair, nearest first – for finding an alternative departure airport serving the same trip. Pass either place (a code, resolved to coordinates here) or latitude+longitude, never neither.",
         "responses": {
@@ -418,10 +391,7 @@
                             "type": "number"
                           }
                         },
-                        "required": [
-                          "name",
-                          "type"
-                        ]
+                        "required": ["name", "type"]
                       },
                       "description": "The nearby places found around the origin."
                     },
@@ -457,10 +427,7 @@
                             },
                             "resolvedFrom": {
                               "type": "string",
-                              "enum": [
-                                "place",
-                                "coordinates"
-                              ],
+                              "enum": ["place", "coordinates"],
                               "description": "`place` when a code was resolved to these coordinates, `coordinates` when the caller supplied them."
                             },
                             "code": {
@@ -472,11 +439,7 @@
                               "type": "string"
                             }
                           },
-                          "required": [
-                            "latitude",
-                            "longitude",
-                            "resolvedFrom"
-                          ],
+                          "required": ["latitude", "longitude", "resolvedFrom"],
                           "description": "The point the nearby search ran from, and how it was derived."
                         }
                       },
@@ -489,10 +452,7 @@
                       "description": "Pagination and the resolved origin for this nearby search."
                     }
                   },
-                  "required": [
-                    "results",
-                    "metadata"
-                  ]
+                  "required": ["results", "metadata"]
                 }
               }
             }
@@ -587,13 +547,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": [
-                  "city",
-                  "airport",
-                  "state",
-                  "district",
-                  "hotel"
-                ]
+                "enum": ["city", "airport", "state", "district", "hotel"]
               }
             },
             "description": "Place types to resolve; repeat or comma-separate to mix."
@@ -626,9 +580,7 @@
     "/v1/places": {
       "get": {
         "operationId": "getPlaces",
-        "tags": [
-          "Places"
-        ],
+        "tags": ["Places"],
         "summary": "Resolve travel locations",
         "description": "Resolves a free-text location query to canonical Wego places (cities, airports, states, districts, hotels) with codes and coordinates, for use in later flight and hotel searches. When metadata.hasAmbiguity is true, clarify with the user before proceeding.",
         "responses": {
@@ -680,10 +632,7 @@
                             "type": "number"
                           }
                         },
-                        "required": [
-                          "name",
-                          "type"
-                        ]
+                        "required": ["name", "type"]
                       },
                       "description": "The matched places for this page."
                     },
@@ -724,10 +673,7 @@
                       "description": "Pagination and ambiguity signals for this place search."
                     }
                   },
-                  "required": [
-                    "results",
-                    "metadata"
-                  ]
+                  "required": ["results", "metadata"]
                 }
               }
             }
@@ -804,13 +750,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": [
-                  "city",
-                  "airport",
-                  "state",
-                  "district",
-                  "hotel"
-                ]
+                "enum": ["city", "airport", "state", "district", "hotel"]
               }
             },
             "description": "Place types to resolve; repeat or comma-separate to mix."
@@ -853,9 +793,7 @@
     "/v1/countries/{countryCode}/holidays": {
       "get": {
         "operationId": "getCountryHolidays",
-        "tags": [
-          "Countries"
-        ],
+        "tags": ["Countries"],
         "summary": "Public holidays for a market",
         "description": "Public holidays in one Wego market over a date range, for spotting long weekends before searching flights. Give both fromDate and toDate, or neither – omit both and the API searches the next 90 days and says so in metadata.window/from/to.",
         "responses": {
@@ -888,12 +826,7 @@
                             "description": "Inclusive ISO YYYY-MM-DD end; equals startDate for one-day holidays."
                           }
                         },
-                        "required": [
-                          "name",
-                          "key",
-                          "startDate",
-                          "endDate"
-                        ]
+                        "required": ["name", "key", "startDate", "endDate"]
                       },
                       "description": "Public holidays in the resolved window."
                     },
@@ -912,10 +845,7 @@
                         },
                         "window": {
                           "type": "string",
-                          "enum": [
-                            "explicit",
-                            "upcoming"
-                          ],
+                          "enum": ["explicit", "upcoming"],
                           "description": "`explicit` when the caller supplied both dates, `upcoming` when the API chose the range (stated in from/to)."
                         },
                         "from": {
@@ -937,10 +867,7 @@
                       "description": "The market, the resolved date window, and the result count for this read."
                     }
                   },
-                  "required": [
-                    "results",
-                    "metadata"
-                  ]
+                  "required": ["results", "metadata"]
                 }
               }
             }
@@ -1043,9 +970,7 @@
     "/v1/countries/{countryCode}/visa-free-destinations": {
       "get": {
         "operationId": "getVisaFreeDestinations",
-        "tags": [
-          "Countries"
-        ],
+        "tags": ["Countries"],
         "summary": "Visa-free destinations for a passport",
         "description": "Where a passport can travel without a visa, as one complete list (the API walks the upstream's pages). An inspiration list, not a visa rule: it carries no visa type and no permitted stay, and a country's absence means absent from Wego's list, never that a visa is required.",
         "responses": {
@@ -1086,10 +1011,7 @@
                             "type": "number"
                           }
                         },
-                        "required": [
-                          "countryCode",
-                          "name"
-                        ]
+                        "required": ["countryCode", "name"]
                       },
                       "description": "Visa-free destinations for the passport."
                     },
@@ -1124,10 +1046,7 @@
                         },
                         "coverage": {
                           "type": "string",
-                          "enum": [
-                            "complete",
-                            "truncated"
-                          ],
+                          "enum": ["complete", "truncated"],
                           "description": "`complete` when the walk ended on a short upstream page. `truncated` when the page cap stopped it on a full page, so totalCandidates is a FLOOR and destinations may exist that this response does not carry. At exactly the cap (200) a complete list also reports `truncated`, since telling the two apart would cost another upstream page."
                         }
                       },
@@ -1142,10 +1061,7 @@
                       "description": "The passport, the walk's coverage, and the counts for this read."
                     }
                   },
-                  "required": [
-                    "results",
-                    "metadata"
-                  ]
+                  "required": ["results", "metadata"]
                 }
               }
             }
@@ -1252,9 +1168,7 @@
     "/v1/flights/searches": {
       "post": {
         "operationId": "createFlightSearch",
-        "tags": [
-          "Flights"
-        ],
+        "tags": ["Flights"],
         "summary": "Create a flight search",
         "description": "Creates a metasearch for the given route/dates/passengers and returns its searchId. Results accrue asynchronously – poll getFlightSearchResults with the returned searchId to read ranked trips.",
         "responses": {
@@ -1275,18 +1189,11 @@
                     },
                     "siteCodeSource": {
                       "type": "string",
-                      "enum": [
-                        "explicit",
-                        "default"
-                      ],
+                      "enum": ["explicit", "default"],
                       "description": "How the API resolved siteCode: explicit (caller-supplied – including a market a client derived and passed) or default (US, no site supplied)."
                     }
                   },
-                  "required": [
-                    "searchId",
-                    "siteCode",
-                    "siteCodeSource"
-                  ],
+                  "required": ["searchId", "siteCode", "siteCodeSource"],
                   "description": "The created search id and the market it was created for."
                 }
               }
@@ -1376,12 +1283,7 @@
                     "default": "economy",
                     "description": "Cabin class requested for all passengers.",
                     "type": "string",
-                    "enum": [
-                      "economy",
-                      "premium_economy",
-                      "business",
-                      "first"
-                    ]
+                    "enum": ["economy", "premium_economy", "business", "first"]
                   },
                   "adults": {
                     "default": 1,
@@ -1423,11 +1325,7 @@
                     "description": "Wego market (point of sale) as a 2-letter code, e.g. AE. Optional: if omitted the API defaults to US. A client that knows the user's market (the wego CLI derives it from the id_token) passes it as an explicit siteCode; the response always reports the siteCode used."
                   }
                 },
-                "required": [
-                  "from",
-                  "to",
-                  "fromDate"
-                ],
+                "required": ["from", "to", "fromDate"],
                 "additionalProperties": false
               }
             }
@@ -1438,9 +1336,7 @@
     "/v1/flights/schedules": {
       "get": {
         "operationId": "getFlightSchedules",
-        "tags": [
-          "Flights"
-        ],
+        "tags": ["Flights"],
         "summary": "Published timetable for a route",
         "description": "What actually flies a route – times, duration, aircraft, and the weekdays each flight runs – with no prices and no search to settle. Nonstop flights only. Airport codes resolve to their parent city (LHR to LON), and metadata echoes what each side resolved to.",
         "responses": {
@@ -1628,10 +1524,7 @@
                         },
                         "coverage": {
                           "type": "string",
-                          "enum": [
-                            "complete",
-                            "truncated"
-                          ],
+                          "enum": ["complete", "truncated"],
                           "description": "complete when the upstream returned its whole set for this route, truncated when it filled the API's upstream ceiling and may hold more. While truncated, read totalCandidates as a floor rather than a total."
                         },
                         "from": {
@@ -1646,10 +1539,7 @@
                               "description": "The city code sent upstream – LHR resolves to LON."
                             }
                           },
-                          "required": [
-                            "requested",
-                            "resolvedCityCode"
-                          ],
+                          "required": ["requested", "resolvedCityCode"],
                           "description": "Departure route endpoint: what the caller sent and the city code it resolved to."
                         },
                         "to": {
@@ -1664,10 +1554,7 @@
                               "description": "The city code sent upstream – LHR resolves to LON."
                             }
                           },
-                          "required": [
-                            "requested",
-                            "resolvedCityCode"
-                          ],
+                          "required": ["requested", "resolvedCityCode"],
                           "description": "Arrival route endpoint: what the caller sent and the city code it resolved to."
                         },
                         "siteCode": {
@@ -1676,10 +1563,7 @@
                         },
                         "siteCodeSource": {
                           "type": "string",
-                          "enum": [
-                            "explicit",
-                            "default"
-                          ],
+                          "enum": ["explicit", "default"],
                           "description": "explicit when the caller supplied siteCode, default when the API applied the US floor."
                         }
                       },
@@ -1698,10 +1582,7 @@
                       "description": "The page returned, how much the upstream held, the resolved route endpoints, and the market echoed."
                     }
                   },
-                  "required": [
-                    "results",
-                    "metadata"
-                  ]
+                  "required": ["results", "metadata"]
                 }
               }
             }
@@ -1838,9 +1719,7 @@
     "/v1/flights/searches/{searchId}/results": {
       "get": {
         "operationId": "getFlightSearchResults",
-        "tags": [
-          "Flights"
-        ],
+        "tags": ["Flights"],
         "summary": "Read ranked flight results",
         "description": "Ranked trips as lean list cards (default 10, max 50 per page; out-of-range rejected 400), filters + sort applied. No completion flag: re-read (300ms→3s) until snapshotFareCount holds steady across two reads AND snapshotTripCount > 0. No fares[] on a card – read the trip for fares.",
         "responses": {
@@ -1913,10 +1792,7 @@
                                     "description": "Trips carrying this value, deduped per trip and matched on any leg."
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "count"
-                                ]
+                                "required": ["code", "count"]
                               },
                               "description": "Alliance codes present in this snapshot, by descending count."
                             },
@@ -1940,10 +1816,7 @@
                                     "description": "Trips carrying this value, deduped per trip and matched on any leg."
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "count"
-                                ]
+                                "required": ["code", "count"]
                               },
                               "description": "Airline codes present in this snapshot, by descending count."
                             },
@@ -1967,10 +1840,7 @@
                                     "description": "Trips carrying this value, deduped per trip and matched on any leg."
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "count"
-                                ]
+                                "required": ["code", "count"]
                               },
                               "description": "Booking provider codes present in this snapshot, by descending count."
                             },
@@ -1994,10 +1864,7 @@
                                     "description": "Trips carrying this value, deduped per trip and matched on any leg."
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "count"
-                                ]
+                                "required": ["code", "count"]
                               },
                               "description": "Stopover airport codes present in this snapshot, by descending count."
                             },
@@ -2021,10 +1888,7 @@
                                     "description": "Trips carrying this value, deduped per trip and matched on any leg."
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "count"
-                                ]
+                                "required": ["code", "count"]
                               },
                               "description": "Aircraft type codes present in this snapshot, by descending count. name is the display label the results card publishes (A380, A320 Neo), and is NOT unique: several codes can carry the same label, so filter on code. Includes any non-aircraft equipment upstream reports on a leg, such as BUS for a surface segment."
                             },
@@ -2043,10 +1907,7 @@
                                   "description": "Longest layover any trip in this snapshot carries, in minutes."
                                 }
                               },
-                              "required": [
-                                "min",
-                                "max"
-                              ]
+                              "required": ["min", "max"]
                             }
                           },
                           "required": [
@@ -2080,10 +1941,7 @@
                         },
                         "currencyCodeSource": {
                           "type": "string",
-                          "enum": [
-                            "explicit",
-                            "default"
-                          ],
+                          "enum": ["explicit", "default"],
                           "description": "How the API resolved currencyCode: explicit (the caller sent currency – including a value equal to the default) or default (USD, no currency sent). A default here is the one signal that the request never carried the currency you meant."
                         },
                         "locale": {
@@ -2092,10 +1950,7 @@
                         },
                         "localeSource": {
                           "type": "string",
-                          "enum": [
-                            "explicit",
-                            "default"
-                          ],
+                          "enum": ["explicit", "default"],
                           "description": "How the API resolved locale: explicit (the caller sent locale – including a value equal to the default) or default (en, no locale sent). A default here explains text that came back in a language the caller did not ask for."
                         }
                       },
@@ -2249,11 +2104,7 @@
                                         "description": "Airline logo URL; may 404, fall back to the name."
                                       }
                                     },
-                                    "required": [
-                                      "code",
-                                      "name",
-                                      "logoUrl"
-                                    ],
+                                    "required": ["code", "name", "logoUrl"],
                                     "description": "An airline resolved to code, name and logo."
                                   },
                                   "description": "Marketing airlines on the leg, resolved to code, name and logo."
@@ -2277,11 +2128,7 @@
                                         "description": "Airline logo URL; may 404, fall back to the name."
                                       }
                                     },
-                                    "required": [
-                                      "code",
-                                      "name",
-                                      "logoUrl"
-                                    ],
+                                    "required": ["code", "name", "logoUrl"],
                                     "description": "An airline resolved to code, name and logo."
                                   }
                                 },
@@ -2297,12 +2144,7 @@
                                   "type": "array",
                                   "items": {
                                     "type": "string",
-                                    "enum": [
-                                      "FLIGHT",
-                                      "TRAIN",
-                                      "BUS",
-                                      "OTHER"
-                                    ],
+                                    "enum": ["FLIGHT", "TRAIN", "BUS", "OTHER"],
                                     "description": "How this segment travels. FLIGHT is a plane. TRAIN and BUS are surface segments sold under a flight number, which airlines do publish, for example the Etihad coach between Dubai Bus Station and Abu Dhabi. OTHER is a mode upstream states that this API does not model, and is never a flight. Absent upstream is published as FLIGHT, which is what every segment meant before this field existed."
                                   },
                                   "description": "Distinct transport modes across this leg's segments, in segment order. Always present and never empty: an all-flight leg reads [\"FLIGHT\"]. This card carries no segments[], so anything else here means read the trip to see which segment is not a plane before you quote the leg as a flight."
@@ -2479,10 +2321,7 @@
             "name": "airlines-match",
             "schema": {
               "type": "string",
-              "enum": [
-                "any",
-                "all"
-              ]
+              "enum": ["any", "all"]
             },
             "description": "How the airlines list is matched across a trip's legs. 'any' (the default) keeps a trip when ANY leg carries a listed airline. 'all' requires EVERY leg to, which is what wego.com does, so a Saudia-out / Emirates-back trip is dropped under ?airlines=EK. A leg marketed by two carriers still passes when one of them is listed, so add same-airline=true to require a single carrier as well. Ignored when airlines is absent."
           },
@@ -2491,12 +2330,7 @@
             "name": "same-airline",
             "schema": {
               "type": "string",
-              "enum": [
-                "0",
-                "1",
-                "true",
-                "false"
-              ]
+              "enum": ["0", "1", "true", "false"]
             },
             "description": "Keep only trips where every leg is marketed by exactly ONE airline and it is the same airline on every leg, so an interline or self-transfer leg marketed by two carriers is dropped. Matches the MARKETING carrier only: a codeshare, where one airline sells a flight another operates, is NOT excluded, because wego.com's 'same airline for the complete trip' does not exclude it either. Independent of airlines, so it works on its own; combine the two to mean 'only SQ, on every leg'."
           },
@@ -2580,12 +2414,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": [
-                  "midnight",
-                  "morning",
-                  "afternoon",
-                  "night"
-                ]
+                "enum": ["midnight", "morning", "afternoon", "night"]
               }
             },
             "description": "Coarse local-time buckets for the OUTBOUND leg's DEPARTURE: midnight 00:00-05:59, morning 06:00-11:59, afternoon 12:00-17:59, night 18:00-23:59, local to that airport. Repeat or comma-separate; OR'd together. The four buckets PARTITION the day, so listing all four returns every trip exactly once - wego.com's own buckets overlap at 06:00, 12:00 and 18:00 and these do not. They are wider than they sound, so prefer the matching -range param whenever the caller gave a hard edge."
@@ -2607,12 +2436,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": [
-                  "midnight",
-                  "morning",
-                  "afternoon",
-                  "night"
-                ]
+                "enum": ["midnight", "morning", "afternoon", "night"]
               }
             },
             "description": "Coarse local-time buckets for when the OUTBOUND leg LANDS: midnight 00:00-05:59, morning 06:00-11:59, afternoon 12:00-17:59, night 18:00-23:59, local to that airport. Repeat or comma-separate; OR'd together. The four buckets PARTITION the day, so listing all four returns every trip exactly once - wego.com's own buckets overlap at 06:00, 12:00 and 18:00 and these do not. They are wider than they sound, so prefer the matching -range param whenever the caller gave a hard edge."
@@ -2634,12 +2458,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": [
-                  "midnight",
-                  "morning",
-                  "afternoon",
-                  "night"
-                ]
+                "enum": ["midnight", "morning", "afternoon", "night"]
               }
             },
             "description": "Coarse local-time buckets for the RETURN leg's DEPARTURE: midnight 00:00-05:59, morning 06:00-11:59, afternoon 12:00-17:59, night 18:00-23:59, local to that airport. Repeat or comma-separate; OR'd together. The four buckets PARTITION the day, so listing all four returns every trip exactly once - wego.com's own buckets overlap at 06:00, 12:00 and 18:00 and these do not. They are wider than they sound, so prefer the matching -range param whenever the caller gave a hard edge. Applies to the RETURN leg (legs[1]) ONLY. A ONE-WAY search has no return leg, so any return-* bound judges a leg that does not exist and matches NOTHING - expect metadata.totalCandidates 0, which is the honest answer rather than a silently ignored filter. Judge the result on metadata.totalCandidates, never on the page."
@@ -2661,12 +2480,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": [
-                  "midnight",
-                  "morning",
-                  "afternoon",
-                  "night"
-                ]
+                "enum": ["midnight", "morning", "afternoon", "night"]
               }
             },
             "description": "Coarse local-time buckets for when the RETURN leg LANDS, i.e. when the traveller gets home: midnight 00:00-05:59, morning 06:00-11:59, afternoon 12:00-17:59, night 18:00-23:59, local to that airport. Repeat or comma-separate; OR'd together. The four buckets PARTITION the day, so listing all four returns every trip exactly once - wego.com's own buckets overlap at 06:00, 12:00 and 18:00 and these do not. They are wider than they sound, so prefer the matching -range param whenever the caller gave a hard edge. Applies to the RETURN leg (legs[1]) ONLY. A ONE-WAY search has no return leg, so any return-* bound judges a leg that does not exist and matches NOTHING - expect metadata.totalCandidates 0, which is the honest answer rather than a silently ignored filter. Judge the result on metadata.totalCandidates, never on the page."
@@ -2724,10 +2538,7 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "enum": [
-                  "wego",
-                  "airline"
-                ]
+                "enum": ["wego", "airline"]
               }
             },
             "description": "Booking types, repeat or comma-separate. OR'd together across the trip's fares – a trip matches if ANY of its fares has a listed kind (partner fares never match either value)."
@@ -2797,9 +2608,7 @@
             "schema": {
               "default": "card",
               "type": "string",
-              "enum": [
-                "card"
-              ]
+              "enum": ["card"]
             },
             "description": "Response projection. `card` is the only value: the lean results-list projection (cheapest-price summary + trip-level stops/duration + per-leg airline/aircraft/stopover, no fares[]). The former `default` projection was removed in issue #1308 – read GET /v1/flights/trips/{tripId} for a trip's fares and segments."
           }
@@ -2809,9 +2618,7 @@
     "/v1/flights/trips/{tripId}": {
       "get": {
         "operationId": "getFlightTrip",
-        "tags": [
-          "Flights"
-        ],
+        "tags": ["Flights"],
         "summary": "Open one flight trip",
         "description": "Returns one trip's full itinerary and every fare on it (each kind-tagged), for the given tripId within its searchId. searchId is required – it comes from the search/results snapshot the tripId was read from.",
         "responses": {
@@ -2831,11 +2638,7 @@
                         "featured": {
                           "description": "The single highest-priority featured label, best_value > cheapest > cheapest_direct. best_value ranks on the score of the trip's CHEAPEST fare, the same statistic sort=score_desc orders by, so on a score_desc read it lands on the first result. cheapest and cheapest_direct break a price tie by that same score, then by leg-1 departure – cheapest keeps the LATER departure, cheapest_direct the EARLIER one. Under sort=score_desc the two picks are also MOVED toward positions 2 and 3, matching wego.com. Those positions are targets, not guarantees: a pick already at or above its target stays put, and cheapest_direct lands at position 2 when the first result is itself at the cheapest price.",
                           "type": "string",
-                          "enum": [
-                            "best_value",
-                            "cheapest",
-                            "cheapest_direct"
-                          ]
+                          "enum": ["best_value", "cheapest", "cheapest_direct"]
                         },
                         "stops": {
                           "type": "number",
@@ -2894,10 +2697,7 @@
                                     "description": "Airline display name from the search snapshot's airline dictionary; the bare code is the fallback on a dictionary miss."
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "name"
-                                ],
+                                "required": ["code", "name"],
                                 "description": "A carrier resolved to code + display name. This is airline identity (who operates/markets the flight), NOT the booking provider that sells the ticket – that is fares[].providerName / providerCode."
                               }
                             },
@@ -2916,10 +2716,7 @@
                                     "description": "Airline display name from the search snapshot's airline dictionary; the bare code is the fallback on a dictionary miss."
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "name"
-                                ],
+                                "required": ["code", "name"],
                                 "description": "A carrier resolved to code + display name. This is airline identity (who operates/markets the flight), NOT the booking provider that sells the ticket – that is fares[].providerName / providerCode."
                               }
                             },
@@ -2928,12 +2725,7 @@
                               "type": "array",
                               "items": {
                                 "type": "string",
-                                "enum": [
-                                  "FLIGHT",
-                                  "TRAIN",
-                                  "BUS",
-                                  "OTHER"
-                                ],
+                                "enum": ["FLIGHT", "TRAIN", "BUS", "OTHER"],
                                 "description": "How this segment travels. FLIGHT is a plane. TRAIN and BUS are surface segments sold under a flight number, which airlines do publish, for example the Etihad coach between Dubai Bus Station and Abu Dhabi. OTHER is a mode upstream states that this API does not model, and is never a flight. Absent upstream is published as FLIGHT, which is what every segment meant before this field existed."
                               },
                               "description": "Distinct transport modes across this leg's segments, in segment order. Always present and never empty: an all-flight leg reads [\"FLIGHT\"], so one read of this field replaces folding segments[] yourself. Anything else means part of this leg is not a plane, and segments[] says which part."
@@ -2972,10 +2764,7 @@
                                         "description": "Airline display name from the search snapshot's airline dictionary; the bare code is the fallback on a dictionary miss."
                                       }
                                     },
-                                    "required": [
-                                      "code",
-                                      "name"
-                                    ],
+                                    "required": ["code", "name"],
                                     "description": "The carrier whose code is on the ticket (the marketing / flight-number airline)."
                                   },
                                   "operatingCarrier": {
@@ -2991,10 +2780,7 @@
                                         "description": "Airline display name from the search snapshot's airline dictionary; the bare code is the fallback on a dictionary miss."
                                       }
                                     },
-                                    "required": [
-                                      "code",
-                                      "name"
-                                    ]
+                                    "required": ["code", "name"]
                                   },
                                   "flightNumber": {
                                     "type": "string",
@@ -3002,12 +2788,7 @@
                                   },
                                   "transportType": {
                                     "type": "string",
-                                    "enum": [
-                                      "FLIGHT",
-                                      "TRAIN",
-                                      "BUS",
-                                      "OTHER"
-                                    ],
+                                    "enum": ["FLIGHT", "TRAIN", "BUS", "OTHER"],
                                     "description": "How this segment travels. FLIGHT is a plane. TRAIN and BUS are surface segments sold under a flight number, which airlines do publish, for example the Etihad coach between Dubai Bus Station and Abu Dhabi. OTHER is a mode upstream states that this API does not model, and is never a flight. Absent upstream is published as FLIGHT, which is what every segment meant before this field existed."
                                   },
                                   "fromName": {
@@ -3113,10 +2894,7 @@
                                     "description": "Airline display name from the search snapshot's airline dictionary; the bare code is the fallback on a dictionary miss."
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "name"
-                                ],
+                                "required": ["code", "name"],
                                 "description": "A carrier resolved to code + display name. This is airline identity (who operates/markets the flight), NOT the booking provider that sells the ticket – that is fares[].providerName / providerCode."
                               }
                             },
@@ -3135,10 +2913,7 @@
                                     "description": "Airline display name from the search snapshot's airline dictionary; the bare code is the fallback on a dictionary miss."
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "name"
-                                ],
+                                "required": ["code", "name"],
                                 "description": "A carrier resolved to code + display name. This is airline identity (who operates/markets the flight), NOT the booking provider that sells the ticket – that is fares[].providerName / providerCode."
                               }
                             },
@@ -3147,12 +2922,7 @@
                               "type": "array",
                               "items": {
                                 "type": "string",
-                                "enum": [
-                                  "FLIGHT",
-                                  "TRAIN",
-                                  "BUS",
-                                  "OTHER"
-                                ],
+                                "enum": ["FLIGHT", "TRAIN", "BUS", "OTHER"],
                                 "description": "How this segment travels. FLIGHT is a plane. TRAIN and BUS are surface segments sold under a flight number, which airlines do publish, for example the Etihad coach between Dubai Bus Station and Abu Dhabi. OTHER is a mode upstream states that this API does not model, and is never a flight. Absent upstream is published as FLIGHT, which is what every segment meant before this field existed."
                               },
                               "description": "Distinct transport modes across this leg's segments, in segment order. Always present and never empty: an all-flight leg reads [\"FLIGHT\"], so one read of this field replaces folding segments[] yourself. Anything else means part of this leg is not a plane, and segments[] says which part."
@@ -3191,10 +2961,7 @@
                                         "description": "Airline display name from the search snapshot's airline dictionary; the bare code is the fallback on a dictionary miss."
                                       }
                                     },
-                                    "required": [
-                                      "code",
-                                      "name"
-                                    ],
+                                    "required": ["code", "name"],
                                     "description": "The carrier whose code is on the ticket (the marketing / flight-number airline)."
                                   },
                                   "operatingCarrier": {
@@ -3210,10 +2977,7 @@
                                         "description": "Airline display name from the search snapshot's airline dictionary; the bare code is the fallback on a dictionary miss."
                                       }
                                     },
-                                    "required": [
-                                      "code",
-                                      "name"
-                                    ]
+                                    "required": ["code", "name"]
                                   },
                                   "flightNumber": {
                                     "type": "string",
@@ -3221,12 +2985,7 @@
                                   },
                                   "transportType": {
                                     "type": "string",
-                                    "enum": [
-                                      "FLIGHT",
-                                      "TRAIN",
-                                      "BUS",
-                                      "OTHER"
-                                    ],
+                                    "enum": ["FLIGHT", "TRAIN", "BUS", "OTHER"],
                                     "description": "How this segment travels. FLIGHT is a plane. TRAIN and BUS are surface segments sold under a flight number, which airlines do publish, for example the Etihad coach between Dubai Bus Station and Abu Dhabi. OTHER is a mode upstream states that this API does not model, and is never a flight. Absent upstream is published as FLIGHT, which is what every segment meant before this field existed."
                                   },
                                   "fromName": {
@@ -3290,11 +3049,7 @@
                             "properties": {
                               "kind": {
                                 "type": "string",
-                                "enum": [
-                                  "wego",
-                                  "airline",
-                                  "partner"
-                                ],
+                                "enum": ["wego", "airline", "partner"],
                                 "description": "Fare source: wego (Book-on-Wego), airline (booked with the carrier) or partner (an OTA)."
                               },
                               "fareId": {
@@ -3379,10 +3134,7 @@
                             },
                             "currencyCodeSource": {
                               "type": "string",
-                              "enum": [
-                                "explicit",
-                                "default"
-                              ],
+                              "enum": ["explicit", "default"],
                               "description": "How the API resolved currencyCode: explicit (the caller sent currency – including a value equal to the default) or default (USD, no currency sent). A default here is the one signal that the request never carried the currency you meant."
                             },
                             "locale": {
@@ -3391,10 +3143,7 @@
                             },
                             "localeSource": {
                               "type": "string",
-                              "enum": [
-                                "explicit",
-                                "default"
-                              ],
+                              "enum": ["explicit", "default"],
                               "description": "How the API resolved locale: explicit (the caller sent locale – including a value equal to the default) or default (en, no locale sent). A default here explains text that came back in a language the caller did not ask for."
                             }
                           },
@@ -3439,10 +3188,7 @@
                             "properties": {
                               "direction": {
                                 "type": "string",
-                                "enum": [
-                                  "depart",
-                                  "return"
-                                ],
+                                "enum": ["depart", "return"],
                                 "description": "Which leg this is: depart or return."
                               },
                               "from": {
@@ -3471,10 +3217,7 @@
                                     ]
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "name"
-                                ],
+                                "required": ["code", "name"],
                                 "description": "Departure airport for this leg."
                               },
                               "to": {
@@ -3503,10 +3246,7 @@
                                     ]
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "name"
-                                ],
+                                "required": ["code", "name"],
                                 "description": "Arrival airport for this leg."
                               },
                               "departsAt": {
@@ -3568,10 +3308,7 @@
                                           ]
                                         }
                                       },
-                                      "required": [
-                                        "code",
-                                        "name"
-                                      ],
+                                      "required": ["code", "name"],
                                       "description": "Departure airport for this segment."
                                     },
                                     "to": {
@@ -3600,10 +3337,7 @@
                                           ]
                                         }
                                       },
-                                      "required": [
-                                        "code",
-                                        "name"
-                                      ],
+                                      "required": ["code", "name"],
                                       "description": "Arrival airport for this segment."
                                     },
                                     "departsAt": {
@@ -3634,11 +3368,7 @@
                                           "description": "Airline logo URL; may 404, fall back to the name."
                                         }
                                       },
-                                      "required": [
-                                        "code",
-                                        "name",
-                                        "logoUrl"
-                                      ],
+                                      "required": ["code", "name", "logoUrl"],
                                       "description": "An airline resolved to code, name and logo."
                                     },
                                     "operatedBy": {
@@ -3819,11 +3549,7 @@
                             "properties": {
                               "kind": {
                                 "type": "string",
-                                "enum": [
-                                  "wego",
-                                  "airline",
-                                  "partner"
-                                ],
+                                "enum": ["wego", "airline", "partner"],
                                 "description": "Fare source: wego (Book-on-Wego), airline (booked with the carrier) or partner (an OTA)."
                               },
                               "fareId": {
@@ -3850,11 +3576,7 @@
                                     "type": "string"
                                   }
                                 },
-                                "required": [
-                                  "code",
-                                  "name",
-                                  "logoUrl"
-                                ],
+                                "required": ["code", "name", "logoUrl"],
                                 "description": "A booking provider resolved to code, name, logo and brand color."
                               },
                               "price": {
@@ -3934,10 +3656,7 @@
                             },
                             "currencyCodeSource": {
                               "type": "string",
-                              "enum": [
-                                "explicit",
-                                "default"
-                              ],
+                              "enum": ["explicit", "default"],
                               "description": "How the API resolved currencyCode: explicit (the caller sent currency – including a value equal to the default) or default (USD, no currency sent). A default here is the one signal that the request never carried the currency you meant."
                             },
                             "locale": {
@@ -3946,10 +3665,7 @@
                             },
                             "localeSource": {
                               "type": "string",
-                              "enum": [
-                                "explicit",
-                                "default"
-                              ],
+                              "enum": ["explicit", "default"],
                               "description": "How the API resolved locale: explicit (the caller sent locale – including a value equal to the default) or default (en, no locale sent). A default here explains text that came back in a language the caller did not ask for."
                             }
                           },
@@ -4088,10 +3804,7 @@
             "schema": {
               "default": "default",
               "type": "string",
-              "enum": [
-                "default",
-                "detail"
-              ]
+              "enum": ["default", "detail"]
             },
             "description": "Response projection. default (agent shape): the full itinerary with every fare and per-flight segments. detail: the richer UI view-model (per-segment amenities, seat metadata, provider brand). Defaults to default."
           }
@@ -4101,9 +3814,7 @@
     "/v1/flights/trips/{tripId}/experience": {
       "get": {
         "operationId": "getTripExperience",
-        "tags": [
-          "Flights"
-        ],
+        "tags": ["Flights"],
         "summary": "Read a trip's experience signals",
         "description": "Per-leg signals for what a journey is like to sit through: overnight, longStopover, earlyDeparture, lateArrival, plus positive-only witnesses for a tight connection, aircraft age and carrier rating. No score - Recommended sort ranks on the price-adjusted fare score, which one would not match.",
         "responses": {
@@ -4206,17 +3917,11 @@
                           "description": "Legs on this trip: 1 one-way, 2 a return."
                         }
                       },
-                      "required": [
-                        "legCount"
-                      ],
+                      "required": ["legCount"],
                       "description": "Trip-level experience metadata."
                     }
                   },
-                  "required": [
-                    "tripId",
-                    "legs",
-                    "metadata"
-                  ]
+                  "required": ["tripId", "legs", "metadata"]
                 }
               }
             }
@@ -4309,9 +4014,7 @@
     "/v1/flights/fares/{fareId}/options": {
       "get": {
         "operationId": "getFareOptions",
-        "tags": [
-          "Flights"
-        ],
+        "tags": ["Flights"],
         "summary": "List a fare's options",
         "description": "Returns a Book-on-Wego fare's bookable options (price, baggage, refundability, penalties, and the carrier's terms links when it publishes any), ordered by leg then price. A multi-leg trip needs ONE option per leg - read the top-level price, never min(options). Non-wego fareId 400; stale 404.",
         "responses": {
@@ -4351,11 +4054,7 @@
                           "description": "total covers the whole party (adults + children + infants), not per-person."
                         }
                       },
-                      "required": [
-                        "total",
-                        "currency",
-                        "scope"
-                      ],
+                      "required": ["total", "currency", "scope"],
                       "description": "The whole-trip price for this fare, so no caller has to add per-leg options together. Absent when the upstream did not state one."
                     },
                     "legs": {
@@ -4388,9 +4087,7 @@
                             }
                           }
                         },
-                        "required": [
-                          "legId"
-                        ],
+                        "required": ["legId"],
                         "description": "One leg the options are attributed to, so a legId on an option is legible."
                       }
                     },
@@ -4434,11 +4131,7 @@
                                   "properties": {
                                     "type": {
                                       "type": "string",
-                                      "enum": [
-                                        "adult",
-                                        "child",
-                                        "infant"
-                                      ],
+                                      "enum": ["adult", "child", "infant"],
                                       "description": "The passenger type this entry prices."
                                     },
                                     "count": {
@@ -4461,11 +4154,7 @@
                                           "description": "What one passenger of this type pays, fare + tax."
                                         }
                                       },
-                                      "required": [
-                                        "fare",
-                                        "tax",
-                                        "total"
-                                      ],
+                                      "required": ["fare", "tax", "total"],
                                       "description": "What a single passenger of this type pays."
                                     },
                                     "party": {
@@ -4484,11 +4173,7 @@
                                           "description": "What every passenger of this type pays together."
                                         }
                                       },
-                                      "required": [
-                                        "fare",
-                                        "tax",
-                                        "total"
-                                      ],
+                                      "required": ["fare", "tax", "total"],
                                       "description": "perPerson times count, taken from the upstream's own party-level figure when it states one, so it can differ from the exact product in the last decimal place."
                                     }
                                   },
@@ -4504,17 +4189,10 @@
                               "covers": {
                                 "description": "How much of the TRIP this total covers: leg = this option's own leg only, so a multi-leg trip needs one option per leg and their sum is the trip price; trip = the whole journey. Always whole-party either way. A positive witness – absent means the upstream did not let us attribute it, never that the total is the whole trip.",
                                 "type": "string",
-                                "enum": [
-                                  "leg",
-                                  "trip"
-                                ]
+                                "enum": ["leg", "trip"]
                               }
                             },
-                            "required": [
-                              "total",
-                              "totalUsd",
-                              "currency"
-                            ],
+                            "required": ["total", "totalUsd", "currency"],
                             "description": "The price of one fare option (pass-through display values). Always whole-party for passengers; read covers for how much of the trip it pays for."
                           },
                           "refundable": {
@@ -4546,19 +4224,12 @@
                               "properties": {
                                 "type": {
                                   "type": "string",
-                                  "enum": [
-                                    "change",
-                                    "cancel"
-                                  ],
+                                  "enum": ["change", "cancel"],
                                   "description": "The action the penalty governs."
                                 },
                                 "policy": {
                                   "type": "string",
-                                  "enum": [
-                                    "free",
-                                    "fee",
-                                    "not_permitted"
-                                  ],
+                                  "enum": ["free", "fee", "not_permitted"],
                                   "description": "free (allowed, no charge), fee (allowed, priced), or not_permitted."
                                 },
                                 "amount": {
@@ -4570,10 +4241,7 @@
                                   "type": "string"
                                 }
                               },
-                              "required": [
-                                "type",
-                                "policy"
-                              ],
+                              "required": ["type", "policy"],
                               "description": "A change or cancel penalty on a fare option."
                             },
                             "description": "Always both change and cancel, in that order."
@@ -4612,10 +4280,7 @@
                         },
                         "currencyCodeSource": {
                           "type": "string",
-                          "enum": [
-                            "explicit",
-                            "default"
-                          ],
+                          "enum": ["explicit", "default"],
                           "description": "How the API resolved currencyCode: explicit (the caller sent currency – including a value equal to the default) or default (USD, no currency sent). A default here is the one signal that the request never carried the currency you meant."
                         },
                         "locale": {
@@ -4624,10 +4289,7 @@
                         },
                         "localeSource": {
                           "type": "string",
-                          "enum": [
-                            "explicit",
-                            "default"
-                          ],
+                          "enum": ["explicit", "default"],
                           "description": "How the API resolved locale: explicit (the caller sent locale – including a value equal to the default) or default (en, no locale sent). A default here explains text that came back in a language the caller did not ask for."
                         }
                       },
@@ -4640,12 +4302,7 @@
                       "description": "What this read resolved currency and locale to, and how each was decided."
                     }
                   },
-                  "required": [
-                    "fareId",
-                    "currencyCode",
-                    "options",
-                    "metadata"
-                  ],
+                  "required": ["fareId", "currencyCode", "options", "metadata"],
                   "description": "The fare options for one Book-on-Wego fare, and what this read resolved currency and locale to."
                 }
               }
@@ -4752,9 +4409,7 @@
     "/v1/flights/fares/{fareId}/booking-link": {
       "get": {
         "operationId": "getFareBookingLink",
-        "tags": [
-          "Flights"
-        ],
+        "tags": ["Flights"],
         "summary": "Build a fare's wego.com booking link",
         "description": "Builds the wego.com booking deep-link for a chosen Book-on-Wego fare, with one fare option pre-selected PER LEG. A pure, stateless URL build from the caller-supplied search context - no upstream call, no booking, no payment. The caller passes back the trip/leg/passenger context.",
         "responses": {
@@ -4775,10 +4430,7 @@
                       "description": "Always true: this link is bound to a live search and stops working with it, in about five to seven minutes. To send someone a link that lasts, use GET /v1/flights/search-link."
                     }
                   },
-                  "required": [
-                    "bookingUrl",
-                    "expires"
-                  ],
+                  "required": ["bookingUrl", "expires"],
                   "description": "The booking handoff URL, and the fact that it expires."
                 }
               }
@@ -4888,12 +4540,7 @@
                 },
                 {
                   "type": "string",
-                  "enum": [
-                    "0",
-                    "1",
-                    "true",
-                    "false"
-                  ]
+                  "enum": ["0", "1", "true", "false"]
                 }
               ]
             },
@@ -4909,12 +4556,7 @@
                 },
                 {
                   "type": "string",
-                  "enum": [
-                    "0",
-                    "1",
-                    "true",
-                    "false"
-                  ]
+                  "enum": ["0", "1", "true", "false"]
                 }
               ]
             },
@@ -4945,12 +4587,7 @@
             "schema": {
               "default": "economy",
               "type": "string",
-              "enum": [
-                "economy",
-                "premium_economy",
-                "business",
-                "first"
-              ]
+              "enum": ["economy", "premium_economy", "business", "first"]
             },
             "description": "Cabin class, as sent to the flight search."
           },
@@ -5024,9 +4661,7 @@
     "/v1/flights/search-link": {
       "get": {
         "operationId": "getFlightSearchLink",
-        "tags": [
-          "Flights"
-        ],
+        "tags": ["Flights"],
         "summary": "Build a durable wego.com search link",
         "description": "Builds a shareable wego.com flight-search URL from the caller's own route, dates, cabin and passengers. A pure, stateless string build - no upstream call, no search created. It carries no search-scoped id, so it does not expire: whoever opens it runs the search live.",
         "responses": {
@@ -5047,10 +4682,7 @@
                       "description": "Always false: the URL carries no search-scoped id, so it keeps working. The prices behind it are whatever a live search returns when it is opened."
                     }
                   },
-                  "required": [
-                    "searchUrl",
-                    "expires"
-                  ],
+                  "required": ["searchUrl", "expires"],
                   "description": "The durable wego.com search URL."
                 }
               }
@@ -5120,12 +4752,7 @@
                 },
                 {
                   "type": "string",
-                  "enum": [
-                    "0",
-                    "1",
-                    "true",
-                    "false"
-                  ]
+                  "enum": ["0", "1", "true", "false"]
                 }
               ]
             },
@@ -5141,12 +4768,7 @@
                 },
                 {
                   "type": "string",
-                  "enum": [
-                    "0",
-                    "1",
-                    "true",
-                    "false"
-                  ]
+                  "enum": ["0", "1", "true", "false"]
                 }
               ]
             },
@@ -5177,12 +4799,7 @@
             "schema": {
               "default": "economy",
               "type": "string",
-              "enum": [
-                "economy",
-                "premium_economy",
-                "business",
-                "first"
-              ]
+              "enum": ["economy", "premium_economy", "business", "first"]
             },
             "description": "Cabin class, as sent to the flight search."
           },
@@ -5256,9 +4873,7 @@
     "/v1/hotels/searches": {
       "post": {
         "operationId": "createHotelSearch",
-        "tags": [
-          "Hotels"
-        ],
+        "tags": ["Hotels"],
         "summary": "Create a hotel search",
         "description": "Creates a Book-on-Wego hotel search (city, single hotel, or geo point) and returns its opaque searchId plus the occupancy priced upstream (resolved child ages, incl. the age-8 fallback when none supplied). Poll /results for ranked hotels. A hotelId search is the only one getHotelRates accepts.",
         "responses": {
@@ -5298,11 +4913,7 @@
                           "description": "Rooms priced upstream for this search."
                         }
                       },
-                      "required": [
-                        "adults",
-                        "childrenAges",
-                        "rooms"
-                      ],
+                      "required": ["adults", "childrenAges", "rooms"],
                       "description": "The occupancy priced upstream for this search (ages resolved, incl. fallback)."
                     },
                     "siteCode": {
@@ -5311,10 +4922,7 @@
                     },
                     "siteCodeSource": {
                       "type": "string",
-                      "enum": [
-                        "explicit",
-                        "default"
-                      ],
+                      "enum": ["explicit", "default"],
                       "description": "How the API resolved siteCode: explicit (caller-supplied – including a market a client derived and passed) or default (US, no site supplied)."
                     }
                   },
@@ -5487,27 +5095,17 @@
                     "description": "Wego market (point of sale) as a 2-letter code, e.g. AE. Optional: if omitted the API defaults to US. A client that knows the user's market (the wego CLI derives it from the id_token) passes it as an explicit siteCode."
                   }
                 },
-                "required": [
-                  "checkIn",
-                  "checkOut"
-                ],
+                "required": ["checkIn", "checkOut"],
                 "additionalProperties": false,
                 "oneOf": [
                   {
-                    "required": [
-                      "cityCode"
-                    ]
+                    "required": ["cityCode"]
                   },
                   {
-                    "required": [
-                      "hotelId"
-                    ]
+                    "required": ["hotelId"]
                   },
                   {
-                    "required": [
-                      "lat",
-                      "lng"
-                    ]
+                    "required": ["lat", "lng"]
                   }
                 ]
               }
@@ -5519,9 +5117,7 @@
     "/v1/hotels/searches/{searchId}/results": {
       "get": {
         "operationId": "getHotelSearchResults",
-        "tags": [
-          "Hotels"
-        ],
+        "tags": ["Hotels"],
         "summary": "Read hotel search results",
         "description": "Lean list cards; default 10, max 50 per page. searchComplete:true terminal, false advisory; poll snapshotCandidateCount to a steady non-zero. totalCandidates===0 = filters only if totalBeforeFilters>0, else none bookable once complete. ?refundable=true = witnessed.",
         "responses": {
@@ -5586,11 +5182,7 @@
                               "description": "Rooms priced upstream for this search."
                             }
                           },
-                          "required": [
-                            "adults",
-                            "childrenAges",
-                            "rooms"
-                          ],
+                          "required": ["adults", "childrenAges", "rooms"],
                           "description": "The occupancy priced upstream for this search (ages resolved, incl. fallback)."
                         }
                       },
@@ -5654,10 +5246,7 @@
                                     "description": "Hotels carrying this value on an unfiltered read. For the substring-matched vocabularies (amenities, propertyTypes, brands, chains, districts) it is a LOWER BOUND, since one term can span several values. For the code-keyed ones (rateTypes, guestTypes) it is EXACT, because those terms are matched exactly rather than as substrings - and a guestTypes count spans only the hotels upstream scored for that cohort, which is fewer than carry an all-guests score."
                                   }
                                 },
-                                "required": [
-                                  "name",
-                                  "count"
-                                ]
+                                "required": ["name", "count"]
                               },
                               "description": "Amenity terms present in this snapshot, by count."
                             },
@@ -5677,10 +5266,7 @@
                                     "description": "Hotels carrying this value on an unfiltered read. For the substring-matched vocabularies (amenities, propertyTypes, brands, chains, districts) it is a LOWER BOUND, since one term can span several values. For the code-keyed ones (rateTypes, guestTypes) it is EXACT, because those terms are matched exactly rather than as substrings - and a guestTypes count spans only the hotels upstream scored for that cohort, which is fewer than carry an all-guests score."
                                   }
                                 },
-                                "required": [
-                                  "name",
-                                  "count"
-                                ]
+                                "required": ["name", "count"]
                               },
                               "description": "Property-type terms present in this snapshot, by count."
                             },
@@ -5700,10 +5286,7 @@
                                     "description": "Hotels carrying this value on an unfiltered read. For the substring-matched vocabularies (amenities, propertyTypes, brands, chains, districts) it is a LOWER BOUND, since one term can span several values. For the code-keyed ones (rateTypes, guestTypes) it is EXACT, because those terms are matched exactly rather than as substrings - and a guestTypes count spans only the hotels upstream scored for that cohort, which is fewer than carry an all-guests score."
                                   }
                                 },
-                                "required": [
-                                  "name",
-                                  "count"
-                                ]
+                                "required": ["name", "count"]
                               },
                               "description": "Brand terms present in this snapshot, by count."
                             },
@@ -5723,10 +5306,7 @@
                                     "description": "Hotels carrying this value on an unfiltered read. For the substring-matched vocabularies (amenities, propertyTypes, brands, chains, districts) it is a LOWER BOUND, since one term can span several values. For the code-keyed ones (rateTypes, guestTypes) it is EXACT, because those terms are matched exactly rather than as substrings - and a guestTypes count spans only the hotels upstream scored for that cohort, which is fewer than carry an all-guests score."
                                   }
                                 },
-                                "required": [
-                                  "name",
-                                  "count"
-                                ]
+                                "required": ["name", "count"]
                               },
                               "description": "Chain terms present in this snapshot, by count."
                             },
@@ -5746,10 +5326,7 @@
                                     "description": "Hotels carrying this value on an unfiltered read. For the substring-matched vocabularies (amenities, propertyTypes, brands, chains, districts) it is a LOWER BOUND, since one term can span several values. For the code-keyed ones (rateTypes, guestTypes) it is EXACT, because those terms are matched exactly rather than as substrings - and a guestTypes count spans only the hotels upstream scored for that cohort, which is fewer than carry an all-guests score."
                                   }
                                 },
-                                "required": [
-                                  "name",
-                                  "count"
-                                ]
+                                "required": ["name", "count"]
                               },
                               "description": "District terms present in this snapshot, by count."
                             },
@@ -5769,10 +5346,7 @@
                                     "description": "Hotels carrying this value on an unfiltered read. For the substring-matched vocabularies (amenities, propertyTypes, brands, chains, districts) it is a LOWER BOUND, since one term can span several values. For the code-keyed ones (rateTypes, guestTypes) it is EXACT, because those terms are matched exactly rather than as substrings - and a guestTypes count spans only the hotels upstream scored for that cohort, which is fewer than carry an all-guests score."
                                   }
                                 },
-                                "required": [
-                                  "name",
-                                  "count"
-                                ]
+                                "required": ["name", "count"]
                               },
                               "description": "Rate types witnessed on this snapshot's Book-on-Wego rates, by hotel count – the vocabulary ?rate-types= accepts (e.g. breakfast_included, free_cancellation). Unlike every other vocabulary here the name is a stable upstream CODE, not a localized display name, so it is matched EXACTLY rather than as a substring and reads the same under any locale. Each count is the number of hotels with at least one rate carrying that type."
                             },
@@ -5792,10 +5366,7 @@
                                     "description": "Hotels carrying this value on an unfiltered read. For the substring-matched vocabularies (amenities, propertyTypes, brands, chains, districts) it is a LOWER BOUND, since one term can span several values. For the code-keyed ones (rateTypes, guestTypes) it is EXACT, because those terms are matched exactly rather than as substrings - and a guestTypes count spans only the hotels upstream scored for that cohort, which is fewer than carry an all-guests score."
                                   }
                                 },
-                                "required": [
-                                  "name",
-                                  "count"
-                                ]
+                                "required": ["name", "count"]
                               },
                               "description": "Guest cohorts this snapshot carries ratings for, by hotel count – the vocabulary ?guest-type= accepts (business, couple, family, solo). Like rateTypes the name is a stable CODE matched exactly, not a localized display name, so the counts are precise. Each count is the number of hotels upstream scored for that cohort, which is FEWER than the hotels carrying an all-guests score: upstream publishes no thin cohort rows, so a hotel missing from a cohort's count has too little data for it rather than a poor rating. Spelled differently from the /reviews ?guest-type= vocabulary (family here, family_with_children there) because the two upstreams segment guests differently."
                             },
@@ -5811,10 +5382,7 @@
                                   "description": "The dearest hotel's all-in nightly figure, in the response currency."
                                 }
                               },
-                              "required": [
-                                "min",
-                                "max"
-                              ],
+                              "required": ["min", "max"],
                               "description": "The span the min-price / max-price bounds compare against, on their own basis: amountPerNight plus every per-night charge the card publishes beside it, localTaxPerNight and taxAmountPerNight where present, covering every room in the search. Both ends are attainable, since the bounds are inclusive, so min-price at min and max-price at max each keep the whole snapshot, and a bound outside the span returns nothing. Read over each hotel's headline price, so with ?refundable=true the bounds move to lowestRefundablePrice and can reach past max. Folded over the same population as totalBeforeFilters, so it does not narrow as other filters bite, and it still moves while searchComplete is false. Absent when the snapshot holds no hotel."
                             }
                           },
@@ -5849,10 +5417,7 @@
                         },
                         "currencyCodeSource": {
                           "type": "string",
-                          "enum": [
-                            "explicit",
-                            "default"
-                          ],
+                          "enum": ["explicit", "default"],
                           "description": "How the API resolved currencyCode: explicit (the caller sent currency – including a value equal to the default) or default (USD, no currency sent). A default here is the one signal that the request never carried the currency you meant."
                         },
                         "locale": {
@@ -5861,10 +5426,7 @@
                         },
                         "localeSource": {
                           "type": "string",
-                          "enum": [
-                            "explicit",
-                            "default"
-                          ],
+                          "enum": ["explicit", "default"],
                           "description": "How the API resolved locale: explicit (the caller sent locale – including a value equal to the default) or default (en, no locale sent). A default here explains text that came back in a language the caller did not ask for."
                         }
                       },
@@ -5918,10 +5480,7 @@
                                 "description": "Number of guest reviews behind the score."
                               }
                             },
-                            "required": [
-                              "score",
-                              "count"
-                            ]
+                            "required": ["score", "count"]
                           },
                           "reviewsByGuestType": {
                             "description": "Guest review score and count per cohort, on the same 0-10 scale as review (which is the all-guests figure). These are the exact values ?guest-type= accepts and the same vocabulary metadata.filterOptions.guestTypes counts. A cohort is present only when upstream scored it, and an ABSENT cohort means too little data for that cohort, never a low score - upstream publishes no thin cohort rows. Read these to explain a pick as well as make one: a hotel rated 8.5 overall and 7.6 by families is a different recommendation than one rated 8.5 by both. Omitted when no cohort was scored.",
@@ -5940,10 +5499,7 @@
                                     "description": "Number of that cohort's reviews behind the score."
                                   }
                                 },
-                                "required": [
-                                  "score",
-                                  "count"
-                                ]
+                                "required": ["score", "count"]
                               },
                               "couple": {
                                 "description": "How couples rate this hotel.",
@@ -5958,10 +5514,7 @@
                                     "description": "Number of that cohort's reviews behind the score."
                                   }
                                 },
-                                "required": [
-                                  "score",
-                                  "count"
-                                ]
+                                "required": ["score", "count"]
                               },
                               "family": {
                                 "description": "How families rate this hotel.",
@@ -5976,10 +5529,7 @@
                                     "description": "Number of that cohort's reviews behind the score."
                                   }
                                 },
-                                "required": [
-                                  "score",
-                                  "count"
-                                ]
+                                "required": ["score", "count"]
                               },
                               "solo": {
                                 "description": "How solo travellers rate this hotel.",
@@ -5994,10 +5544,7 @@
                                     "description": "Number of that cohort's reviews behind the score."
                                   }
                                 },
-                                "required": [
-                                  "score",
-                                  "count"
-                                ]
+                                "required": ["score", "count"]
                               }
                             }
                           },
@@ -6058,9 +5605,7 @@
                                     "type": "string"
                                   }
                                 },
-                                "required": [
-                                  "percentOff"
-                                ]
+                                "required": ["percentOff"]
                               },
                               "totalUsd": {
                                 "type": "number",
@@ -6081,10 +5626,7 @@
                           },
                           "refundable": {
                             "type": "string",
-                            "enum": [
-                              "available",
-                              "unknown"
-                            ],
+                            "enum": ["available", "unknown"],
                             "description": "Refundability WITNESS, not a boolean. 'available' = a free-cancellation Book-on-Wego rate was seen in this snapshot. 'unknown' = none was seen, which is NOT evidence that none exists – this envelope carries only a sample of each hotel's rates, so a negative is not computable here. To answer 'does this hotel have a refundable room', read the hotel's rooms/rates."
                           },
                           "lowestRefundablePrice": {
@@ -6145,9 +5687,7 @@
                                     "type": "string"
                                   }
                                 },
-                                "required": [
-                                  "percentOff"
-                                ]
+                                "required": ["percentOff"]
                               },
                               "totalUsd": {
                                 "type": "number",
@@ -6395,12 +5935,7 @@
             "name": "guest-type",
             "schema": {
               "type": "string",
-              "enum": [
-                "business",
-                "couple",
-                "family",
-                "solo"
-              ]
+              "enum": ["business", "couple", "family", "solo"]
             },
             "description": "The guest cohort ?min-guest-rating= and sort=guest_rating_desc judge a hotel by: business, couple, family or solo. Read the vocabulary and this snapshot's per-cohort hotel counts from metadata.filterOptions.guestTypes. Must be sent with ?min-guest-rating= or sort=guest_rating_desc, and both of those require it - a cohort with nothing to apply it to is rejected rather than silently ignored. Spelled differently from the /reviews ?guest-type= vocabulary (family here, family_with_children there) because the two upstreams segment guests differently; business exists only here and extended_group only there."
           },
@@ -6439,12 +5974,7 @@
             "name": "refundable",
             "schema": {
               "type": "string",
-              "enum": [
-                "0",
-                "1",
-                "true",
-                "false"
-              ]
+              "enum": ["0", "1", "true", "false"]
             },
             "description": "Keep only hotels with a witnessed refundable Book-on-Wego rate, so a 'cheapest refundable' answer needs no per-hotel /rates calls. Exactly equivalent to ?rate-types=free_cancellation, and combines with it: this is the one rate type that has its own param. This is an UNDER-approximation: the results envelope is a rate sample, so a true keeps hotels with a seen refundable rate and a hotel's absence is not authoritative – only GET /v1/hotels/{hotelId}/rates can prove a hotel has no refundable rate. Accepts true or false."
           },
@@ -6465,12 +5995,7 @@
             "name": "deals-only",
             "schema": {
               "type": "string",
-              "enum": [
-                "0",
-                "1",
-                "true",
-                "false"
-              ]
+              "enum": ["0", "1", "true", "false"]
             },
             "description": "Keep only hotels whose card carries a price.deal, mirroring the 'today's deals' filter on wego.com. Judged on the very price object the card publishes, so the kept hotels and the deals shown always agree – with ?refundable=true that means the refundable rate must be the discounted one. Like refundable, this is an UNDER-approximation: the results envelope is a rate sample that grows while searchComplete is false, so a hotel's absence is not proof it has no discount. Accepts true or false."
           },
@@ -6540,9 +6065,7 @@
             "schema": {
               "default": "card",
               "type": "string",
-              "enum": [
-                "card"
-              ]
+              "enum": ["card"]
             },
             "description": "Response projection. `card` is the only value: the lean results-list projection (price summary, refundability witness, star/review, location names). The former `default` projection was removed in issue #1308 – read GET /v1/hotels/{hotelId} for a hotel's amenities, images and address."
           }
@@ -6552,9 +6075,7 @@
     "/v1/hotels/{hotelId}/rates/{rateId}/booking-link": {
       "get": {
         "operationId": "getHotelRateBookingLink",
-        "tags": [
-          "Hotels"
-        ],
+        "tags": ["Hotels"],
         "summary": "Build a hotel booking link",
         "description": "Returns the wego.com checkout URL for a chosen rate. Pure build: no upstream call, no booking, no payment – only 400/401/429.",
         "responses": {
@@ -6575,10 +6096,7 @@
                       "description": "Always true: this link is search-scoped and stops working when the rate's search expires. A stale link loads an empty checkout page rather than erroring, so treat it as short-lived and re-price the rate to get a fresh one. To send someone a link that lasts, use the hotel's pageUrl."
                     }
                   },
-                  "required": [
-                    "bookingUrl",
-                    "expires"
-                  ]
+                  "required": ["bookingUrl", "expires"]
                 }
               }
             }
@@ -6689,9 +6207,7 @@
     "/v1/hotels/search-link": {
       "get": {
         "operationId": "getHotelSearchLink",
-        "tags": [
-          "Hotels"
-        ],
+        "tags": ["Hotels"],
         "summary": "Build a durable wego.com hotel search link",
         "description": "Builds a shareable wego.com hotel-search URL from the caller's own city, dates and occupancy. A pure, stateless string build: no search created. It carries no search-scoped id, so it does not expire: whoever opens it runs the search live.",
         "responses": {
@@ -6712,10 +6228,7 @@
                       "description": "Always false: the URL carries no search-scoped id, so it keeps working. The prices behind it are whatever a live search returns when it is opened."
                     }
                   },
-                  "required": [
-                    "searchUrl",
-                    "expires"
-                  ],
+                  "required": ["searchUrl", "expires"],
                   "description": "The durable wego.com hotel-search URL."
                 }
               }
@@ -6861,9 +6374,7 @@
     "/v1/hotels/{hotelId}/rates": {
       "get": {
         "operationId": "getHotelRates",
-        "tags": [
-          "Hotels"
-        ],
+        "tags": ["Hotels"],
         "summary": "List a hotel's rooms & rates",
         "description": "Returns the Book-on-Wego rooms & rates for a hotel (cheapest-first): room name, board, refundability, price, and each rate's composed booking reference id. searchId must name a hotel-scoped search (one created with hotelId); a city or geo search is a 409.",
         "responses": {
@@ -6932,11 +6443,7 @@
                               "description": "Rooms priced upstream for this search."
                             }
                           },
-                          "required": [
-                            "adults",
-                            "childrenAges",
-                            "rooms"
-                          ],
+                          "required": ["adults", "childrenAges", "rooms"],
                           "description": "The occupancy priced upstream for this search (ages resolved, incl. fallback)."
                         }
                       },
@@ -7042,9 +6549,7 @@
                                     "type": "string"
                                   }
                                 },
-                                "required": [
-                                  "percentOff"
-                                ]
+                                "required": ["percentOff"]
                               }
                             },
                             "required": [
@@ -7067,12 +6572,7 @@
                             }
                           }
                         },
-                        "required": [
-                          "id",
-                          "roomName",
-                          "refundable",
-                          "price"
-                        ]
+                        "required": ["id", "roomName", "refundable", "price"]
                       },
                       "description": "Bookable rates for the hotel in this search."
                     },
@@ -7085,10 +6585,7 @@
                         },
                         "currencyCodeSource": {
                           "type": "string",
-                          "enum": [
-                            "explicit",
-                            "default"
-                          ],
+                          "enum": ["explicit", "default"],
                           "description": "How the API resolved currencyCode: explicit (the caller sent currency – including a value equal to the default) or default (USD, no currency sent). A default here is the one signal that the request never carried the currency you meant."
                         },
                         "locale": {
@@ -7097,10 +6594,7 @@
                         },
                         "localeSource": {
                           "type": "string",
-                          "enum": [
-                            "explicit",
-                            "default"
-                          ],
+                          "enum": ["explicit", "default"],
                           "description": "How the API resolved locale: explicit (the caller sent locale – including a value equal to the default) or default (en, no locale sent). A default here explains text that came back in a language the caller did not ask for."
                         }
                       },
@@ -7245,9 +6739,7 @@
     "/v1/hotels/{hotelId}/reviews": {
       "get": {
         "operationId": "getHotelReviews",
-        "tags": [
-          "Hotels"
-        ],
+        "tags": ["Hotels"],
         "summary": "Search a hotel's guest reviews",
         "description": "Guest reviews for a hotel, newest first: rating, pros, cons and the provider. Filter by topic with ?topics=breakfast,pool and by cohort with ?guest-type=. Quote a review against metadata.totalCandidates, and cite metadata.matchedTerms for the word actually matched.",
         "responses": {
@@ -7386,11 +6878,7 @@
                       "description": "The requested page of guest reviews."
                     }
                   },
-                  "required": [
-                    "hotelId",
-                    "metadata",
-                    "results"
-                  ]
+                  "required": ["hotelId", "metadata", "results"]
                 }
               }
             }
@@ -7496,11 +6984,7 @@
             "schema": {
               "default": "posted_at_desc",
               "type": "string",
-              "enum": [
-                "posted_at_desc",
-                "rating_desc",
-                "rating_asc"
-              ]
+              "enum": ["posted_at_desc", "rating_desc", "rating_asc"]
             },
             "description": "Sort order. posted_at_desc (default, newest first) – a review corpus answers 'what is it like now', so recency opens; rating_desc / rating_asc sort by the provider's rating."
           },
@@ -7547,10 +7031,7 @@
             "schema": {
               "default": "default",
               "type": "string",
-              "enum": [
-                "default",
-                "detail"
-              ]
+              "enum": ["default", "detail"]
             },
             "description": "Response projection. default: rating, title, pros, cons, provider. detail: adds the reviewer's country code and neutral prose notes. Defaults to default."
           }
@@ -7560,9 +7041,7 @@
     "/v1/hotels/{hotelId}": {
       "get": {
         "operationId": "getHotel",
-        "tags": [
-          "Hotels"
-        ],
+        "tags": ["Hotels"],
         "summary": "Get hotel detail",
         "description": "Returns static hotel detail (name, stars, address, images, amenities, reviews). Use ?view=detail for the richer UI projection.",
         "responses": {
@@ -7601,10 +7080,7 @@
                           "description": "Number of guest reviews behind the score."
                         }
                       },
-                      "required": [
-                        "score",
-                        "count"
-                      ],
+                      "required": ["score", "count"],
                       "description": "Aggregate guest review score and count."
                     },
                     "location": {
@@ -7699,17 +7175,12 @@
                                   "type": "string"
                                 }
                               },
-                              "required": [
-                                "url"
-                              ]
+                              "required": ["url"]
                             },
                             "description": "Images in this category."
                           }
                         },
-                        "required": [
-                          "category",
-                          "images"
-                        ]
+                        "required": ["category", "images"]
                       }
                     },
                     "reviewHighlights": {
@@ -7727,9 +7198,7 @@
                             "description": "The review snippet text."
                           }
                         },
-                        "required": [
-                          "text"
-                        ]
+                        "required": ["text"]
                       }
                     },
                     "highlights": {
@@ -7747,18 +7216,11 @@
                             "type": "string"
                           }
                         },
-                        "required": [
-                          "text"
-                        ]
+                        "required": ["text"]
                       }
                     }
                   },
-                  "required": [
-                    "hotelId",
-                    "name",
-                    "pageUrl",
-                    "location"
-                  ]
+                  "required": ["hotelId", "name", "pageUrl", "location"]
                 }
               }
             }
@@ -7853,10 +7315,7 @@
             "schema": {
               "default": "default",
               "type": "string",
-              "enum": [
-                "default",
-                "detail"
-              ]
+              "enum": ["default", "detail"]
             },
             "description": "Response projection. default: the agent hotel detail. detail: the richer UI projection (categorized images, review highlights, badges). Defaults to default."
           }

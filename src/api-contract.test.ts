@@ -436,7 +436,9 @@ describe("the vendored contract", () => {
       "https://api.wego.com",
     ]);
     // Two-space indent and a trailing newline, so a refresh produces a diff a
-    // person can read rather than one reformatted line.
+    // person can read rather than one reformatted line. Biome writes this
+    // shape, and `api-contract:refresh` runs biome over the file, so the two
+    // agree by construction rather than by anyone remembering.
     const text = readFileSync(CONTRACT, "utf8");
     expect(text.endsWith("\n")).toBe(true);
     expect(text.split("\n")[1]).toMatch(/^ {2}"/);
