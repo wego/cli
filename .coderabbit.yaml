@@ -79,13 +79,25 @@ reviews:
     docstrings:
       mode: "off"
     title:
-      mode: warning
+      # `error`, not `warning`: this title is the release contract. Pull requests
+      # are squashed, the squash subject is the title, and release-please reads it
+      # to compute the next version - a mistyped type ships nothing and says
+      # nothing.
+      #
+      # This is the SECOND check on the same string, and deliberately so. The
+      # deterministic half is a `ci-cli` step running
+      # `scripts/commit-convention.ts`, which is inside the required check and
+      # cannot be skipped. What that regex cannot judge is whether the subject is
+      # imperative, and whether the scope names the area the diff actually
+      # touches. That is what this one is for.
+      mode: error
       requirements: >
         Conventional Commits: `type(scope): subject`. Type is one of feat, fix,
         docs, test, chore, refactor, perf, ci, build. Scope is the area it
         touches, as used in this repo's history: cli, release, release-signing,
         signing, edge, promote, rollback, update, notice, runbook, skill, auth,
-        ci. A breaking change to the wire contract, to a command's stdout, or
+        ci, hooks, deps. The scope list is open - a new area is fine when it
+        names something real. A breaking change to the wire contract, to a command's stdout, or
         to what a published ring serves carries `!` before the colon. Subject
         is imperative and lowercase.
   tools:
@@ -95,16 +107,17 @@ reviews:
     biome:
       enabled: false
     # Nothing else is listed because every other tool defaults to enabled, and
-    # four of them earn their keep here: `zizmor` (the same GitHub Actions
-    # security analyzer already referenced in `ci-cli.yml`), `actionlint`,
-    # `skillspector` (scans AI agent skills - i.e. `skills/wego/SKILL.md`,
-    # which ships inside the binary), and `presidio` + `gitleaks` for secrets
-    # and sensitive identifiers on a repo that is now public.
+    # four of them earn their keep here: `zizmor` (a GitHub Actions security
+    # analyzer; nothing in `.github/` runs it, so this is the only place it
+    # runs - `.husky/pre-commit` calls it too, but only if you happen to have
+    # it installed), `actionlint`, `skillspector` (scans AI agent skills - i.e.
+    # `skills/wego/SKILL.md`, which ships inside the binary), and `presidio` for
+    # sensitive identifiers on a repo that is now public.
     #
-    # `shellcheck` also defaults on and is newly load-bearing: `scripts/` now
-    # carries four shell scripts that drive real installs and updates
-    # (`install-smoke.sh`, `update-smoke.sh`, `upgrade-path.sh`,
-    # `verify-published.sh`). Leave it enabled.
+    # `gitleaks` and `shellcheck` also default on, and both now have a blocking
+    # counterpart in `ci-cli`: gitleaks over every ref, shellcheck over
+    # `scripts/*.sh` and the husky hooks. Leave them enabled anyway - what
+    # CodeRabbit adds is a comment on the line, which a failing job does not.
     #
     # Do NOT add `github-checks: timeout_ms:` here. It is not in schema.v2 and
     # is silently ignored; `enabled` is the only key that tool accepts.

@@ -1,0 +1,9 @@
+# Conventional Commits, checked against scripts/commit-convention.ts - the same
+# file `ci-cli` runs against the pull request title.
+#
+# Be clear about what this can and cannot do. Pull requests here are squashed, and
+# the squash takes its subject from the TITLE, which is edited on GitHub long after
+# this hook has run. So this does not protect release-please; the `ci-cli` check
+# does. What it does is stop you building a habit that the gate will reject, and
+# catch the typo while the message is still in your editor.
+bun run scripts/commit-convention.ts --file "$1"
