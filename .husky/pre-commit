@@ -26,11 +26,17 @@ if [ "$branch" = "main" ]; then
   exit 1
 fi
 
-# src/api-types.d.ts is generated from the published OpenAPI document by
-# scripts/generate-api-types.ts. A hand edit survives exactly until the next
-# generate, and then leaves without telling anyone what it was holding up.
+# src/api-types.d.ts is generated from contract/openapi.json by
+# scripts/generate-api-types.ts, and is NOT committed - .gitignore carries it and
+# postinstall rebuilds it. So git already refuses a plain `git add`, and only
+# `git add -f` reaches this line.
+#
+# Which is why the advice is `git restore`, not `api-types:generate`. Regenerating
+# does not unstage anything: told to regenerate, you would run it, stage the
+# result, trip this again, and never learn that the file does not belong in a
+# commit at all.
 if [ -n "$(staged src/api-types.d.ts)" ]; then
-  echo 'husky: src/api-types.d.ts is generated - run: bun run api-types:generate' >&2
+  echo 'husky: src/api-types.d.ts is generated and not committed - run: git restore --staged src/api-types.d.ts' >&2
   exit 1
 fi
 
@@ -91,6 +97,25 @@ if [ -n "$(staged scripts plugin)" ]; then
     scripts/release-platform-coverage.test.ts \
     scripts/validate-release-tag.test.ts \
     scripts/commit-convention.test.ts
+fi
+
+# 25 tests, ~25ms: Check B (every dotted path the CLI's behaviour reads is still
+# published by the vendored contract) and the shape of the contract wiring - that
+# the drift step cannot veto a merge, that the refresh only ever fetches
+# production, that the generated types stay out of git.
+#
+# Same admission test as the stanza above: pure file reading, no network, no
+# subprocesses. The paths are listed rather than globbed because that IS the
+# dependency set - between them these two tests read the contract, the workflow,
+# package.json, biome.jsonc, .gitignore and the two contract scripts, and a
+# change to any of those can break one without touching a line of TypeScript.
+if [ -n "$(staged contract .gitignore biome.jsonc package.json \
+  src/api-contract.ts src/api-contract.test.ts \
+  scripts/generate-api-types.ts scripts/refresh-api-contract.ts \
+  scripts/ci-contract-drift.test.ts .github/workflows/ci-cli.yml)" ]; then
+  bun --env-file=.env.local.example test \
+    src/api-contract.test.ts \
+    scripts/ci-contract-drift.test.ts
 fi
 
 # --- the expensive one -----------------------------------------------------
