@@ -29,6 +29,12 @@ node_modules/
 .DS_Store
 .idea/
 
+# Generated from the vendored contract by `api-types:generate`, which
+# `postinstall` runs. Committing it would mean a second copy of the contract to
+# keep in step, and a stale one is worse than none: Checks A and C would compare
+# against a contract the API no longer publishes.
+src/api-types.d.ts
+
 # Build output
 dist/
 *.zip

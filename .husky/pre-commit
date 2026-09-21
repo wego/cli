@@ -26,11 +26,17 @@ if [ "$branch" = "main" ]; then
   exit 1
 fi
 
-# src/api-types.d.ts is generated from the published OpenAPI document by
-# scripts/generate-api-types.ts. A hand edit survives exactly until the next
-# generate, and then leaves without telling anyone what it was holding up.
+# src/api-types.d.ts is generated from contract/openapi.json by
+# scripts/generate-api-types.ts, and is NOT committed - .gitignore carries it and
+# postinstall rebuilds it. So git already refuses a plain `git add`, and only
+# `git add -f` reaches this line.
+#
+# Which is why the advice is `git restore`, not `api-types:generate`. Regenerating
+# does not unstage anything: told to regenerate, you would run it, stage the
+# result, trip this again, and never learn that the file does not belong in a
+# commit at all.
 if [ -n "$(staged src/api-types.d.ts)" ]; then
-  echo 'husky: src/api-types.d.ts is generated - run: bun run api-types:generate' >&2
+  echo 'husky: src/api-types.d.ts is generated and not committed - run: git restore --staged src/api-types.d.ts' >&2
   exit 1
 fi
 
@@ -93,10 +99,50 @@ if [ -n "$(staged scripts plugin)" ]; then
     scripts/commit-convention.test.ts
 fi
 
+# 25 tests, ~25ms: Check B (every dotted path the CLI's behaviour reads is still
+# published by the vendored contract) and the shape of the contract wiring - that
+# the drift step cannot veto a merge, that the refresh only ever fetches
+# production, that the generated types stay out of git.
+#
+# Same admission test as the stanza above: pure file reading, no network, no
+# subprocesses. The paths are listed rather than globbed because that IS the
+# dependency set - between them these two tests read the contract, the workflow,
+# package.json, biome.jsonc, .gitignore and the two contract scripts, and a
+# change to any of those can break one without touching a line of TypeScript.
+if [ -n "$(staged contract .gitignore biome.jsonc package.json \
+  src/api-contract.ts src/api-contract.test.ts \
+  scripts/generate-api-types.ts scripts/refresh-api-contract.ts \
+  scripts/ci-contract-drift.test.ts .github/workflows/ci-cli.yml)" ]; then
+  bun --env-file=.env.local.example test \
+    src/api-contract.test.ts \
+    scripts/ci-contract-drift.test.ts
+fi
+
+# 3 tests, ~90ms: an AST walk over api.ts asserting no response schema closes a
+# value set. This is the one rule in the repository whose breach cannot be fixed
+# after release - a `z.enum` that the API later outgrows makes every installed
+# binary reject whole responses - so it is worth catching while the line is still
+# being typed, which is here.
+#
+# Costlier than the other targeted stanzas because it parses a 63k-line file, and
+# still an order of magnitude under the typecheck below.
+if [ -n "$(staged src/api.ts src/api-tolerance.test.ts)" ]; then
+  bun --env-file=.env.local.example test src/api-tolerance.test.ts
+fi
+
 # --- the expensive one -----------------------------------------------------
 
 # ~0.32s warm, and the most common `ci-cli` failure after lint. tsc is whole-program,
 # so there is no staged-only version of it: it runs when any TypeScript is staged.
-if [ -n "$(staged '*.ts')" ]; then
+#
+# `contract` is in the condition for a case that stages no TypeScript at all. A
+# refresh commit is `contract/openapi.json` alone - CONTRIBUTING says to commit
+# that diff on its own, and the regenerated src/api-types.d.ts is gitignored, so
+# it is never staged beside it. Yet that commit is precisely the one Checks A and
+# C exist for: they are compile-time comparisons in src/api-contract.ts against
+# the types the refresh just regenerated, and this is the only local check that
+# compiles against them. Without `contract` here, the commit that changes what
+# the CLI is checked against is the one commit that never checks it.
+if [ -n "$(staged '*.ts' contract)" ]; then
   bun run typecheck
 fi

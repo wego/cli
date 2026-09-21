@@ -63,6 +63,15 @@ jobs:
       - name: Lint & format check (biome check)
         run: bun run lint
 
+      # Belt and braces over `postinstall`. `src/api-types.d.ts` is generated from
+      # `contract/openapi.json` and is not committed, so Checks A and C have
+      # nothing to compare against until it exists. `postinstall` already writes
+      # it during `bun install`; running it explicitly means a cache hit, a
+      # changed install flag or a future `--ignore-scripts` cannot quietly turn
+      # the two compile-time checks into a no-op.
+      - name: Generate API types from the vendored contract
+        run: bun run api-types:generate
+
       - name: Typecheck
         run: bun run typecheck
 
@@ -70,6 +79,53 @@ jobs:
       # temporary directory.
       - name: Unit tests
         run: bun run test
+
+      # The CLI vendors the API's contract at `contract/openapi.json`, because the
+      # API lives in another repository and there is no path to read it from. A
+      # vendored file goes stale silently, so this step says so out loud.
+      #
+      # WARNING ONLY, BY DESIGN. `ci-cli` is the required check on `main`, and the
+      # API deploys on its own cadence: a gate here would block every CLI pull
+      # request opened after an unrelated API release, for a contract the author
+      # never touched. The reminder belongs to whoever reads it, not to the merge
+      # button. A separate release-time check exercises the released CLI against
+      # the live API, and that is what actually catches a break.
+      #
+      # `servers` is dropped from both sides before the comparison: it names the
+      # host the document was served from, which is not drift.
+      #
+      # Both `continue-on-error` and an explicit `exit 0` on every path, under
+      # an explicit `set +e`. Either alone is enough; the pair is what stops a
+      # later edit from turning a reminder into a veto by accident.
+      # `scripts/ci-contract-drift.test.ts` asserts it.
+      - name: Contract drift (warning only)
+        continue-on-error: true
+        run: |
+          # GitHub's default shell is `bash -e`, which would abort on any
+          # unguarded failure below and hand the job a non-zero status before
+          # the trailing `exit 0` ever ran. Turn it off here, in the script,
+          # rather than relying on a `shell:` override staying put.
+          set +e
+          live="$RUNNER_TEMP/openapi-live.json"
+          if ! curl -sS --retry 3 --max-time 20 -o "$live" https://api.wego.com/openapi; then
+            echo "::notice::contract drift not checked: could not fetch https://api.wego.com/openapi"
+            exit 0
+          fi
+          if ! jq -e 'type == "object" and has("openapi") and has("paths") and (.info.version | type == "string")' "$live" >/dev/null 2>&1; then
+            echo "::notice::contract drift not checked: the fetched body is not a contract document"
+            exit 0
+          fi
+          committed_version="$(jq -r '.info.version' contract/openapi.json)"
+          live_version="$(jq -r '.info.version' "$live")"
+          jq -S 'del(.servers)' contract/openapi.json > "$RUNNER_TEMP/committed.norm.json"
+          jq -S 'del(.servers)' "$live" > "$RUNNER_TEMP/live.norm.json"
+          if [ "$committed_version" = "$live_version" ] && cmp -s "$RUNNER_TEMP/committed.norm.json" "$RUNNER_TEMP/live.norm.json"; then
+            echo "contract $committed_version matches the published document"
+            exit 0
+          fi
+          echo "::warning::contract $committed_version committed, $live_version live; run bun run api-contract:refresh and commit the diff"
+          diff -u "$RUNNER_TEMP/committed.norm.json" "$RUNNER_TEMP/live.norm.json" | head -200 || true
+          exit 0
 
       # `scripts/` carries four shell scripts that drive real installs and updates on
       # other people's machines, and `.husky/` now carries the hooks. CodeRabbit runs

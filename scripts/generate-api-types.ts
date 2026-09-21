@@ -2,29 +2,30 @@
 import openapiTS, { astToString } from "openapi-typescript";
 
 /**
- * Generate `src/api-types.d.ts` from the API's **committed** contract
- * (`apps/api/contract/openapi.json`) — links 5-7 of #1300.
+ * Generate `src/api-types.d.ts` from the vendored API contract
+ * (`contract/openapi.json`).
  *
- * This is the one place the two apps meet, and it meets them the only way that
+ * The CLI ships separately from the API, so the two meet the only way that
  * keeps them independently deployable: a **build-time** read of a checked-in
- * file. No import crosses the app boundary, nothing here ships in the binary
- * (the output is types, erased at compile time), and the CLI keeps holding its
- * own tolerant Zod schemas as the runtime parser. What the generated types buy
- * is a compiler that can compare the two.
+ * file. No import crosses the boundary, nothing here ships in the binary (the
+ * output is types, erased at compile time), and the CLI keeps holding its own
+ * tolerant Zod schemas as the runtime parser. What the generated types buy is a
+ * compiler that can compare the two.
  *
- * Regenerating is not optional after an API wire change: `api-contract.test.ts`
- * fails when this output is stale, and `.github/workflows/ci-contract.yml` runs
- * on a change to EITHER app so an api-only PR cannot skip the CLI's half.
+ * The output is not committed. `postinstall` runs this script, so
+ * `src/api-types.d.ts` exists after `bun install` for editors, `bun run
+ * typecheck` and CI; regenerating it is never something a person has to
+ * remember. Refresh the source with `bun run api-contract:refresh`.
  */
 
-const CONTRACT = new URL("../../api/contract/openapi.json", import.meta.url);
+const CONTRACT = new URL("../contract/openapi.json", import.meta.url);
 const OUTPUT = new URL("../src/api-types.d.ts", import.meta.url);
 
 const HEADER = `/**
- * GENERATED FILE — do not edit.
+ * GENERATED FILE — do not edit, and do not commit.
  *
- * Source: apps/api/contract/openapi.json
- * Regenerate: bun run --filter cli api-types:generate
+ * Source: contract/openapi.json
+ * Regenerate: bun run api-types:generate
  *
  * The API's published response and request shapes, as TypeScript. \`api-contract.ts\`
  * compares them against the CLI's own Zod-inferred types; this file is never
