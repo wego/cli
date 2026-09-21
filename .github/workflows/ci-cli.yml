@@ -94,14 +94,18 @@ jobs:
       # `servers` is dropped from both sides before the comparison: it names the
       # host the document was served from, which is not drift.
       #
-      # Both `continue-on-error` and an explicit `exit 0` on every path. Either
-      # alone is enough; the pair is what stops a later edit from turning a
-      # reminder into a veto by accident. `scripts/ci-contract-drift.test.ts`
-      # asserts it.
+      # Both `continue-on-error` and an explicit `exit 0` on every path, under
+      # an explicit `set +e`. Either alone is enough; the pair is what stops a
+      # later edit from turning a reminder into a veto by accident.
+      # `scripts/ci-contract-drift.test.ts` asserts it.
       - name: Contract drift (warning only)
         continue-on-error: true
         run: |
-          set -uo pipefail
+          # GitHub's default shell is `bash -e`, which would abort on any
+          # unguarded failure below and hand the job a non-zero status before
+          # the trailing `exit 0` ever ran. Turn it off here, in the script,
+          # rather than relying on a `shell:` override staying put.
+          set +e
           live="$RUNNER_TEMP/openapi-live.json"
           if ! curl -sS --retry 3 --max-time 20 -o "$live" https://api.wego.com/openapi; then
             echo "::notice::contract drift not checked: could not fetch https://api.wego.com/openapi"

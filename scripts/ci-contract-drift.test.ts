@@ -84,8 +84,10 @@ describe("ci-cli: the contract drift step cannot veto a merge", () => {
     const exits = run.match(/^\s*exit \d+\s*$/gm) ?? [];
     expect(exits.length).toBeGreaterThan(2);
     expect(exits.every((line) => line.trim() === "exit 0")).toBe(true);
-    // No `set -e`: an unguarded failure mid-script would abort before the
-    // trailing `exit 0` and hand the job a non-zero status.
+    // GitHub runs `bash -e` by default, so `exit 0` on every path is only
+    // true if the script turns that off: an unguarded failure would otherwise
+    // abort before the trailing `exit 0` and hand the job a non-zero status.
+    expect(run).toMatch(/^\s*set \+e\s*$/m);
     expect(run).not.toMatch(/^\s*set -[a-z]*e/m);
   });
 
