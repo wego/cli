@@ -172,6 +172,32 @@ const reachesApprove = (start: string, jobs: Record<string, Job>): boolean =>
  */
 const BYPASSES_FAILURE = /\b(always|cancelled|failure)\s*\(\s*\)/;
 
+/** A handle as the two files should be compared: no `@`, case-insensitive. */
+const normaliseHandle = (handle: string): string =>
+  handle.replace(/^@/, "").toLowerCase();
+
+/**
+ * Every distinct owner named by a CODEOWNERS RULE.
+ *
+ * Comment lines are dropped rather than scanned, and that is the whole subtlety:
+ * this file is mostly prose explaining why each path is owned, and that prose is
+ * free to name a handle. Only a rule confers ownership, so only a rule counts.
+ */
+const codeownersOwners = (): Set<string> =>
+  new Set(
+    readFileSync(".github/CODEOWNERS", "utf8")
+      .split("\n")
+      .map((line) => line.replace(/(^|\s)#.*$/, "").trim())
+      .filter((line) => line !== "")
+      .flatMap((line) => line.split(/\s+/))
+      .filter((token) => token.startsWith("@"))
+      .map(normaliseHandle),
+  );
+
+/** The members of `a` that `b` does not have, for a failure message. */
+const missingFrom = (a: Set<string>, b: Set<string>): string[] =>
+  [...a].filter((handle) => !b.has(handle)).sort();
+
 /**
  * THE INVARIANT THIS REPOSITORY LEARNED THE HARD WAY.
  *
@@ -309,6 +335,40 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
         promoterList,
         `${file}: approve binds no PROMOTERS allow-list`,
       ).not.toBe("");
+
+      // THE SAME THREE HANDLES LIVE IN FOUR PLACES, AND ONE OF THEM IS THIS LANE.
+      //
+      // `.github/CODEOWNERS`, this `PROMOTERS` string, the rollback lane's copy of
+      // it, and the `cli-release-signers` GitHub team. Adding or removing a signer
+      // is four edits in two systems, and nothing makes them happen together. The
+      // failure that costs something is the SILENT half: a handle dropped from
+      // CODEOWNERS but left here can still move `cli/stable` while no longer being
+      // required to review the file that says who may, and a handle added here but
+      // not there gains the ring without the review that was supposed to grant it.
+      // Neither shows up in a run - the gate passes, the review passes, and the two
+      // lists have simply stopped describing the same people.
+      //
+      // Sets, not strings: `PROMOTERS` is one space-separated line and CODEOWNERS
+      // repeats the handles across nineteen rules, so order and spacing are not the
+      // property. The remote team is out of scope here - it cannot be read without
+      // the network, and REPO-10's periodic sweep is what reconciles it.
+      const promoters = new Set(promoterList.split(/\s+/).map(normaliseHandle));
+      const owners = codeownersOwners();
+
+      // A set comparison against an empty set passes for the wrong reason: a
+      // CODEOWNERS that has been renamed, emptied, or reshaped past this parser
+      // would read as "no owners" and take the assertion below with it.
+      expect(
+        owners.size,
+        `${file}: parsed no owners out of .github/CODEOWNERS, so the comparison below would assert nothing`,
+      ).toBeGreaterThan(0);
+
+      expect(
+        [...promoters].sort(),
+        `${file}: PROMOTERS and .github/CODEOWNERS name different people - ` +
+          `in PROMOTERS only: [${missingFrom(promoters, owners).join(", ") || "none"}]; ` +
+          `in CODEOWNERS only: [${missingFrom(owners, promoters).join(", ") || "none"}]`,
+      ).toEqual([...owners].sort());
 
       // The gate step is the one that binds the actor contexts; `approve` may hold
       // others (promote's second step records what was approved) and they are not

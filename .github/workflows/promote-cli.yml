@@ -31,10 +31,24 @@ permissions:
 jobs:
   # The human gate.
   #
-  # Not an environment with required reviewers. That rule is not available on this
-  # plan for a private repository, and an unprotected environment would let every
-  # dispatch through (wego/foundations#128). The list below is the authority.
-  # `main` requires a code-owner review, so a change to the list is reviewed.
+  # Not an environment with required reviewers - and no longer because we cannot
+  # have them. We can: the repository went public on 2026-09-17, so required
+  # reviewers are free on every plan, and wego/cli#70 replaced the single shared
+  # `production` environment with one environment per lane, so `stable-promote`
+  # could carry reviewers without changing what any other lane admits. The shared
+  # environment is what made an unprotected one let every dispatch through
+  # (wego/foundations#128); that is the history of this control, not a live
+  # constraint on it.
+  #
+  # The list below is the authority because it lives in VERSION CONTROL. Changing
+  # who may move `cli/stable` is a diff: CODEOWNERS owns `.github/workflows/`, so
+  # `main` will not take it without a release-signer review, and the change stays
+  # visible in the history afterwards. An environment's reviewer list is a settings
+  # toggle any repository admin can flip in a browser, and with no organisation
+  # audit log on this account there is no record that anyone did - so its current
+  # value cannot be read from a checkout, and neither can its past. That is the
+  # property being bought here, and it is the reason to keep the list even though
+  # reviewers are now available.
   #
   # One person dispatches and approves. There is no four-eyes rule. This job holds
   # no secrets and no variables.
