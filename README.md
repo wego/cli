@@ -291,6 +291,11 @@ Everything under `.github/`, `scripts/` and `src/release-signing/` can change wh
 a published binary is or where it comes from, so those paths carry code owners and
 need a review from someone who holds those rights.
 
+Commits on `main` must be signed, and the rule has no bypass. `CONTRIBUTING.md`
+has the three-step setup, including the step that catches everyone: an SSH key
+registered with GitHub for authentication does **not** count for signing, and
+needs a second entry of its own.
+
 ## Releases
 
 Version, ring and target are three independent axes. One build carries every
