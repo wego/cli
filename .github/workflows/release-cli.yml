@@ -107,6 +107,14 @@ jobs:
       - name: Unit tests
         run: bun run test
 
+      # The same audit, at tag time. Not redundant with `ci-cli`, which audits at merge
+      # time: an advisory published between the last merge to `main` and this tag falls
+      # in that gap, and this step is what closes it. `prepare` is the only correct job
+      # for it - `build`, `sign` and `release` all `needs:` this one, so a finding here
+      # means the vulnerable tree is never compiled, never signed and never published.
+      - name: Audit the installed dependency tree (bun.lock)
+        run: bun audit --audit-level=high
+
       # Read the tag from the ref. Nothing here computes a version.
       #
       # `validate-release-tag.ts` is the parser the binary uses, so the tag and the
