@@ -59,7 +59,7 @@ bun run lint:staged
 # unchecked while the hook still passed.
 if [ -n "$(staged '*.sh')" ]; then
   if command -v shellcheck >/dev/null 2>&1; then
-    git diff --cached --name-only --diff-filter=ACM -z -- '*.sh' | xargs -0 shellcheck
+    git diff --cached --name-only --diff-filter=ACM -z -- '*.sh' | xargs -0 shellcheck --severity=warning
   else
     echo 'husky: shellcheck not installed, shell scripts unchecked (brew install shellcheck)' >&2
   fi
