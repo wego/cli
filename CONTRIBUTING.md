@@ -127,6 +127,103 @@ installed, `core.hooksPath` applies to every worktree of this clone, and
 files. Read `.husky/` and `bun.lock` in the diff on GitHub before you check the
 branch out, or check it out with `HUSKY=0 git checkout …` and read first.
 
+## Signed commits
+
+**Every commit that reaches `main` must carry a signature GitHub can verify.** A
+repository ruleset enforces it, and that ruleset has an empty bypass list — no
+maintainer, no administrator and no organisation owner can merge past it. Unsigned
+commits make the merge box say *"Commits must have verified signatures"*, and it
+stays that way until you fix it.
+
+This is not the release signing described in `docs/release.md`. That is
+[cosign](https://docs.sigstore.dev) signing the SHA256 manifest a release is built
+from, with a release-signing record naming the identity allowed to sign it. This is
+git binding one commit to a key GitHub can name.
+
+Be precise about what that buys, because it is easy to overstate: a signature
+proves who **committed**, not who wrote. Author and committer differ whenever one
+person rebases, amends or applies another's work, and it is the committer who
+signs — so what a signature records is who **vouched** for the change. That is
+exactly why it is worth having. Git's author field is free text: anyone can commit
+under your name and address, and nothing checks it. A signature is what turns that
+claim into something a person is accountable for.
+
+Setting it up is three steps, and **the third is the one people miss**.
+
+### 1. Tell git to sign
+
+**Requires Git 2.34 or later.** SSH signing did not exist before it; an older git
+accepts the configuration below and then quietly fails to sign. Check with
+`git --version` first.
+
+SSH signing reuses the key you already push with, so there is no GPG keyring to
+manage:
+
+```bash
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+git config --global commit.gpgsign true
+```
+
+Use your own public key's path if it differs. To scope this to one repository
+rather than your whole machine, drop `--global` and run it inside your checkout.
+
+### 2. Confirm git is actually signing
+
+Deliberately without `-S`, so this tests the configuration rather than bypassing
+it:
+
+```bash
+git commit --allow-empty -m "chore: signing check"
+git log --show-signature -1
+git reset --soft HEAD~1      # discard it; the commit was empty, so nothing is lost
+```
+
+### 3. Register the key with GitHub — as a *signing* key
+
+Go to [github.com/settings/ssh/new](https://github.com/settings/ssh/new), paste
+the contents of your `.pub` file, and **change the "Key type" dropdown to Signing
+Key**. It defaults to *Authentication Key*, and an authentication entry does
+nothing for signatures — even when it is the same key you already push with. A key
+GitHub knows for access is not a key GitHub will verify signatures against; it
+needs its own entry.
+
+Miss this and your commit is signed but reports `unknown_key`, which reads like a
+git problem and is not one.
+
+### Checking, and fixing what you already pushed
+
+```bash
+PR=123     # your pull request number
+gh api --paginate "repos/wego/cli/pulls/$PR/commits?per_page=100" --jq \
+  '.[] | "\(.sha[0:7])\t\(.commit.verification.verified)\t\(.commit.verification.reason)"'
+```
+
+`--paginate` is not decoration: `gh api` returns 30 commits per page by default, so
+a branch with more than 30 would hide an unsigned one behind the first page and the
+check would report success. The question here is *does any commit violate this*, and
+a single page cannot answer it.
+
+| `reason` | What it means | Fix |
+| --- | --- | --- |
+| `valid` | Nothing to do | — |
+| `unsigned` | git is not signing | Step 1 |
+| `unknown_key` | Signed, but GitHub does not know the key | Step 3 |
+
+**`unknown_key` needs no new commit.** GitHub verifies at read time, so registering
+the key retroactively verifies what is already pushed. Re-run the check above.
+
+`unsigned` does need the commits rewriting:
+
+```bash
+git rebase --exec 'git commit --amend --no-edit -S' origin/main
+git push --force-with-lease
+```
+
+Only on a branch you own — rewriting a branch someone else has checked out breaks
+their copy. The ruleset covers `main` only, so your feature branch takes a
+force-push without complaint.
+
 ## Before you open a pull request
 
 ```bash
@@ -175,7 +272,9 @@ what release-please actually reads.
 ## What happens next
 
 `main` requires a review from a code owner, so every change is reviewed before it
-merges. CI must be green.
+merges. CI must be green, and every commit must be signed — see
+[Signed commits](#signed-commits) if the merge box is asking for verified
+signatures.
 
 **We will do our best to respond, but we cannot promise when.** This repository
 is maintained by a team with its own roadmap and on-call load, and issues and
