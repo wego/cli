@@ -118,6 +118,18 @@ if [ -n "$(staged contract .gitignore biome.jsonc package.json \
     scripts/ci-contract-drift.test.ts
 fi
 
+# 3 tests, ~90ms: an AST walk over api.ts asserting no response schema closes a
+# value set. This is the one rule in the repository whose breach cannot be fixed
+# after release - a `z.enum` that the API later outgrows makes every installed
+# binary reject whole responses - so it is worth catching while the line is still
+# being typed, which is here.
+#
+# Costlier than the other targeted stanzas because it parses a 63k-line file, and
+# still an order of magnitude under the typecheck below.
+if [ -n "$(staged src/api.ts src/api-tolerance.test.ts)" ]; then
+  bun --env-file=.env.local.example test src/api-tolerance.test.ts
+fi
+
 # --- the expensive one -----------------------------------------------------
 
 # ~0.32s warm, and the most common `ci-cli` failure after lint. tsc is whole-program,
