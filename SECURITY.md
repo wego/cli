@@ -45,22 +45,16 @@ long-term support branches and no backports to earlier versions.
 bytes the ring serves, so it moves you to the supported version regardless of
 which version you are on.
 
-## Threat model
+## Scope
 
-Two decisions decide what the *Scope* section below accepts. They were made
-separately, and the second narrows the first without replacing it.
+**Who we treat as an attacker.** External attackers, including an external
+attacker using a **stolen credential**: a leaked token, a lifted session, an
+exfiltrated key. A stolen credential is an external attacker wearing an
+insider's identity, so it stays in scope. Out of scope is an insider acting
+deliberately within the access they were granted, which is a governance question
+rather than a vulnerability.
 
-**Who is in scope.** External attackers, including an external attacker using a
-**stolen credential**. A stolen credential is an external attacker wearing an
-insider's identity, so it stays in scope.
-
-**Who is out of scope.** Insiders acting deliberately within their granted
-access. A maintainer merging their own change, an admin editing a ruleset,
-someone with write access using the access they were given: those are governance
-questions rather than vulnerabilities, and this policy does not triage them as
-findings.
-
-**That exclusion is narrow. It does not cover:**
+That exclusion is narrow. It does **not** cover:
 
 - **The coerced.** Someone pressured, deceived or socially engineered into using
   their access is not acting deliberately. In scope.
@@ -70,38 +64,8 @@ findings.
   phishing, a device taken over, a session hijacked at the keyboard. The
   attacker is external and only the identity is an insider's. In scope.
 
-Read the exclusion as covering what an insider chose to do, not anything an
-insider's account did.
-
-**What we work on first.** Separately, we put ten live findings to a blunter
-question: can a person who is not a member of the `wego` GitHub organisation
-reach this? Three survived it. The other seven were deprioritized, and
-**deprioritized is not accepted.** They are still live, still real, and still
-ours to fix.
-
-**That changed what we work on first, not what is in scope.** A stolen
-credential is still in scope, and nothing above moved out of it. The cost of
-parking those seven is worth stating plainly: an attacker who is **already
-inside** meets less resistance than they otherwise would.
-
-**The decisions this records.** Six were made on the strength of the two models
-above. They are written here because a reader who finds them undocumented will
-conclude they were missed rather than chosen:
-
-| Finding | Disposition | Why |
-|---|---|---|
-| REPO-10 | accepted | No incident-response runbook. The periodic sweep that would compensate needs access this repository's own automation does not have, and the credentials that would bridge it are a worse exposure than the gap. |
-| ORG-7 | accepted | No audit log. Not available on this GitHub plan, and not something this repository can add. |
-| REPO-9 | skipped | Build provenance is largely redundant with cosign and the Fulcio SAN, and the SBOM available to us would describe only a fraction of our packages. |
-| REPO-1 | parked | An admin merging without review. Insider-shaped: an account that can change the rules is not constrained by them. |
-| ORG-2 | parked | The size of the collaborator list. Those are deliberate grants. |
-| REPO-8 | parked | The push-protection bypass has no approver. |
-
-REPO-8 is the finding that shows why the carve-out earns its place. A delegated
-bypass with no approver is reachable through a person, so it could not simply
-take the disposition that REPO-1 and ORG-2 took.
-
-## Scope
+So if you can show how an outsider reaches an insider's access, that is a report
+we want.
 
 **In scope**
 
