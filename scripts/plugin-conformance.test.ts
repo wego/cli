@@ -122,19 +122,11 @@ describe("LICENSE is the Apache 2.0 text, verbatim", () => {
     expect(licenseDigest(license)).toBe(CANONICAL_APACHE_2_SHA256);
   });
 
-  it("rejects an altered licence", () => {
-    // The digest is a claim that alterations cannot pass, and a claim needs an
-    // input that could have failed. This edits ONE word inside the patent
-    // grant: the result keeps every landmark the previous test checked and
-    // stays the same length, so it is exactly the file that test would have
-    // published. It must not survive this one.
-    const tampered = license.replace(
-      "royalty-free, irrevocable",
-      "royalty-free, revocable",
-    );
-    expect(tampered).not.toBe(license);
-    expect(licenseDigest(tampered)).not.toBe(CANONICAL_APACHE_2_SHA256);
-  });
+  // A test that edited one word of the licence and asserted the digest moved
+  // used to sit here. It was asserting that SHA-256 is injective - a property of
+  // the hash, true of any two different inputs, and nothing this repository can
+  // get wrong. The digest pin above is the whole control; the landmarks below
+  // are how a failure gets diagnosed.
 
   it("carries the title, the version line and the appendix", () => {
     // Kept for DIAGNOSIS, not for integrity. When the digest fails these say

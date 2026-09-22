@@ -496,15 +496,20 @@ function classify(): Map<string, Hit[]> {
 describe(`${LANE}: linux-x64 and darwin-arm64 run the same checks, at the same stage`, () => {
   const found = classify();
 
+  // A `runs on both platforms: <check>` case used to sit here, once per entry.
+  // It is now implied rather than asserted, and by three things in this same
+  // file: every check the list names is defined inside one of the two composite
+  // actions and NOWHERE in the workflow ("leaves no check-bearing step body in
+  // the workflow itself"), and each action is called from a Linux leg and a
+  // macOS leg ("calls each action from both platforms"). Presence on both
+  // platforms follows from those; restating it per check asserted nothing the
+  // structure did not already guarantee.
+  //
+  // STAGE does not follow, which is why the case below stays. It turns on WHERE
+  // the `uses:` step sits relative to publication, and a leg could move its call
+  // past the advance while the other's stays in front of it - with every
+  // structural assertion above still green.
   for (const [check] of PARITY_CHECKS) {
-    it(`runs on both platforms: ${check}`, () => {
-      const hits = found.get(check) ?? [];
-      const linux = hits.filter((h) => h.plat === "linux");
-      const macos = hits.filter((h) => h.plat === "macos");
-      expect(linux.length).toBeGreaterThan(0);
-      expect(macos.length).toBeGreaterThan(0);
-    });
-
     it(`gates publication on both platforms, or on neither: ${check}`, () => {
       // Stage is not cosmetic. Pre-publication a failure PREVENTS a bad build from
       // reaching anyone; post-advance it can only describe one, because the ring it

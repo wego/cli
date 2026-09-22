@@ -198,20 +198,23 @@ describe("the generated types exist before anything compares them", () => {
 });
 
 describe("package.json: the contract scripts", () => {
-  it("regenerates the types on install", () => {
-    // `trustedDependencies` governs DEPENDENCIES' lifecycle scripts, not the
-    // root package's own, so an empty list does not stop this running.
-    expect(scripts.postinstall).toBe("bun run api-types:generate");
-    expect(manifest.trustedDependencies).toEqual([]);
-  });
+  // Three assertions used to sit above this one, each comparing a script string
+  // to its own literal: `postinstall`, `api-contract:refresh`,
+  // `api-types:generate`. They restated `package.json` rather than constraining
+  // it, and the failure they imagined is loud anyway - `src/api-wire.ts` opens
+  // with `import type { components, operations } from "./api-types"`, so a tree
+  // where the generator did not run dies on TS2307 at the first `bun run
+  // typecheck`, named and immediate. What survives below is the one claim about
+  // these scripts that is NOT visible in the file: the order they run in.
 
-  it("refreshes the contract by hand, never on a schedule", () => {
-    expect(scripts["api-contract:refresh"]).toBe(
-      "bun run scripts/refresh-api-contract.ts && bun run api-types:generate",
-    );
-    expect(scripts["api-types:generate"]).toBe(
-      "bun run scripts/generate-api-types.ts",
-    );
+  // Not a restatement of package.json, and worth the line it costs:
+  // `trustedDependencies` decides which DEPENDENCIES may run lifecycle scripts
+  // during `bun install` - the install that runs beside the signing identity and
+  // the store token in three lanes. Empty is the claim: nothing in the tree gets
+  // to execute on install. The root package's own `postinstall` is unaffected;
+  // this list governs the dependencies, not the package it appears in.
+  it("lets no dependency run a lifecycle script on install", () => {
+    expect(manifest.trustedDependencies).toEqual([]);
   });
 
   it("regenerates the types as part of the refresh, and only on success", () => {
