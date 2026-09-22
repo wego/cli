@@ -14,11 +14,17 @@ the two channels above rather than adding detail to the public thread.
 **Why we prefer the Security tab.** A report there can open a temporary private
 fork, and we can develop the fix in it. That matters more here than it would in
 a private repository: `main` is public, and `.github/workflows/edge-cli.yml`
-runs on every push to it, so a fix developed in the open is public the moment it
-merges — while the people on `cli/stable` are still waiting for the separate,
-manual promote that reaches them. The private fork is the only mechanism in this
-repository that closes that window. A report there also notifies all ten
-repository admins, rather than landing in one mailbox.
+publishes an edge build on every push to `main` that touches the CLI itself
+(`src/**`, `scripts/**`, the build config) — which is what a vulnerability fix
+touches. So a fix developed in the open is public the moment it merges, while
+the people on `cli/stable` are still waiting for the separate, manual promote
+that reaches them. The private fork is the only mechanism in this repository
+that closes that window.
+
+A report there also lands as a triage advisory that every admin can see on the
+Security tab, rather than in one mailbox. GitHub notifies admins and security
+managers according to each person's own security-alert settings, so the visible
+queue is the reliable part rather than the notification.
 
 This is only about where the fix is developed. Publishing an advisory afterwards
 works the same either way, and always has; reporting by mail does not cost you
@@ -35,7 +41,8 @@ monetary rewards for reports submitted under this policy.
 we work on it, but **we cannot promise when.** No one person is on call for this
 policy and there is no triage rotation behind it, so a response time is not
 something we can honestly commit to. Reporting through the Security tab is the
-best hedge we can offer against that, because it reaches all ten admins at once.
+best hedge we can offer against that: the report sits in a queue every admin can
+see, rather than depending on one person reading mail.
 Acknowledgement is not a fix: how long a fix takes depends on what you
 found, and we will tell you what we know as we know it. We will tell you when a
 fix is released, and we are glad to credit you unless you would rather we did
