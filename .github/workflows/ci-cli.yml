@@ -64,15 +64,18 @@ jobs:
       - name: Lint & format check (biome check)
         run: bun run lint
 
-      # Belt and braces over `postinstall`. `src/api-types.d.ts` is generated from
-      # `contract/openapi.json` and is not committed, so Checks A and C have
-      # nothing to compare against until it exists. `postinstall` already writes
-      # it during `bun install`; running it explicitly means a cache hit, a
-      # changed install flag or a future `--ignore-scripts` cannot quietly turn
-      # the two compile-time checks into a no-op.
-      - name: Generate API types from the vendored contract
-        run: bun run api-types:generate
-
+      # No separate generate step. `bun run typecheck` regenerates
+      # `src/api-types.d.ts` itself, so this lane, the release lane and a
+      # developer's terminal all compile against the same freshly generated
+      # types - one source of truth, in package.json.
+      #
+      # This matters because the file is generated from `contract/openapi.json`
+      # and is not committed: without it, Checks A and C in `src/api-contract.ts`
+      # have nothing to compare against, and every comparison resolves to `never`
+      # rather than failing loudly. `postinstall` writes it during `bun install`,
+      # but a cache hit, a changed install flag or a future `--ignore-scripts`
+      # can skip that - which is a local-only mystery when the script does not
+      # own the generation. `scripts/ci-contract-drift.test.ts` asserts it does.
       - name: Typecheck
         run: bun run typecheck
 

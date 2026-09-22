@@ -132,8 +132,13 @@ fi
 
 # --- the expensive one -----------------------------------------------------
 
-# ~0.32s warm, and the most common `ci-cli` failure after lint. tsc is whole-program,
+# ~0.7s warm, and the most common `ci-cli` failure after lint. tsc is whole-program,
 # so there is no staged-only version of it: it runs when any TypeScript is staged.
+#
+# `bun run typecheck` regenerates src/api-types.d.ts first (~0.36s of that 0.7s).
+# That is deliberate and not worth trimming here: it is the single place the
+# generation lives, shared with ci-cli and the release lane, and it is what makes
+# the `contract` case below compile against the contract as just staged.
 #
 # `contract` is in the condition for a case that stages no TypeScript at all. A
 # refresh commit is `contract/openapi.json` alone - CONTRIBUTING says to commit
