@@ -67,6 +67,23 @@ const STORE_TOKEN = "BLOB_READ_WRITE_TOKEN";
 /** The composite action both lanes sign with; a local path, never a package. */
 const SIGN_ACTION = ".github/actions/sign-manifest";
 
+/**
+ * Does this `uses:` name an action inside THIS repository?
+ *
+ * Two spellings, and both are local. `./path` is relative to the workspace, so
+ * it needs a checkout first. `$/path` is the self repository reference: it
+ * resolves to this repository at the RUNNING COMMIT with no checkout, it may
+ * not carry an `@ref`, and GitHub now recommends it over `./` precisely because
+ * `./` resolves against whatever the caller happened to check out.
+ *
+ * The signing assertion below has to know both spellings. Knowing only `./`, it
+ * would reject a correct local call to `sign-manifest` the moment anyone adopts
+ * the recommended form - a failure that would not be true, on the one assertion
+ * that guards the release signer.
+ */
+const isLocalUses = (uses: string): boolean =>
+  uses.startsWith("./") || uses.startsWith("$/");
+
 interface Step {
   uses?: string;
   run?: string;
@@ -179,7 +196,7 @@ describe.each(SIGNING_LANES)("%s: the signing identity", (file) => {
     const step = (wf.jobs[name as string]?.steps ?? []).find((s) =>
       (s.uses ?? "").includes(SIGN_ACTION),
     );
-    expect(step?.uses).toStartWith("./");
+    expect(step?.uses ?? "").toSatisfy(isLocalUses);
   });
 });
 
