@@ -152,6 +152,42 @@ jobs:
           shellcheck --severity=warning scripts/*.sh
           find .husky -maxdepth 1 -type f -print0 | xargs -0 shellcheck --severity=warning --shell=sh
 
+      # The workflow files themselves, typechecked. actionlint resolves every
+      # `${{ }}` expression against the contexts GitHub actually supplies, so it
+      # catches the class this repository used to assert by hand: a
+      # `needs.<job>.outputs.<name>` naming an output the producing job does not
+      # declare, or read from a job with no `needs:` edge to it. Both evaluate to
+      # the EMPTY STRING rather than erroring - in an `if:` that makes the
+      # condition permanently false and the step it guards silently stops running,
+      # green, with nothing in the log to notice.
+      #
+      # `scripts/workflow-contexts.test.ts` carried those two checks until this
+      # step existed. actionlint gives the same verdict with a type and a
+      # file:line, and a great deal else besides, so the test now keeps only the
+      # half actionlint cannot reach: composite actions, which it parses as
+      # malformed workflows rather than as actions.
+      #
+      # Pinned by version AND checksum, on the same reasoning as the gitleaks step
+      # below: this is a required check, so an unpinned download lets someone
+      # else's release red the branch on rules unrelated to the change. Re-take
+      # the digest from the same published file when the version moves:
+      # https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_checksums.txt
+      #
+      # It shells out to shellcheck for every `run:` body, which the step above
+      # does not reach - that one reads `scripts/*.sh` and the hooks.
+      - name: Workflows (actionlint)
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            --output "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check --strict -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
       # `.husky/pre-commit` scans staged changes before a commit exists, which is the
       # only moment a secret can still be un-leaked. This is the other half: whatever
       # arrived without the hook - `--no-verify`, a clone that never ran `bun install`,

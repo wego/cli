@@ -73,12 +73,20 @@ fi
 
 # --- targeted tests --------------------------------------------------------
 
-# 60 tests, ~135ms, over the workflow files. These read YAML and assert lane
+# 48 tests, ~155ms, over the workflow files. These read YAML and assert lane
 # properties; they are the slowest thing in this repository to learn from CI,
 # because a broken release lane reports when the release runs.
 if [ -n "$(staged .github)" ]; then
   if command -v zizmor >/dev/null 2>&1; then
     zizmor .github/workflows
+  fi
+  # The same gate `ci-cli` runs, whenever you happen to have it. It is the only
+  # thing that reads the `${ }` expressions - the three suites below assert lane
+  # SHAPE and cannot see a misspelled context.
+  if command -v actionlint >/dev/null 2>&1; then
+    actionlint
+  else
+    echo 'husky: actionlint not installed, workflow expressions unchecked (brew install actionlint)' >&2
   fi
   bun --env-file=.env.local.example test \
     scripts/workflow-shape.test.ts \
