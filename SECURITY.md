@@ -17,6 +17,10 @@ rather than landing in one mailbox.
 Reporting this way is not what lets us publish an advisory. We can do that
 either way, and always could. It only changes where the fix is developed.
 
+Report anything you think is a security problem. We would rather look at a
+report that turns out to be nothing than miss one because you were unsure it
+counted.
+
 Do not open a public issue for a suspected vulnerability, and do not raise one
 through a pull request or a discussion. If you have already done so, use one of
 the two channels above rather than adding detail to the public thread.
@@ -47,26 +51,6 @@ which version you are on.
 
 ## Scope
 
-**Who we treat as an attacker.** External attackers, including an external
-attacker using a **stolen credential**: a leaked token, a lifted session, an
-exfiltrated key. A stolen credential is an external attacker wearing an
-insider's identity, so it stays in scope. Out of scope is an insider acting
-deliberately within the access they were granted, which is a governance question
-rather than a vulnerability.
-
-That exclusion is narrow. It does **not** cover:
-
-- **The coerced.** Someone pressured, deceived or socially engineered into using
-  their access is not acting deliberately. In scope.
-- **The negligent.** A mistake, a misconfiguration, a credential left somewhere
-  it should not have been. In scope.
-- **An account compromised through a person** rather than through a token:
-  phishing, a device taken over, a session hijacked at the keyboard. The
-  attacker is external and only the identity is an insider's. In scope.
-
-So if you can show how an outsider reaches an insider's access, that is a report
-we want.
-
 **In scope**
 
 - The `wego` binary itself: credential handling, the OAuth + PKCE login flow,
@@ -82,11 +66,8 @@ we want.
 - The Wego API and website. This policy covers the CLI and its release pipeline;
   reports about the wider Wego platform are triaged by Wego's security team
   rather than by this repository's maintainers.
-- Findings that assume the attacker already holds the access the finding is
-  about: a local attacker who already has the user's disk and keychain, or an
-  insider exercising a grant they legitimately hold. How an account or a machine
-  came to be controlled is the part we want, and that part is in scope,
-  including the coerced, negligent and person-compromised cases above.
+- Findings that require an attacker to already control the user's machine or
+  their account.
 - Missing hardening with no demonstrated impact.
 
 ## How releases are protected
