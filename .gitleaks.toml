@@ -1,0 +1,61 @@
+# gitleaks configuration for wego/cli.
+#
+# Extends the default ruleset rather than replacing it, so every stock rule still
+# applies and this file only adds what the defaults cannot know.
+#
+# Run it the way the acceptance criterion means it, over the whole history rather
+# than the working tree, from a full clone so every ref is present locally:
+#
+#   gitleaks git --log-opts="--all" --redact .
+#
+# (The old `gitleaks detect --source .` no longer parses: 8.30.1 takes `git`,
+# `dir` or `stdin`, verified against the installed binary's own `--help`, and
+# `detect`/`protect` are gone. `ci-cli` runs the line above on every pull request and every
+# push to main, and `.husky/pre-commit` runs `gitleaks git --staged` before a
+# commit exists, which is the last moment a secret can still be un-leaked.)
+#
+# --redact matters: without it the report and the terminal hold the matched values
+# in cleartext, and the output of this scan is meant to be pasted somewhere.
+# Exit 0 is clean, exit 1 is findings, anything else is a tool error.
+#
+# The review behind the allowlist below: wego/foundations#141
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# The generated Sigstore test fixtures.
+#
+# src/release-signing/testing/fixture.ts is a GENERATED file holding a real ECDSA
+# P-256 certificate chain and real signatures, including the leaf's private key.
+# It is safe to commit, and the file is blunt about why at the declaration:
+#
+#   "a throwaway key for a throwaway root that only TEST_ROOT_PEM trusts. The
+#    binary pins Fulcio's real roots (src/release-signing/sigstore-roots.ts), so a
+#    record signed with this key is refused everywhere outside a test that
+#    deliberately pins the test root."
+#
+# Verified 2026-09-18 rather than taken on trust: TEST_ROOT_PEM is self-signed
+# with CN "Test Fulcio Root", and the shipped binary pins the real Fulcio anchors,
+# which .github/workflows/fulcio-pin-check.yml now watches for drift. The key has
+# authority nowhere.
+#
+# It exists so update.test.ts runs the REAL verifier instead of a stub, which is
+# the point worth protecting: a stubbed verification is how fail-closed behaviour
+# rots without a single test going red.
+#
+# A PATH rule rather than a fingerprint, deliberately. This file regenerates
+# whenever the chain is rebuilt, and a fingerprint is pinned to a commit and a
+# line number, so it would go stale on the next rebuild and the finding would
+# come back unexplained.
+#
+# It WILL need regenerating when wego/foundations#134's tail removes the wego-ai
+# signing identities: the accept-path leaf's SAN names
+# https://github.com/wego/wego-ai/.github/workflows/release-cli.yml@refs/heads/main
+# today, so it matches nothing once those identities are gone. The negative
+# control needs the same treatment for a quieter reason, recorded on that issue.
+# ---------------------------------------------------------------------------
+
+[allowlist]
+description = "Generated Sigstore test fixtures: a throwaway P-256 chain for a throwaway root that nothing in production trusts. See the comment above and wego/foundations#141."
+paths = ['''^src/release-signing/testing/fixture\.ts$''']

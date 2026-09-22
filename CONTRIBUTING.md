@@ -77,23 +77,223 @@ ran your own code. If you would rather not use direnv, either go through
 `bun run dev --` every time, or `bun link` once. Either way, check `which wego`
 before you trust a result.
 
+### The hooks
+
+`bun install` installs Git hooks through [husky](https://typicode.github.io/husky).
+They are early feedback, not a gate: everything below also runs in `ci-cli`, over
+the whole tree, where it cannot be skipped.
+
+**On commit**, over your staged files only:
+
+| Checked | How |
+|---|---|
+| secrets | `gitleaks git --staged`, if gitleaks is installed |
+| lint & format | `biome check --staged` |
+| shell | `shellcheck`, when you stage a `.sh` file |
+| workflows | the workflow contract tests (~150ms), when you stage anything in `.github/` |
+| release contracts | the ring, plugin and tag tests (~47ms), when you stage `scripts/` or `plugin/` |
+| api contract | Check B and the drift-step shape tests (~25ms), when you stage `contract/` or the files those tests read |
+| response tolerance | the closed-value-set rule (~90ms), when you stage `src/api.ts` |
+| types | `bun run typecheck` (~0.3s warm), when you stage TypeScript **or `contract/`** |
+
+The typecheck covers `contract/` because a refresh commit stages
+`contract/openapi.json` alone, and Checks A and C are exactly what that commit
+needs to run.
+
+It also refuses two things outright: a commit on `main`, and a staged
+`src/api-types.d.ts`. That file is generated from `contract/openapi.json` and is
+not committed, so git already refuses a plain `git add` and only `git add -f`
+reaches the hook; the fix it names is `git restore --staged`, since regenerating
+would not unstage anything.
+
+**On the commit message**, `type(scope): subject`, checked by
+`scripts/commit-convention.ts`. Types are a closed set because release-please
+reads them; scopes only have to be lowercase kebab-case.
+
+**On pull and on branch switch**, `bun install --frozen-lockfile`, but only when
+`bun.lock` actually changed.
+
+The commit hooks report, they do not rewrite. When biome fails, run
+`bun run format` — which applies safe lint fixes and import order as well as
+formatting — then read the diff and stage it. A hook that wrote and re-staged for
+you would commit hunks you never staged out of a partially staged file.
+
+```bash
+git commit --no-verify             # skip the hooks for one commit
+HUSKY=0 bun install                # do not install hooks at all
+brew install gitleaks shellcheck   # the two optional scanners
+```
+
+`ci-cli` skips neither, so `--no-verify` moves the failure, it does not remove
+it. If you use a GUI Git client and a hook fails with `bun: command not found`,
+your client is not loading your shell's `PATH`; husky documents the fix.
+
+**One thing to know before you review someone else's branch.** Once hooks are
+installed, `core.hooksPath` applies to every worktree of this clone, and
+`.husky/*` are ordinary tracked files. So checking out an unreviewed branch runs
+*that branch's* `post-checkout` — before you have read a line of it — and, if its
+`bun.lock` differs, installs *its* dependencies. A pull request can change those
+files. Read `.husky/` and `bun.lock` in the diff on GitHub before you check the
+branch out, or check it out with `HUSKY=0 git checkout …` and read first.
+
+## Signed commits
+
+**Every commit that reaches `main` must carry a signature GitHub can verify.** A
+repository ruleset enforces it, and that ruleset has an empty bypass list — no
+maintainer, no administrator and no organisation owner can merge past it. Unsigned
+commits make the merge box say *"Commits must have verified signatures"*, and it
+stays that way until you fix it.
+
+This is not the release signing described in `docs/release.md`. That is
+[cosign](https://docs.sigstore.dev) signing the SHA256 manifest a release is built
+from, with a release-signing record naming the identity allowed to sign it. This is
+git binding one commit to a key GitHub can name.
+
+Be precise about what that buys, because it is easy to overstate: a signature
+proves who **committed**, not who wrote. Author and committer differ whenever one
+person rebases, amends or applies another's work, and it is the committer who
+signs — so what a signature records is who **vouched** for the change. That is
+exactly why it is worth having. Git's author field is free text: anyone can commit
+under your name and address, and nothing checks it. A signature is what turns that
+claim into something a person is accountable for.
+
+Setting it up is three steps, and **the third is the one people miss**.
+
+### 1. Tell git to sign
+
+**Requires Git 2.34 or later.** SSH signing did not exist before it; an older git
+accepts the configuration below and then quietly fails to sign. Check with
+`git --version` first.
+
+SSH signing reuses the key you already push with, so there is no GPG keyring to
+manage:
+
+```bash
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+git config --global commit.gpgsign true
+```
+
+Use your own public key's path if it differs. To scope this to one repository
+rather than your whole machine, drop `--global` and run it inside your checkout.
+
+### 2. Confirm git is actually signing
+
+Deliberately without `-S`, so this tests the configuration rather than bypassing
+it:
+
+```bash
+git commit --allow-empty -m "chore: signing check"
+git log --show-signature -1
+git reset --soft HEAD~1      # discard it; the commit was empty, so nothing is lost
+```
+
+### 3. Register the key with GitHub — as a *signing* key
+
+Go to [github.com/settings/ssh/new](https://github.com/settings/ssh/new), paste
+the contents of your `.pub` file, and **change the "Key type" dropdown to Signing
+Key**. It defaults to *Authentication Key*, and an authentication entry does
+nothing for signatures — even when it is the same key you already push with. A key
+GitHub knows for access is not a key GitHub will verify signatures against; it
+needs its own entry.
+
+Miss this and your commit is signed but reports `unknown_key`, which reads like a
+git problem and is not one.
+
+### Checking, and fixing what you already pushed
+
+```bash
+PR=123     # your pull request number
+gh api --paginate "repos/wego/cli/pulls/$PR/commits?per_page=100" --jq \
+  '.[] | "\(.sha[0:7])\t\(.commit.verification.verified)\t\(.commit.verification.reason)"'
+```
+
+`--paginate` is not decoration: `gh api` returns 30 commits per page by default, so
+a branch with more than 30 would hide an unsigned one behind the first page and the
+check would report success. The question here is *does any commit violate this*, and
+a single page cannot answer it.
+
+| `reason` | What it means | Fix |
+| --- | --- | --- |
+| `valid` | Nothing to do | — |
+| `unsigned` | git is not signing | Step 1 |
+| `unknown_key` | Signed, but GitHub does not know the key | Step 3 |
+
+**`unknown_key` needs no new commit.** GitHub verifies at read time, so registering
+the key retroactively verifies what is already pushed. Re-run the check above.
+
+`unsigned` does need the commits rewriting:
+
+```bash
+git rebase --exec 'git commit --amend --no-edit -S' origin/main
+git push --force-with-lease
+```
+
+Only on a branch you own — rewriting a branch someone else has checked out breaks
+their copy. The ruleset covers `main` only, so your feature branch takes a
+force-push without complaint.
+
 ## Before you open a pull request
 
 ```bash
-bun run lint         # Biome
-bun run format       # Biome, writes
+bun run check        # lint, typecheck and tests, in that order
+```
+
+Or one at a time:
+
+```bash
+bun run lint         # biome check: formatting, lint rules, import order
+bun run format       # the same, writing every safe fix
 bun run typecheck    # tsc --noEmit
 bun test             # unit tests
 ```
 
-All four must be clean. `ci-cli` runs the same checks and is a required check on
-`main`.
+All of it must be clean. `ci-cli` runs the same checks — plus gitleaks over every
+ref, shellcheck, `bun audit`, and a Conventional Commits check on your pull
+request **title** — and is a required check on `main`.
 
 One note on running tests locally: a few tests assert that an unreadable file
 fails closed, which cannot hold when the test runs as **root**, because root
 bypasses file permission checks. If you are in a container that runs as root you
 will see those fail locally while CI is green. Run as an unprivileged user to get
 a true result.
+
+## When the API changes
+
+The Wego API lives in another repository, so this one vendors its published
+contract at `contract/openapi.json`. `src/api-types.d.ts` is generated from that
+file on `bun install` and is not committed, so a fresh clone gets types that
+match the contract in the tree.
+
+When the API ships a change you need:
+
+```bash
+bun run api-contract:refresh   # fetch https://api.wego.com/openapi, print old and new version, regenerate the types
+bun run typecheck              # Checks A and C: the CLI parses what the API returns, and sends what it accepts
+bun test ./src/api-contract.test.ts   # Check B: the fields the CLI's behaviour reads are still published
+```
+
+The refresh regenerates `src/api-types.d.ts` for you, and only if the fetch
+succeeded. Without that, the types on disk would still be the ones `postinstall`
+built from the previous contract, and the typecheck below would check the wrong
+shapes.
+
+The commit hooks run the first two of those for you when you stage the contract
+(see [the hooks](#the-hooks) above), so the common mistakes surface before the
+push rather than in CI. Early feedback, not a gate.
+
+Commit the `contract/openapi.json` diff on its own, so the contract change is
+reviewable separately from whatever you do about it. Then fix what the checks
+report. If Check A, B or C fails, that is a finding about the API, not a check
+to loosen: say so in the pull request rather than widening a schema to make it
+go green.
+
+`ci-cli` runs a "Contract drift (warning only)" step that compares the committed
+contract against the live one and annotates the run when they differ. It is a
+reminder, not a gate: it never fails the job, and a pull request with the
+warning on it is still mergeable. The real check happens at release time, where
+the released CLI is exercised against the live API regardless of what this
+repository has vendored.
 
 ## Commit messages
 
@@ -118,7 +318,9 @@ what release-please actually reads.
 ## What happens next
 
 `main` requires a review from a code owner, so every change is reviewed before it
-merges. CI must be green.
+merges. CI must be green, and every commit must be signed — see
+[Signed commits](#signed-commits) if the merge box is asking for verified
+signatures.
 
 **We will do our best to respond, but we cannot promise when.** This repository
 is maintained by a team with its own roadmap and on-call load, and issues and

@@ -1,0 +1,20 @@
+# Keep node_modules honest after a pull.
+#
+# The failure this removes: someone lands a dependency change, you pull, and your
+# next run uses the tree you installed last week. It fails in a way that has
+# nothing to do with what you are working on, and `ci-cli` cannot reproduce it
+# because CI always installs from the lockfile it just checked out.
+#
+# `--frozen-lockfile` so this can only ever make your tree match `bun.lock`; it
+# will not write one.
+# `ORIG_HEAD` first: git writes it on every merge, so it holds even in a worktree
+# whose HEAD reflog is one entry deep - a fresh `git worktree add` whose first
+# operation is a pull. `HEAD@{1}` is the fallback for anything that merged without
+# writing ORIG_HEAD.
+previous=$(git rev-parse --verify --quiet ORIG_HEAD || git rev-parse --verify --quiet 'HEAD@{1}' || true)
+[ -n "$previous" ] || exit 0
+
+if git diff --name-only "$previous" HEAD 2>/dev/null | grep -q '^bun\.lock$'; then
+  echo 'husky: bun.lock changed in that merge - installing'
+  bun install --frozen-lockfile
+fi

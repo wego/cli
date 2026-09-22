@@ -1,0 +1,156 @@
+name: Release badge
+
+# Keep the GitHub "Latest" badge on the release that `cli/stable` serves.
+#
+# GitHub gives "Latest" to every new full release at creation. release-please
+# creates the release minutes before publication and days before a promote, so the
+# badge can name a build that `cli/stable` does not serve. On 2026-09-16 it named
+# v1.3.0 for 90 minutes while `cli/stable` served v1.2.7.
+#
+# Rule:
+#   the release `cli/stable` serves      full release, "Latest"
+#   every release created after it       prerelease
+#   older releases                        not changed
+#
+# This is a reconciler, not a step in each lane. The badge depends on one fact, and
+# one place evaluates it. It re-reads the ring on every run and does not trust the
+# event.
+#
+# Isolation. This workflow writes no ring: no `environment:`, no store token, no
+# `id-token`. A `workflow_run` conclusion does not propagate to the run that
+# triggered it, so this cannot block a release, a promote or a rollback. Its
+# concurrency group is its own. Do not move it to `ring-stable`. A failure here
+# leaves the badge stale, nothing more.
+#
+# `workflow_run` with `contents: write` is a privileged consumer. This job reads
+# nothing from the triggering run: no checkout, no artifact download, no
+# `github.event.*`. Keep it that way.
+on:
+  # A new release is created with "Latest".
+  release:
+    types: [published]
+
+  # `cli/stable` moved. There is no event for a pointer move, so the three lanes
+  # that move it are observed. `completed`, not `success`: a run can move the
+  # pointer and then fail (run 35108775349).
+  #
+  # Do not add a workflow that a fork can trigger (`ci-cli`, `fulcio-pin-check`).
+  # A rename of a lane breaks its trigger without an error; `workflow_dispatch`
+  # is the repair.
+  workflow_run:
+    workflows: ["Release (cli)", "Promote (cli)", "Rollback (cli)"]
+    types: [completed]
+
+  workflow_dispatch:
+
+# `contents: write` is the minimum for editing a release.
+permissions:
+  contents: write
+
+# Own group. Cancel is safe: each run re-reads the ring.
+concurrency:
+  group: release-badge
+  cancel-in-progress: true
+
+jobs:
+  reconcile:
+    name: Point "Latest" at what cli/stable serves
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const RING = "https://api.wego.com/install?dl=VERSION&ring=stable";
+            const { owner, repo } = context.repo;
+
+            // Fail closed. If the ring is unreadable or not a plain X.Y.Z, leave the
+            // badge as it is.
+            const readStable = async () => {
+              let res;
+              try {
+                res = await fetch(RING);
+              } catch (e) {
+                core.info(`ring unreachable (${e.message}) — leaving the badge alone.`);
+                return null;
+              }
+              if (!res.ok) {
+                core.info(`ring unreadable (HTTP ${res.status}) — leaving the badge alone.`);
+                return null;
+              }
+              const version = (await res.text()).trim();
+              if (!/^\d+\.\d+\.\d+$/.test(version)) {
+                core.warning(`cli/stable served '${version}', not a plain X.Y.Z — leaving the badge alone.`);
+                return null;
+              }
+              return version;
+            };
+
+            const reconcile = async (version) => {
+              const releases = await github.paginate(github.rest.repos.listReleases, {
+                owner, repo, per_page: 100,
+              });
+              const target = releases.find((r) => r.tag_name === `v${version}`);
+
+              // No target, no changes. wego-ai published `cli-vX.Y.Z` up to 1.1.0,
+              // so a rollback to one of those has no release in this repository.
+              if (!target) {
+                core.warning(
+                  `cli/stable serves ${version}, which has no v${version} release here — ` +
+                  `nothing changed. If this followed a rollback into the pre-relay ` +
+                  `cli-vX.Y.Z grammar, that is expected.`,
+                );
+                return;
+              }
+
+              // Demote first. A prerelease cannot be "Latest", so a cancelled run
+              // still leaves GitHub's fallback on a correct release.
+              let writes = 0;
+              for (const r of releases) {
+                if (r.draft || r.prerelease) continue;
+                if (new Date(r.created_at) <= new Date(target.created_at)) continue;
+                await github.rest.repos.updateRelease({
+                  owner, repo, release_id: r.id,
+                  prerelease: true, make_latest: "false",
+                });
+                core.info(`${r.tag_name}: marked pre-release — published after cli/stable's ${target.tag_name}.`);
+                writes++;
+              }
+
+              let latestTag = null;
+              try {
+                const { data } = await github.rest.repos.getLatestRelease({ owner, repo });
+                latestTag = data.tag_name;
+              } catch (e) {
+                // 404: no latest release. Possible after the demotions above.
+                if (e.status !== 404) throw e;
+              }
+
+              if (target.prerelease || latestTag !== target.tag_name) {
+                await github.rest.repos.updateRelease({
+                  owner, repo, release_id: target.id,
+                  prerelease: false, make_latest: "true",
+                });
+                core.info(`${target.tag_name}: now "Latest" — cli/stable serves ${version}.`);
+                writes++;
+              }
+
+              if (writes === 0) {
+                core.info(`Already correct: ${target.tag_name} is "Latest" and nothing newer is a full release.`);
+              }
+            };
+
+            const first = await readStable();
+            if (first === null) return;
+            await reconcile(first);
+
+            // Ring objects have `cacheControlMaxAge: 60`. A read taken as a promote
+            // completes can still return the previous VERSION, and the promote will
+            // not trigger this workflow again. Wait past the cache age and re-read.
+            // A stale read is only ever behind, never ahead.
+            await new Promise((resolve) => setTimeout(resolve, 65_000));
+            const second = await readStable();
+            if (second !== null && second !== first) {
+              core.info(`cli/stable moved ${first} -> ${second} while reconciling; applying again.`);
+              await reconcile(second);
+            }

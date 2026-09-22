@@ -49,7 +49,7 @@
  *     workflow -> "the signing call stays in the lane file".
  */
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 
 /**
  * The two lanes that sign. `promote-cli.yml` copies an already-signed record
@@ -66,6 +66,23 @@ const STORE_TOKEN = "BLOB_READ_WRITE_TOKEN";
 
 /** The composite action both lanes sign with; a local path, never a package. */
 const SIGN_ACTION = ".github/actions/sign-manifest";
+
+/**
+ * Does this `uses:` name an action inside THIS repository?
+ *
+ * Two spellings, and both are local. `./path` is relative to the workspace, so
+ * it needs a checkout first. `$/path` is the self repository reference: it
+ * resolves to this repository at the RUNNING COMMIT with no checkout, it may
+ * not carry an `@ref`, and GitHub now recommends it over `./` precisely because
+ * `./` resolves against whatever the caller happened to check out.
+ *
+ * The signing assertion below has to know both spellings. Knowing only `./`, it
+ * would reject a correct local call to `sign-manifest` the moment anyone adopts
+ * the recommended form - a failure that would not be true, on the one assertion
+ * that guards the release signer.
+ */
+const isLocalUses = (uses: string): boolean =>
+  uses.startsWith("./") || uses.startsWith("$/");
 
 interface Step {
   uses?: string;
@@ -179,6 +196,81 @@ describe.each(SIGNING_LANES)("%s: the signing identity", (file) => {
     const step = (wf.jobs[name as string]?.steps ?? []).find((s) =>
       (s.uses ?? "").includes(SIGN_ACTION),
     );
-    expect(step?.uses).toStartWith("./");
+    expect(step?.uses ?? "").toSatisfy(isLocalUses);
+  });
+});
+
+/**
+ * `bun install` runs this repository's `prepare` script, and `prepare` is husky:
+ * it points `core.hooksPath` at `.husky/_`. On a runner that is at best pointless
+ * and at worst load-bearing in the wrong direction - `release-please.yml`,
+ * `release-badge.yml` and the promote lane all commit, and a pre-commit hook
+ * firing inside a release job would fail a release over a file the lane did not
+ * write and cannot fix.
+ *
+ * `.github/actions/setup-bun` sets `HUSKY=0` for exactly that reason. The guard
+ * only holds while every install goes through the composite, and the next
+ * workflow to add a bare `bun install` would undo it silently, months later, in
+ * a lane nobody runs on a pull request.
+ *
+ * The mutation this kills: a `run: bun install` step added anywhere outside the
+ * composite action - in a workflow, or in one of the OTHER composite actions,
+ * which is the half a workflows-only scan misses.
+ */
+const INSTALL = /\bbun\s+install\b/;
+
+/** The one action allowed to install; it is the action that carries `HUSKY=0`. */
+const INSTALLER = "setup-bun";
+
+describe("every `bun install` goes through the composite action", () => {
+  const files = readdirSync(".github/workflows").filter((f) =>
+    /\.ya?ml$/.test(f),
+  );
+
+  /**
+   * Every composite action except the installer itself. Both spellings: GitHub
+   * accepts `action.yaml`, and a guard that only knows `action.yml` would skip
+   * the file it was added to watch, silently and green.
+   */
+  const actionFile = (dir: string): string | undefined =>
+    [
+      `.github/actions/${dir}/action.yml`,
+      `.github/actions/${dir}/action.yaml`,
+    ].find((path) => existsSync(path));
+
+  const actions = readdirSync(".github/actions").filter(
+    (d) => d !== INSTALLER && actionFile(d) !== undefined,
+  );
+
+  it("finds workflows and composite actions to check", () => {
+    expect(files.length).toBeGreaterThan(0);
+    expect(actions.length).toBeGreaterThan(0);
+  });
+
+  it.each(files)("%s runs no bare `bun install`", (file) => {
+    const wf = lane(file);
+    const installs = Object.values(wf.jobs ?? {})
+      .flatMap((job) => job.steps ?? [])
+      .map((step) => step.run ?? "")
+      .filter((run) => INSTALL.test(run));
+
+    expect(installs).toEqual([]);
+  });
+
+  it.each(actions)("the %s action runs no bare `bun install`", (dir) => {
+    const text = readFileSync(actionFile(dir) as string, "utf8");
+    const action = Bun.YAML.parse(text) as {
+      runs?: { steps?: { run?: string }[] };
+    };
+    const installs = (action.runs?.steps ?? [])
+      .map((step) => step.run ?? "")
+      .filter((run) => INSTALL.test(run));
+
+    expect(installs).toEqual([]);
+  });
+
+  it("keeps HUSKY=0 on the composite action's install step", () => {
+    const action = readFileSync(".github/actions/setup-bun/action.yml", "utf8");
+    expect(action).toContain("HUSKY: 0");
   });
 });

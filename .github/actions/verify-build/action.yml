@@ -1,56 +1,45 @@
 name: Verify this build before anything is published
 description: >-
-  The four checks that stand between a bad build and the store, run identically on
-  every platform the lane gates. Each of these was written twice — inline in
-  `release` for linux-x64 and again in `leave-macos` for darwin-arm64 — which is
-  how a second runner is reached, since two jobs cannot share steps. One definition
-  means the two legs cannot drift.
-
-  Every step here runs BEFORE publication. That is the whole point: a failure
-  prevents a bad build from reaching anyone, where the same check after the ring
-  advanced could only describe one — `cli/next` has no backward path.
+  The pre-publication checks for one platform. `release` runs them for
+  wego-linux-x64 and `leave-macos` runs them for wego-darwin-arm64. Every step
+  here runs before the first store write, so a failure costs a red run and
+  nothing else.
 
 inputs:
   asset:
-    description: The built binary for this platform, e.g. wego-linux-x64.
+    description: The built binary for this platform, for example wego-linux-x64.
     required: true
   version:
-    description: The version this run is publishing.
+    description: The version this run publishes.
     required: true
 
 runs:
   using: composite
   steps:
+    # The binaries arrived over an artifact hop. Check them against the manifest
+    # before anything runs them. The macOS image has no coreutils; `shasum -a 256`
+    # reads the same format.
     - name: Verify the binaries against the signed manifest
       shell: bash
       run: |
         set -euo pipefail
         cd dist
-        # One helper for both runners: linux has coreutils, the macOS image
-        # does not. The formats are identical.
         if command -v sha256sum >/dev/null 2>&1; then
           sha256sum -c SHA256SUMS.txt
         else
           shasum -a 256 -c SHA256SUMS.txt
         fi
 
-    # SMOKE 1 — the built binaries actually run and carry the right baked
-    # version + complete baked public config (linux-x64 runs natively on the
-    # runner). `logout` loads config without making a network request, so it
-    # catches a missed/misspelled static WEGO_BUILD_* read before publication.
+    # The binary runs and reports the baked version. `logout` loads the baked
+    # config without a network request, so a missing WEGO_BUILD_* read fails here.
+    # WEGO_CLI_NO_UPDATE_NOTICE keeps the step off the network.
     - name: Smoke test built binaries
       env:
         VERSION: ${{ inputs.version }}
-        # These binaries are newer than the channel they'd read, so the
-        # new-version notice would stay quiet on its own — but relying on that
-        # makes a comparison rule load-bearing for CI. Switch it off outright so
-        # this step never depends on it, and never reaches the network.
         WEGO_CLI_NO_UPDATE_NOTICE: "1"
       shell: bash
       run: |
         set -euo pipefail
-        # One binary, one name (#74 rung 7): a second name here would mean a
-        # second build.
         binary="./dist/${{ inputs.asset }}"
         chmod +x "$binary"
         got=$("$binary" version)
@@ -58,34 +47,18 @@ runs:
         [ "$got" = "$VERSION" ] || { echo "version mismatch: expected $VERSION, got $got" >&2; exit 1; }
         WEGO_CREDENTIALS_PATH="${RUNNER_TEMP}/wego-missing-credentials.json" "$binary" logout
 
-    # THE EARLIEST POSSIBLE GATE ON THE v1.2.0 CLASS OF BUG, and deliberately
-    # placed before the FIRST store write of the run.
+    # apps/api serves any `ring=stable` request with a `Bun/` user agent from the
+    # frozen `cli/cli-v1.1.0/` prefix (wego/foundations#132). A build that sends no
+    # agent of its own is treated as a 1.0.x install, is pinned to that prefix, and
+    # can never update again. v1.2.0 shipped that way (wego/cli#25).
     #
-    # `apps/api`'s legacy bridge pin (wego/foundations#132) keys on one thing: a
-    # `?dl=` request for ring `stable` whose user agent starts with `Bun/` is a
-    # pre-relay 1.0.x install and is answered from the frozen `cli/cli-v1.1.0/`
-    # bridge. The rule is ALLOW-BY-DEFAULT, so a build that fails to identify
-    # itself is treated as legacy - and v1.2.0 shipped exactly that way, having
-    # passed every check this lane had (wego/cli#25).
+    # Record the agent with a loopback listener, then ask the real route what it
+    # does with that agent. This needs no ring, so it runs before publication.
+    # `promote-cli.yml` repeats the same check before `cli/stable` moves.
     #
-    # The same measurement runs in `promote-cli.yml` before `cli/stable` moves.
-    # It is repeated HERE because that was far too late: by then the bad bytes
-    # are the immutable `cli/<tag>/` artifact, `cli/next` is serving them, a
-    # GitHub Release names them, and the only remedy is another release. Asked
-    # at this point, a failure costs a red run and nothing else - no prefix is
-    # written, no pointer moves, no version is burned.
-    #
-    # NEEDS NO RING, which is what makes the early placement possible: the pin's
-    # only input is the agent, and the agent is a property of the binary sitting
-    # in ./dist. The update-outcome smokes further down genuinely cannot move
-    # up - they ask whether a binary can complete an update against `cli/next`,
-    # which cannot be answered until `cli/next` serves ${{ inputs.asset }}.
-    #
-    # WEGO_BUILD_VERSION IS DELIBERATELY NOT SET. `update` returns EXIT.OK
-    # without acting for a dev-versioned binary (update.ts:364), so setting it
-    # here would paper over a build that failed to bake its version and leave
-    # the guard below asserting nothing. The step above has already proved
-    # `wego version` reports $VERSION on its own.
+    # WEGO_BUILD_VERSION is not set. `update` exits 0 without a request for a
+    # dev-versioned binary, so setting it here would hide a build that did not bake
+    # its version.
     - name: Require ${{ inputs.asset }} to be distinguishable from a pre-relay install
       env:
         VERSION: ${{ inputs.version }}
@@ -96,20 +69,15 @@ runs:
         work="$RUNNER_TEMP/agent-probe"; rm -rf "$work"
         mkdir -p "$work/bin" "$work/home/.config/wego"
 
-        # THE BINARY MUST BE NAMED `wego`: the config directory is derived from
-        # the name it is invoked as, so `${{ inputs.asset }}` would look for
-        # `.config/${{ inputs.asset }}/`, find no install record, and exit without
-        # touching the network - a green check that measured nothing.
+        # The binary must be named `wego`. The config directory follows the
+        # invoked name, and a binary named `wego-linux-x64` would find no install
+        # record and make no request.
         cp ./dist/${{ inputs.asset }} "$work/bin/wego"
         chmod +x "$work/bin/wego"
 
-        # A listener that records the agent and 404s. The 404 is fine: the agent
-        # goes out on the FIRST request, which is all this needs.
-        #
-        # `bun -e`, not a heredoc: a heredoc body inside a YAML block scalar
-        # carries the block's indentation into the file and has to be stripped
-        # back out, which is a silent breakage waiting to happen in a lane
-        # nothing lints.
+        # A listener that records the agent and answers 404. The agent is sent on
+        # the first request, which is all this needs. `bun -e`, not a heredoc: a
+        # heredoc inside a YAML block scalar carries the indentation.
         : > "$work/agent.txt"
         AGENT_FILE="$work/agent.txt" bun -e 'const out=Bun.file(process.env.AGENT_FILE).writer();Bun.serve({hostname:"127.0.0.1",port:8977,fetch(r){out.write((r.headers.get("user-agent")??"")+"\n");out.flush();return new Response("probe",{status:404});}});' &
         LPID=$!
@@ -135,13 +103,13 @@ runs:
         fi
         echo "$VERSION's binary sends: $agent"
 
-        # The pin's own predicate, applied to the measured value.
+        # The pin's own predicate.
         if printf '%s' "$agent" | grep -qiE '^bun/'; then
           echo "::error::${{ inputs.asset }} sends '$agent', which apps/api's legacy bridge pin treats as a pre-relay 1.0.x install. Every install of ${{ inputs.asset }} would be pinned to the frozen bridge, whose record it cannot verify - it could never update again. That is what v1.2.0 shipped (wego/cli#25). Refusing before anything is published."
           exit 1
         fi
 
-        # And the real route's actual decision, which is the claim that matters.
+        # The real route's decision for this agent.
         loc=$(curl -sI -A "$agent" "$url?dl=SHA256SUMS.txt&ring=stable" \
                 | grep -i '^location:' || true)
         if printf '%s' "$loc" | grep -q '/cli/cli-v1.1.0/'; then
@@ -150,54 +118,18 @@ runs:
         fi
         echo "ok: ${{ inputs.asset }} is not claimed by the pin. $loc"
 
-    # Publish to the IMMUTABLE cli/<tag>/ ONLY (--freeze). cli/next is NOT
-    # moved here — it advances only after SMOKE-2 verifies these exact bytes,
-    # so a transport-corrupted upload can never become the served candidate.
-    # REQUIRE_PUBLISH makes a deliberate release FAIL if the token is missing
-    # (no silent "green but published nothing"); the tag-push path keeps the
-    # graceful pre-go-live skip.
+    # The anti-brick gate. A build that cannot `wego update` cannot take a rollback
+    # either; the only exit is a manual reinstall. So the new binary must perform a
+    # real self-replace before anything is published.
     #
-    # Every release requires it: a run that quietly published nothing would report
-    # green while `cli/next` still served the previous build, and the promote that
-    # followed would move `cli/stable` onto bytes nobody meant to ship.
+    # Target: `cli/stable`, which serves the outgoing release and which this lane
+    # never moves. `update` compares checksums, not versions, so a downgrade takes
+    # the same code path as an upgrade: fetch, gunzip, checksum, atomic rename.
+    # SMOKE 4 in `verify-replace` stops at "already up to date" and never reaches
+    # the replace; this step does.
     #
-    # No guard here against two runs colliding on one tag, and none is needed: a tag
-    # names the commit whoever created it chose, and both entrypoints arrive with it
-    # already created. The immutable prefix protects itself regardless of who writes
-    # it - `putImmutableAssets` puts with `allowOverwrite: false`, and the
-    # THE ANTI-BRICK GATE: this binary must be able to LEAVE, proven by making
-    # it actually leave. Nothing has been published and no pointer has moved.
-    #
-    # THE FAILURE IT EXISTS FOR IS THE WORST ONE THIS PROJECT HAS. A build that
-    # cannot `wego update` bricks every machine that takes it, and a rollback
-    # does not rescue them: they already hold the broken binary, and a binary
-    # that cannot update cannot take the rollback either. Reinstall by hand is
-    # the only exit. v1.2.0 shipped exactly this (wego/cli#25).
-    #
-    # SMOKE 4 BELOW ALREADY ASKS THE QUESTION AND ACCEPTS A WEAKER ANSWER. It
-    # runs this binary against `cli/next`, which by then serves these very bytes,
-    # so the correct outcome is "already up to date" - and that is precisely
-    # where `update` STOPS. The hashes match, so it never downloads, never
-    # gunzips, never verifies a payload, never renames anything over itself. The
-    # request path is covered; the REPLACE path ships unexercised. v1.2.0's bug
-    # happened to be in the request, which is why that check was enough once and
-    # is not enough in general.
-    #
-    # SO THIS ONE MAKES IT DO THE WHOLE THING. Pointed at `cli/stable` - which
-    # still serves the OUTGOING release and which this lane never touches - the
-    # new binary must fetch, decompress, checksum and atomically replace itself
-    # in place. Downgrading is not a strange thing to ask of it: `update`
-    # compares CHECKSUMS, not versions, so this is byte-for-byte the code path a
-    # user's upgrade takes.
-    #
-    # IT NEEDS NOTHING PUBLISHED, which is why it sits here rather than after
-    # the publish: the binary is in `dist/` and `cli/stable` is already live. A
-    # failure costs a re-run and nobody outside this job has seen the build.
-    #
-    # COVERS linux-x64 ONLY, and for THIS direction that limit bites: the code
-    # doing the work is the NEW code, freshly compiled per platform, and macOS
-    # has a branch nothing here executes (the quarantine clear). See the release
-    # notes/README before widening - a macos-latest leg would close it.
+    # Refused when `cli/stable` is empty, or already serves this version: no byte
+    # swap would happen and the step would prove nothing.
     - name: Require ${{ inputs.asset }} to be able to update itself for real
       env:
         VERSION: ${{ inputs.version }}
@@ -207,9 +139,7 @@ runs:
         bin=./dist/${{ inputs.asset }}
         chmod +x "$bin"
 
-        # A dev-versioned binary makes `update` return OK without acting, so a
-        # gate handed one would go green having tested nothing. Assert the build
-        # baked its version rather than hoping it did.
+        # A dev-versioned binary makes `update` exit 0 without acting.
         got=$("$bin" version)
         if [ "$got" != "$VERSION" ]; then
           echo "::error::./dist/${{ inputs.asset }} reports '$got', not '$VERSION'. It was built without WEGO_BUILD_VERSION baked, so 'wego update' would exit OK without doing anything and this gate would prove nothing."

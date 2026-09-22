@@ -1,0 +1,148 @@
+# Early feedback, not a gate. `git commit --no-verify` skips every line of this,
+# `HUSKY=0` turns it off entirely, and a clone that has not run `bun install` never
+# had it. `ci-cli` is the gate, and it runs the same checks over the whole tree.
+#
+# So nothing here is load-bearing for `main`. Each stanza is only the cheapest
+# place to find a particular mistake. The order is by cost: the instant refusals
+# first, then the staged-file scans, then the targeted tests, with the one stanza
+# that costs whole seconds last.
+#
+# Husky runs this under `sh -e`, so any failing command ends the commit.
+#
+# Measured on this repository: 0.18s for a docs-only commit, 0.28s when a workflow
+# is staged, 0.57s when TypeScript is staged, 0.91s for a commit that trips every
+# stanza at once.
+
+staged() {
+  git diff --cached --name-only --diff-filter=ACM -- "$@"
+}
+
+# --- instant ---------------------------------------------------------------
+
+# The ruleset refuses the push anyway. This just saves you the rewind.
+branch=$(git symbolic-ref --short HEAD 2>/dev/null || true)
+if [ "$branch" = "main" ]; then
+  echo 'husky: this is main. Branch first - git switch -c <name>' >&2
+  exit 1
+fi
+
+# src/api-types.d.ts is generated from contract/openapi.json by
+# scripts/generate-api-types.ts, and is NOT committed - .gitignore carries it and
+# postinstall rebuilds it. So git already refuses a plain `git add`, and only
+# `git add -f` reaches this line.
+#
+# Which is why the advice is `git restore`, not `api-types:generate`. Regenerating
+# does not unstage anything: told to regenerate, you would run it, stage the
+# result, trip this again, and never learn that the file does not belong in a
+# commit at all.
+if [ -n "$(staged src/api-types.d.ts)" ]; then
+  echo 'husky: src/api-types.d.ts is generated and not committed - run: git restore --staged src/api-types.d.ts' >&2
+  exit 1
+fi
+
+# --- staged-file scans -----------------------------------------------------
+
+# The only check here whose value depends on running BEFORE the object exists.
+# CI and CodeRabbit both scan for secrets, but by the time either speaks the
+# commit is on GitHub and the key needs rotating, not fixing. Reads
+# .gitleaks.toml and the .gitleaksignore baseline from the repository root.
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --staged --redact --no-banner
+else
+  echo 'husky: gitleaks not installed, staged secret scan skipped (brew install gitleaks)' >&2
+fi
+
+# Formatter, lint rules and import order, from biome.jsonc. Reports, never writes:
+# a hook that rewrote a partially staged file would commit hunks you never staged.
+# When it fails, run `bun run format`, read the diff, stage it.
+bun run lint:staged
+
+# The four shell scripts drive real installs and updates on machines that are not
+# yours. CodeRabbit runs shellcheck too, after the push.
+#
+# Null-delimited, like the ci-cli step: a filename with a space in it would
+# otherwise arrive at shellcheck as two arguments, and the file it named would go
+# unchecked while the hook still passed.
+if [ -n "$(staged '*.sh')" ]; then
+  if command -v shellcheck >/dev/null 2>&1; then
+    git diff --cached --name-only --diff-filter=ACM -z -- '*.sh' | xargs -0 shellcheck --severity=warning
+  else
+    echo 'husky: shellcheck not installed, shell scripts unchecked (brew install shellcheck)' >&2
+  fi
+fi
+
+# --- targeted tests --------------------------------------------------------
+
+# 60 tests, ~135ms, over the workflow files. These read YAML and assert lane
+# properties; they are the slowest thing in this repository to learn from CI,
+# because a broken release lane reports when the release runs.
+if [ -n "$(staged .github)" ]; then
+  if command -v zizmor >/dev/null 2>&1; then
+    zizmor .github/workflows
+  fi
+  bun --env-file=.env.local.example test \
+    scripts/workflow-shape.test.ts \
+    scripts/workflow-lanes.test.ts \
+    scripts/workflow-contexts.test.ts
+fi
+
+# 126 tests, ~40ms: the release, ring, plugin, tag and commit-message contracts.
+# Pure file reading, no network, no subprocesses - which is why these are worth
+# running here and the other 12 test files in scripts/ (9.3s together) are not.
+if [ -n "$(staged scripts plugin)" ]; then
+  bun --env-file=.env.local.example test \
+    scripts/plugin-conformance.test.ts \
+    scripts/release-config.test.ts \
+    scripts/ring-rules.test.ts \
+    scripts/release-platform-coverage.test.ts \
+    scripts/validate-release-tag.test.ts \
+    scripts/commit-convention.test.ts
+fi
+
+# 25 tests, ~25ms: Check B (every dotted path the CLI's behaviour reads is still
+# published by the vendored contract) and the shape of the contract wiring - that
+# the drift step cannot veto a merge, that the refresh only ever fetches
+# production, that the generated types stay out of git.
+#
+# Same admission test as the stanza above: pure file reading, no network, no
+# subprocesses. The paths are listed rather than globbed because that IS the
+# dependency set - between them these two tests read the contract, the workflow,
+# package.json, biome.jsonc, .gitignore and the two contract scripts, and a
+# change to any of those can break one without touching a line of TypeScript.
+if [ -n "$(staged contract .gitignore biome.jsonc package.json \
+  src/api-contract.ts src/api-contract.test.ts \
+  scripts/generate-api-types.ts scripts/refresh-api-contract.ts \
+  scripts/ci-contract-drift.test.ts .github/workflows/ci-cli.yml)" ]; then
+  bun --env-file=.env.local.example test \
+    src/api-contract.test.ts \
+    scripts/ci-contract-drift.test.ts
+fi
+
+# 3 tests, ~90ms: an AST walk over api.ts asserting no response schema closes a
+# value set. This is the one rule in the repository whose breach cannot be fixed
+# after release - a `z.enum` that the API later outgrows makes every installed
+# binary reject whole responses - so it is worth catching while the line is still
+# being typed, which is here.
+#
+# Costlier than the other targeted stanzas because it parses a 63k-line file, and
+# still an order of magnitude under the typecheck below.
+if [ -n "$(staged src/api.ts src/api-tolerance.test.ts)" ]; then
+  bun --env-file=.env.local.example test src/api-tolerance.test.ts
+fi
+
+# --- the expensive one -----------------------------------------------------
+
+# ~0.32s warm, and the most common `ci-cli` failure after lint. tsc is whole-program,
+# so there is no staged-only version of it: it runs when any TypeScript is staged.
+#
+# `contract` is in the condition for a case that stages no TypeScript at all. A
+# refresh commit is `contract/openapi.json` alone - CONTRIBUTING says to commit
+# that diff on its own, and the regenerated src/api-types.d.ts is gitignored, so
+# it is never staged beside it. Yet that commit is precisely the one Checks A and
+# C exist for: they are compile-time comparisons in src/api-contract.ts against
+# the types the refresh just regenerated, and this is the only local check that
+# compiles against them. Without `contract` here, the commit that changes what
+# the CLI is checked against is the one commit that never checks it.
+if [ -n "$(staged '*.ts' contract)" ]; then
+  bun run typecheck
+fi

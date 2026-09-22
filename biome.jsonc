@@ -7,6 +7,10 @@
   },
   "files": {
     "ignoreUnknown": true,
+    // `src/api-types.d.ts` is generated from `contract/openapi.json` by
+    // `api-types:generate` and is not committed. The vendored contract itself
+    // IS formatted here like everything else - `api-contract:refresh` runs
+    // biome over it after writing, so a refresh never leaves this red.
     "includes": ["**", "!node_modules", "!dist", "!src/api-types.d.ts"]
   },
   "formatter": {

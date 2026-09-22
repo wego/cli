@@ -1,0 +1,28 @@
+# Findings reviewed 2026-09-18 against the full history: 82 commits, every ref,
+# all eleven tags. Record: wego/foundations#141
+#
+# All four below are ONE literal, repeated. gitleaks reports entropy 4.252975 for
+# each of them, identical to six decimal places, and they appear only in *.test.ts
+# files, assigned to POSTHOG_KEY, KEY, key and WEGO_CLI_POSTHOG_PROJECT_KEY. It is
+# the PostHog project key the tests use.
+#
+# Low stakes either way: a PostHog PROJECT key is write-only by design and already
+# ships inside every published binary, so it is public whatever happens here. The
+# readiness audit records that as decision I4. scripts/release-config.ts refuses
+# anything that is not a write-only phc_ key, so a private key cannot reach this
+# path by accident.
+#
+# One thing left for whoever next touches this file: confirm in a single look
+# whether the literal is the real phc_ key or a placeholder, and write which it is
+# right here. It changes nothing about the risk. It saves the next reader from
+# deriving it again.
+#
+# A fingerprint is commit:file:rule:line, so it is exact and stable for history.
+# A NEW commit touching the same line mints a new fingerprint, which is correct
+# for these four: they are in the past and will not move. For a file that
+# regenerates, use a path rule in .gitleaks.toml instead.
+
+7003b7e6964ff98061cc35125ec16ce1fd8058ee:scripts/release-config.test.ts:generic-api-key:12
+9d5b765697b80996de29dbda98b79cf6f523988f:src/target.test.ts:generic-api-key:55
+fc10a10448f199ee23dbcd665adec95d97b7f295:scripts/release-config.test.ts:generic-api-key:117
+fc10a10448f199ee23dbcd665adec95d97b7f295:scripts/release-config.test.ts:generic-api-key:133

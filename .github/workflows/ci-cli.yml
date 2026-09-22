@@ -1,14 +1,12 @@
 name: ci-cli
 
-# Lint/format + typecheck + unit tests. Everything in this repository is the CLI,
-# so there is no path filter and no aggregator job: in wego-ai this workflow
-# carried both because a change to another app had to skip the work while still
-# reporting a required check. One package, one job - and that job IS the required
-# status check on `main`, which is why it is named `ci-cli` and why the name must
-# not change without a ruleset edit.
+# Lint, typecheck and unit tests. Runs on every pull request and every push to main.
 #
-# No signing here. Signing belongs to the release lanes, which hold the identity
-# and the store token; CI runs on every pull request and holds neither.
+# The job name `ci-cli` is the required status check on `main`. Do not rename it
+# without a ruleset change. There is no path filter: a filtered workflow does not
+# report, and a required check that does not report blocks the pull request.
+#
+# This workflow does not sign. Only the release lanes sign.
 on:
   push:
     branches: [main]
@@ -31,21 +29,166 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Read-only job (no git push / auth) - don't persist the token in
-          # .git/config (artipacked hardening; flagged by zizmor).
+          # Read-only job. Do not keep the token in .git/config.
           persist-credentials: false
+          # Full history, for the gitleaks step below. It scans every ref, which is
+          # what the .gitleaksignore fingerprints (commit:file:rule:line) are keyed
+          # to; a shallow clone would scan one commit and silently pass.
+          fetch-depth: 0
 
-      # Composite action: setup-bun + restore cache + frozen install (+ save on main).
       - uses: ./.github/actions/setup-bun
+
+      # The pull request TITLE is the release contract, not the commit messages:
+      # pull requests here are squashed, the squash subject comes from the title,
+      # and release-please reads that subject to compute the next version. A
+      # mistyped type produces no release at all, silently.
+      #
+      # `.husky/commit-msg` runs the same file locally, but cannot see the title -
+      # it is edited here, after every local hook. This step is where it is enforced.
+      #
+      # The title goes through the environment, never into the `run:` string. It is
+      # attacker-controlled text on a public repository.
+      # Bots are skipped, not trusted: `.github/dependabot.yml` now sets
+      # `commit-message.prefix: chore` with `include: scope`, so Dependabot
+      # titles arrive as `chore(deps): ...` rather than the unconfigured
+      # `Bump <dep> from <a> to <b>` this gate rejects. The skip stays anyway,
+      # on its own second reason: gating a bot's title would fail the required
+      # check on a pull request no human can retitle. release-please already
+      # titles its own `chore(cli): release X.Y.Z`, so nothing is lost.
+      - name: Pull request title is a Conventional Commit
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.type != 'Bot'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: bun run scripts/commit-convention.ts --title "$PR_TITLE"
 
       - name: Lint & format check (biome check)
         run: bun run lint
 
+      # Belt and braces over `postinstall`. `src/api-types.d.ts` is generated from
+      # `contract/openapi.json` and is not committed, so Checks A and C have
+      # nothing to compare against until it exists. `postinstall` already writes
+      # it during `bun install`; running it explicitly means a cache hit, a
+      # changed install flag or a future `--ignore-scripts` cannot quietly turn
+      # the two compile-time checks into a no-op.
+      - name: Generate API types from the vendored contract
+        run: bun run api-types:generate
+
       - name: Typecheck
         run: bun run typecheck
 
-      # Hermetic and network-free: every test runs against injected deps or a
-      # temp dir. The three suites that needed the real `apps/api` in the same
-      # tree stayed in wego-ai.
+      # The tests use no network. Each test runs against injected dependencies or a
+      # temporary directory.
       - name: Unit tests
         run: bun run test
+
+      # The CLI vendors the API's contract at `contract/openapi.json`, because the
+      # API lives in another repository and there is no path to read it from. A
+      # vendored file goes stale silently, so this step says so out loud.
+      #
+      # WARNING ONLY, BY DESIGN. `ci-cli` is the required check on `main`, and the
+      # API deploys on its own cadence: a gate here would block every CLI pull
+      # request opened after an unrelated API release, for a contract the author
+      # never touched. The reminder belongs to whoever reads it, not to the merge
+      # button. A separate release-time check exercises the released CLI against
+      # the live API, and that is what actually catches a break.
+      #
+      # `servers` is dropped from both sides before the comparison: it names the
+      # host the document was served from, which is not drift.
+      #
+      # Both `continue-on-error` and an explicit `exit 0` on every path, under
+      # an explicit `set +e`. Either alone is enough; the pair is what stops a
+      # later edit from turning a reminder into a veto by accident.
+      # `scripts/ci-contract-drift.test.ts` asserts it.
+      - name: Contract drift (warning only)
+        continue-on-error: true
+        run: |
+          # GitHub's default shell is `bash -e`, which would abort on any
+          # unguarded failure below and hand the job a non-zero status before
+          # the trailing `exit 0` ever ran. Turn it off here, in the script,
+          # rather than relying on a `shell:` override staying put.
+          set +e
+          live="$RUNNER_TEMP/openapi-live.json"
+          if ! curl -sS --retry 3 --max-time 20 -o "$live" https://api.wego.com/openapi; then
+            echo "::notice::contract drift not checked: could not fetch https://api.wego.com/openapi"
+            exit 0
+          fi
+          if ! jq -e 'type == "object" and has("openapi") and has("paths") and (.info.version | type == "string")' "$live" >/dev/null 2>&1; then
+            echo "::notice::contract drift not checked: the fetched body is not a contract document"
+            exit 0
+          fi
+          committed_version="$(jq -r '.info.version' contract/openapi.json)"
+          live_version="$(jq -r '.info.version' "$live")"
+          jq -S 'del(.servers)' contract/openapi.json > "$RUNNER_TEMP/committed.norm.json"
+          jq -S 'del(.servers)' "$live" > "$RUNNER_TEMP/live.norm.json"
+          if [ "$committed_version" = "$live_version" ] && cmp -s "$RUNNER_TEMP/committed.norm.json" "$RUNNER_TEMP/live.norm.json"; then
+            echo "contract $committed_version matches the published document"
+            exit 0
+          fi
+          echo "::warning::contract $committed_version committed, $live_version live; run bun run api-contract:refresh and commit the diff"
+          diff -u "$RUNNER_TEMP/committed.norm.json" "$RUNNER_TEMP/live.norm.json" | head -200 || true
+          exit 0
+
+      # `scripts/` carries four shell scripts that drive real installs and updates on
+      # other people's machines, and `.husky/` now carries the hooks. CodeRabbit runs
+      # shellcheck too, but as a review comment on a pull request that can still be
+      # merged. Here it blocks. shellcheck ships on the runner image, so there is
+      # nothing to install and nothing to pin.
+      #
+      # The hooks have no extension and no shebang - husky supplies `sh -e` - so the
+      # shell has to be named.
+      #
+      # `--severity=warning` because the runner image's shellcheck is older than a
+      # current local one and reports `info` notes it does not: the first run of this
+      # step failed on three SC2015 notes in `install-smoke.sh`, `update-smoke.sh` and
+      # `upgrade-path.sh` that shellcheck 0.11 does not raise at all. A gate whose
+      # verdict depends on which shellcheck you happen to have is not a gate. Warnings
+      # and errors are real defects and still block; `info` and `style` notes are
+      # CodeRabbit's to raise on the pull request.
+      - name: Shell scripts (shellcheck)
+        run: |
+          shellcheck --severity=warning scripts/*.sh
+          find .husky -maxdepth 1 -type f -print0 | xargs -0 shellcheck --severity=warning --shell=sh
+
+      # `.husky/pre-commit` scans staged changes before a commit exists, which is the
+      # only moment a secret can still be un-leaked. This is the other half: whatever
+      # arrived without the hook - `--no-verify`, a clone that never ran `bun install`,
+      # a commit authored in the GitHub UI - is caught here, and blocks.
+      #
+      # Scans every ref, the same way .gitleaks.toml documents, because the
+      # .gitleaksignore baseline from #73 is keyed to commit:file:rule:line and only
+      # matches a history scan. Both config files are picked up from the repository
+      # root automatically.
+      #
+      # The binary is pinned by version AND by checksum: an unpinned download is a
+      # supply-chain hole in the job that is supposed to be closing one. The digest
+      # below is the one gitleaks publishes for that asset, taken from
+      # https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
+      # - re-take it from the same file when the version moves.
+      - name: Scan every ref for secrets (gitleaks)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --log-opts=--all --redact --no-banner .
+
+      # GitHub's dependency graph does not resolve `bun.lock`. The SBOM for this
+      # repository lists 16 packages - the manifest plus the pinned Actions - where
+      # `bun.lock` resolves 100, so Dependabot's 0 open alerts describe under a tenth
+      # of what installs, not a clean tree. `bun audit` reads the lockfile, and is the
+      # only control in this repository that sees the other 91.
+      #
+      # No `|| true`, no `continue-on-error`: `ci-cli` is the required check on `main`
+      # and has no path filter, so a finding blocks the merge by design, and a job that
+      # goes green while reporting findings is filtered out of everyone's notifications
+      # inside a fortnight. Running on push to `main` as well as on pull requests
+      # re-audits the whole tree on every merge, which is what stands in for a scheduled
+      # scan. `edge-cli.yml` is deliberately left alone: it fires on the same push event,
+      # so it would audit the same commit concurrently.
+      - name: Audit the installed dependency tree (bun.lock)
+        run: bun audit --audit-level=high

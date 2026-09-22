@@ -36,7 +36,8 @@ import type {
 /**
  * The compile-time half of the api↔cli contract chain (#1300 links 5 and 7).
  *
- * `api-types.d.ts` is generated from `apps/api/contract/openapi.json`, so this
+ * `api-types.d.ts` is generated from `contract/openapi.json`, the vendored copy
+ * of the API's published document, so this
  * file compares the API's **published** shapes against the CLI's **own** Zod
  * output types. Both sides are derived: the API side from the committed
  * contract, the CLI side from `z.infer`. Nothing here is a hand-written list of
@@ -98,7 +99,7 @@ import type {
 type ApiParses<O extends Op, S extends keyof Responses<O>, Cli> = [
   Body<O, S>,
 ] extends [never]
-  ? `Check A: ${O} ${S & (string | number)} – the published body resolved to never, so this assertion proves nothing. The operation or status no longer exists in apps/api/contract/openapi.json.`
+  ? `Check A: ${O} ${S & (string | number)} – the published body resolved to never, so this assertion proves nothing. The operation or status no longer exists in contract/openapi.json.`
   : [Body<O, S>] extends [Cli]
     ? true
     : `Check A: ${O} ${S & (string | number)} – the API can return a body the CLI's zod schema does not parse. The CLI is a tolerant reader, so the fix is normally to widen the schema in api.ts; if instead the API dropped a field the CLI needs, that is the bug.`;
@@ -306,7 +307,7 @@ export const CONTRACT_COVERAGE: Record<
   "checked" | "not-called-by-the-cli"
 > = {
   // The uptime probe. Nothing in the CLI reads `/health`; the post-deploy
-  // verifier in apps/api does.
+  // verifier on the API side does.
   getHealth: "not-called-by-the-cli",
   getCurrentUser: "checked",
   getPlaces: "checked",

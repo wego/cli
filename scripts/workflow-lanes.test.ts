@@ -22,7 +22,7 @@
  * `with` — so the parsed object is the right surface to assert against.
  */
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 const workflow = (file: string): unknown =>
   Bun.YAML.parse(readFileSync(`.github/workflows/${file}`, "utf8"));
@@ -119,4 +119,371 @@ describe("the two lanes serialise against each other", () => {
       expect(groups).toContain("ring-stable");
     }
   });
+});
+
+interface Job {
+  needs?: string | string[];
+  steps?: { run?: string; env?: Record<string, unknown> }[];
+}
+
+/**
+ * The step/job keys that can change WHETHER or HOW the gate runs, as opposed to
+ * what it checks. Asserted absent on the approve job and every one of its steps.
+ */
+const OVERRIDES: string[] = [
+  "continue-on-error",
+  "if",
+  "shell",
+  "working-directory",
+];
+
+const needsOf = (job: Job | undefined): string[] =>
+  job?.needs === undefined ? [] : [job.needs].flat();
+
+/**
+ * Every job reachable from this one through `needs`. Depth-first with a seen-set:
+ * GitHub rejects a cycle, but this parses YAML that GitHub has not necessarily
+ * accepted yet, and a cycle here would otherwise hang the suite.
+ */
+const ancestryOf = (start: string, jobs: Record<string, Job>): string[] => {
+  const seen = new Set<string>();
+  const stack = needsOf(jobs[start]);
+  while (stack.length > 0) {
+    const next = stack.pop() as string;
+    if (seen.has(next)) continue;
+    seen.add(next);
+    stack.push(...needsOf(jobs[next]));
+  }
+  return [...seen];
+};
+
+const reachesApprove = (start: string, jobs: Record<string, Job>): boolean =>
+  ancestryOf(start, jobs).includes("approve");
+
+/**
+ * The status functions that let a job run even though a dependency FAILED.
+ *
+ * This is the whole reason a `needs:` edge is not by itself proof of a gate. An
+ * `if:` with no status function implicitly carries `success()`, so an ordinary
+ * condition (`inputs.plan_only != 'true'`) still waits for every dependency to
+ * succeed and is harmless here. `always()`, `cancelled()` and `failure()` are the
+ * three that override that, and `if: ${{ always() }}` on a token-bearing job with
+ * `needs: approve` runs the job after the gate has already refused.
+ */
+const BYPASSES_FAILURE = /\b(always|cancelled|failure)\s*\(\s*\)/;
+
+/** A handle as the two files should be compared: no `@`, case-insensitive. */
+const normaliseHandle = (handle: string): string =>
+  handle.replace(/^@/, "").toLowerCase();
+
+/**
+ * Every distinct owner named by a CODEOWNERS RULE.
+ *
+ * Comment lines are dropped rather than scanned, and that is the whole subtlety:
+ * this file is mostly prose explaining why each path is owned, and that prose is
+ * free to name a handle. Only a rule confers ownership, so only a rule counts.
+ */
+const codeownersOwners = (): Set<string> =>
+  new Set(
+    readFileSync(".github/CODEOWNERS", "utf8")
+      .split("\n")
+      .map((line) => line.replace(/(^|\s)#.*$/, "").trim())
+      .filter((line) => line !== "")
+      .flatMap((line) => line.split(/\s+/))
+      .filter((token) => token.startsWith("@"))
+      .map(normaliseHandle),
+  );
+
+/** The members of `a` that `b` does not have, for a failure message. */
+const missingFrom = (a: Set<string>, b: Set<string>): string[] =>
+  [...a].filter((handle) => !b.has(handle)).sort();
+
+/**
+ * THE INVARIANT THIS REPOSITORY LEARNED THE HARD WAY.
+ *
+ * `github.actor` is the user who triggered the INITIAL run, and it does NOT change
+ * on a re-run. `github.triggering_actor` is whoever started THIS run. Re-running an
+ * existing run needs only write access — a far larger set than the promoter
+ * allow-list — so an `approve` job reading `github.actor` alone passes a replay on
+ * the ORIGINAL promoter's name, with that run's original `inputs.tag`. Replaying a
+ * rollback puts `cli/stable` back on an old tag; replaying a promote is a downgrade
+ * the moment `stable` has advanced past it. Neither needs a stolen account.
+ *
+ * So: a lane that can reach the store with a manual trigger must gate on BOTH.
+ * A lane with no manual trigger is out of scope by construction — the only way to
+ * start it is the event itself, and re-running it re-runs that event's own commit.
+ * That is why `edge-cli.yml` answers this by having no `workflow_dispatch` at all
+ * rather than by growing a gate it could not usefully hold (its `publish` job is
+ * the one holding the token, and it must run unattended on every merge).
+ */
+describe("every store-writing lane with a manual trigger gates on both actors", () => {
+  // BOTH EXTENSIONS. GitHub Actions recognises `.yml` and `.yaml` alike, so an
+  // `.yml`-only filter would drop a token-bearing `.yaml` lane out of this scan
+  // silently — the suite would go green having asserted nothing about it. Matches
+  // the idiom `workflow-contexts.test.ts` already uses.
+  //
+  // Sorted: `readdirSync` returns filesystem order, so the exact-set assertion
+  // below would otherwise pass or fail depending on the machine.
+  const workflowFiles = readdirSync(".github/workflows")
+    .filter((f) => /\.ya?ml$/.test(f))
+    .sort();
+
+  // Scoped to `jobs`, not the whole file: several workflows DISCUSS the token in
+  // their headers precisely to explain that they do not hold it, and comments are
+  // documentation, not reach. `release-badge.yml` is the live example — it is
+  // dispatchable and names the token only to say it has none.
+  const holdsStoreToken = (wf: { jobs?: unknown }): boolean =>
+    JSON.stringify(wf.jobs ?? {}).includes("BLOB_READ_WRITE_TOKEN");
+
+  it("is a non-empty set, so this suite cannot pass by matching nothing", () => {
+    const gated = workflowFiles.filter((f) => {
+      const wf = workflow(f) as {
+        on?: Record<string, unknown>;
+        jobs?: unknown;
+      };
+      return holdsStoreToken(wf) && "workflow_dispatch" in (wf.on ?? {});
+    });
+    expect(gated).toEqual(["promote-cli.yml", "rollback-cli.yml"]);
+  });
+
+  for (const file of workflowFiles) {
+    it(`${file}: no manual trigger, or an approve job reading both actors`, () => {
+      const wf = workflow(file) as {
+        on?: Record<string, unknown>;
+        jobs?: Record<string, Job>;
+      };
+
+      if (!holdsStoreToken(wf)) return;
+      if (!("workflow_dispatch" in (wf.on ?? {}))) return;
+
+      const approve = wf.jobs?.approve;
+      expect(
+        approve,
+        `${file} holds the store token and is manually dispatchable, so it needs an approve job`,
+      ).toBeDefined();
+      const steps = approve?.steps ?? [];
+
+      // A GATE THAT CAN BE SWITCHED OFF IS NOT A GATE. Everything below reads the
+      // gate's CONTENT; none of it would notice the gate being neutered from the
+      // outside. `continue-on-error: true` is the sharp one — GitHub treats a
+      // failed-but-continued job as satisfied for `needs:`, so the actor check
+      // could exit 1 on an outsider and the privileged job would still run, with
+      // every assertion here still green. `if:` can make the gate conditional on
+      // whatever the author picks (including the actor it is supposed to judge);
+      // `shell:` can replace the interpreter whose `set -euo pipefail` and `exit 1`
+      // the checks below assume; `working-directory:` moves where it all runs.
+      //
+      // None has a legitimate use on this job, so the invariant is that they are
+      // absent — on the job and on each of its steps.
+      for (const override of OVERRIDES) {
+        expect(
+          (approve as Record<string, unknown> | undefined)?.[override],
+          `${file}: approve sets '${override}', which can neutralise the gate`,
+        ).toBeUndefined();
+        for (const [i, step] of steps.entries()) {
+          expect(
+            (step as Record<string, unknown>)[override],
+            `${file}: approve step ${i} sets '${override}', which can neutralise the gate`,
+          ).toBeUndefined();
+        }
+      }
+
+      // TWO HALVES, AND THEY PROVE DIFFERENT THINGS.
+      //
+      // The `env:` mapping proves the gate reads the right GitHub CONTEXTS - the
+      // only place a context can enter the shell, and something running the script
+      // can never show, because the runner supplies those values.
+      //
+      // Then the script is EXECUTED with controlled actors, which proves it
+      // actually refuses. That half replaced a static reading of the shell, and the
+      // reason is worth keeping: every attempt to decide "does this branch refuse?"
+      // by looking at the text was defeated by text that merely LOOKED like a
+      // refusal - first the gate's own comments (which must name both contexts in
+      // order to explain them), then an `exit 1` belonging to the other actor's
+      // branch, then `echo "exit 1"`, then an `exit 1` inside a heredoc. Each fix
+      // was a better approximation of a shell lexer, and the next variation always
+      // existed. Running the thing has no such class of evasion: text that only
+      // looks like a refusal does not change the exit status.
+      const bound = new Map<string, string>();
+      for (const step of steps) {
+        for (const [name, value] of Object.entries(step.env ?? {})) {
+          if (typeof value === "string") bound.set(name, value);
+        }
+      }
+      const varFor = (context: string): string | undefined =>
+        [...bound].find(
+          ([, v]) => v.replace(/\s+/g, "") === `\${{${context}}}`,
+        )?.[0];
+
+      const actorVar = varFor("github.actor");
+      const triggeringVar = varFor("github.triggering_actor");
+
+      // `github.actor` alone is the bug; `github.triggering_actor` alone would drop
+      // the guarantee about who chose the tag in the first place. Both, or neither
+      // property holds.
+      expect(
+        actorVar,
+        `${file}: approve binds no env var to github.actor`,
+      ).toBeDefined();
+      expect(
+        triggeringVar,
+        `${file}: approve binds no env var to github.triggering_actor`,
+      ).toBeDefined();
+
+      const promoterList = (bound.get("PROMOTERS") ?? "").trim();
+      expect(
+        promoterList,
+        `${file}: approve binds no PROMOTERS allow-list`,
+      ).not.toBe("");
+
+      // THE SAME THREE HANDLES LIVE IN FOUR PLACES, AND ONE OF THEM IS THIS LANE.
+      //
+      // `.github/CODEOWNERS`, this `PROMOTERS` string, the rollback lane's copy of
+      // it, and the `cli-release-signers` GitHub team. Adding or removing a signer
+      // is four edits in two systems, and nothing makes them happen together. The
+      // failure that costs something is the SILENT half: a handle dropped from
+      // CODEOWNERS but left here can still move `cli/stable` while no longer being
+      // required to review the file that says who may, and a handle added here but
+      // not there gains the ring without the review that was supposed to grant it.
+      // Neither shows up in a run - the gate passes, the review passes, and the two
+      // lists have simply stopped describing the same people.
+      //
+      // Sets, not strings: `PROMOTERS` is one space-separated line and CODEOWNERS
+      // repeats the handles across nineteen rules, so order and spacing are not the
+      // property. The remote team is out of scope here - it cannot be read without
+      // the network, and a periodic out-of-band sweep is what reconciles it.
+      const promoters = new Set(promoterList.split(/\s+/).map(normaliseHandle));
+      const owners = codeownersOwners();
+
+      // A set comparison against an empty set passes for the wrong reason: a
+      // CODEOWNERS that has been renamed, emptied, or reshaped past this parser
+      // would read as "no owners" and take the assertion below with it.
+      expect(
+        owners.size,
+        `${file}: parsed no owners out of .github/CODEOWNERS, so the comparison below would assert nothing`,
+      ).toBeGreaterThan(0);
+
+      expect(
+        [...promoters].sort(),
+        `${file}: PROMOTERS and .github/CODEOWNERS name different people - ` +
+          `in PROMOTERS only: [${missingFrom(promoters, owners).join(", ") || "none"}]; ` +
+          `in CODEOWNERS only: [${missingFrom(owners, promoters).join(", ") || "none"}]`,
+      ).toEqual([...owners].sort());
+
+      // The gate step is the one that binds the actor contexts; `approve` may hold
+      // others (promote's second step records what was approved) and they are not
+      // the gate.
+      const gateStep = steps.find((s) =>
+        Object.keys(s.env ?? {}).includes(actorVar as string),
+      );
+      expect(
+        gateStep?.run,
+        `${file}: approve's gate step has no run body`,
+      ).toBeDefined();
+      const script = gateStep?.run ?? "";
+
+      // The gate must take its actors through `env:`, never by interpolating a
+      // `${{ }}` expression into the shell. That is what makes the values data
+      // rather than code, and it is also what makes this script safe to execute
+      // here: there is nothing left for the runner to substitute.
+      expect(
+        script.includes("${{"),
+        `${file}: approve's gate interpolates a \${{ }} expression into the shell instead of binding it through env:`,
+      ).toBe(false);
+
+      /** Run the real gate with these two actors; return its exit status. */
+      const runGate = (actor: string, triggering: string): number => {
+        const env: Record<string, string> = {
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+        };
+        for (const [k, v] of bound) env[k] = v;
+        env[actorVar as string] = actor;
+        env[triggeringVar as string] = triggering;
+        // `-e`, BECAUSE THAT IS WHAT THE RUNNER DOES. GitHub Actions executes a
+        // `run:` body as `bash -e {0}` unless the step sets `shell:` - and the
+        // OVERRIDES check above asserts this step does not. Both gates currently
+        // set `set -euo pipefail` themselves, so this changes nothing today; it
+        // keeps the harness faithful for a gate that validly leans on the
+        // runner-supplied `-e` instead.
+        //
+        // Without it such a gate would run to completion here and exit 0 where the
+        // runner would abort nonzero - so the failure would be this suite going
+        // RED against a gate that is correct in production, not a regression
+        // slipping through. A false alarm still costs the right thing eventually:
+        // it pressures whoever meets it into weakening the assertion.
+        return (
+          Bun.spawnSync(["bash", "-e", "-c", script], {
+            env,
+            stdout: "pipe",
+            stderr: "pipe",
+          }).exitCode ?? -1
+        );
+      };
+
+      // Real names from the lane's own allow-list, against one that is plainly not
+      // on it. Each case isolates a single condition, so no case can pass for the
+      // reason another one does.
+      const promoter = promoterList.split(/\s+/)[0];
+      const outsider = "not-a-promoter-mutation-probe";
+
+      expect(
+        runGate(promoter, promoter),
+        `${file}: the gate refuses '${promoter}', who is on its own allow-list`,
+      ).toBe(0);
+
+      // THE ORIGINAL DISPATCHER IS NOT A PROMOTER.
+      expect(
+        runGate(outsider, promoter),
+        `${file}: the gate admits a run dispatched by '${outsider}'`,
+      ).not.toBe(0);
+
+      // THE RE-RUNNER IS NOT A PROMOTER - the vector this whole suite exists for.
+      // `github.actor` still names the original promoter on a re-run, so a gate
+      // reading it alone passes this case, and passing it is the bug.
+      expect(
+        runGate(promoter, outsider),
+        `${file}: the gate admits a re-run started by '${outsider}' because the original dispatcher was a promoter`,
+      ).not.toBe(0);
+
+      expect(
+        runGate(outsider, outsider),
+        `${file}: the gate admits a run with no promoter involved at all`,
+      ).not.toBe(0);
+
+      // A GATE NOTHING DEPENDS ON IS DECORATION. Everything above establishes that
+      // `approve` refuses the wrong actor; none of it establishes that the job
+      // holding the token cannot start without it. So walk the dependency graph:
+      // every token-bearing job must have `approve` as an ancestor.
+      //
+      // TRANSITIVELY, not just directly. The property that matters is "approve is
+      // an ancestor", and demanding the literal `needs: approve` on the
+      // token-bearing job asserts a stricter proxy — it would fail a perfectly
+      // sound `approve -> validate -> promote` chain and push a future author to
+      // weaken the test rather than keep the chain.
+      for (const [name, job] of Object.entries(wf.jobs ?? {})) {
+        if (name === "approve") continue;
+        if (!JSON.stringify(job).includes("BLOB_READ_WRITE_TOKEN")) continue;
+        const jobs = wf.jobs ?? {};
+        expect(
+          reachesApprove(name, jobs),
+          `${file}: job '${name}' reaches the store without approve anywhere in its needs chain`,
+        ).toBe(true);
+
+        // AN EDGE IS NOT A GATE ON ITS OWN. `needs: approve` only blocks the job
+        // while the job waits for approve to SUCCEED, and a status function in
+        // `if:` removes exactly that. `if: ${{ always() }}` on this job, or on any
+        // job between it and approve, runs the privileged step after the gate has
+        // already refused - with the ancestry assertion above still green.
+        for (const link of [name, ...ancestryOf(name, jobs)]) {
+          const condition = (jobs[link] as Record<string, unknown> | undefined)
+            ?.if;
+          if (typeof condition !== "string") continue;
+          expect(
+            BYPASSES_FAILURE.test(condition),
+            `${file}: job '${link}' is on '${name}'s path to the store and its if: can run after approve fails`,
+          ).toBe(false);
+        }
+      }
+    });
+  }
 });
