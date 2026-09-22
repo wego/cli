@@ -76,10 +76,10 @@ const SIGN_ACTION = ".github/actions/sign-manifest";
  * not carry an `@ref`, and GitHub now recommends it over `./` precisely because
  * `./` resolves against whatever the caller happened to check out.
  *
- * Both guards below have to know both spellings, or adopting the recommended
- * one breaks them in opposite directions: the signing assertion would reject a
- * correct local call, and the dependabot check would demand an update entry for
- * an action that has no version to bump. Neither failure would be true.
+ * The signing assertion below has to know both spellings. Knowing only `./`, it
+ * would reject a correct local call to `sign-manifest` the moment anyone adopts
+ * the recommended form - a failure that would not be true, on the one assertion
+ * that guards the release signer.
  */
 const isLocalUses = (uses: string): boolean =>
   uses.startsWith("./") || uses.startsWith("$/");
@@ -272,104 +272,5 @@ describe("every `bun install` goes through the composite action", () => {
   it("keeps HUSKY=0 on the composite action's install step", () => {
     const action = readFileSync(".github/actions/setup-bun/action.yml", "utf8");
     expect(action).toContain("HUSKY: 0");
-  });
-});
-
-/**
- * DEPENDABOT COVERAGE: every composite action that uses a third-party action
- * has an entry in `.github/dependabot.yml` naming its directory.
- *
- * WHY THIS IS NOT COVERED ELSEWHERE. The dependency graph parses GitHub Actions
- * manifests only under `.github/workflows/`, so an action named only inside a
- * a `.github/actions/<dir>/action.yml` is invisible to it - and therefore invisible to
- * Dependabot alerts. Three were, before `.github/dependabot.yml` existed:
- * `oven-sh/setup-bun` and `actions/cache` in `setup-bun`, and
- * `sigstore/cosign-installer` in `sign-manifest`. The last one runs in the `sign`
- * job, the only job in this repository holding `id-token: write`.
- *
- * Every one of them is SHA-pinned. A pin stops a compromised publisher pushing
- * new code at us; it cannot tell us the pinned version has since been disclosed
- * vulnerable. `.github/dependabot.yml` is what tells us, and only for the
- * directories it names.
- *
- * WHY A TEST. The failure is silent in both directions:
- *
- *   - Add a composite action, or a third-party `uses:` to an existing one, and
- *     forget the entry: the action is watched by nothing, the checks stay green,
- *     and nobody finds out until a disclosure nobody was told about.
- *   - Rename or delete a composite directory and leave the entry: Dependabot
- *     keeps an update job pointed at a path that no longer exists. It does not
- *     fail the config; it just covers nothing.
- *
- * Both assertions below are the same invariant `wego/cli#77` added for PROMOTERS
- * vs CODEOWNERS: the config and the thing it covers must not drift.
- *
- * `directory: "/"` is deliberately NOT accepted as coverage for these. In
- * dependabot-core's `github_actions` file fetcher, `/` is a special case that
- * fetches a ROOT-level `action.yml` and then scans `.github/workflows/`; every
- * other directory scans that directory itself. A composite action is only
- * reached by an entry that names its own directory.
- */
-describe("dependabot watches every composite action's third-party uses", () => {
-  const actionFileFor = (dir: string): string | undefined =>
-    [
-      `.github/actions/${dir}/action.yml`,
-      `.github/actions/${dir}/action.yaml`,
-    ].find((path) => existsSync(path));
-
-  /**
-   * A `uses:` that resolves OUTSIDE this repository, and so has a version worth
-   * watching. A local composite action - either spelling, see `isLocalUses` -
-   * has its own directory checked on its own iteration and nothing to bump.
-   */
-  const thirdPartyUses = (dir: string): string[] => {
-    const action = Bun.YAML.parse(
-      readFileSync(actionFileFor(dir) as string, "utf8"),
-    ) as { runs?: { steps?: { uses?: string }[] } };
-
-    return (action.runs?.steps ?? [])
-      .map((step) => step.uses)
-      .filter((uses): uses is string => uses !== undefined)
-      .filter((uses) => !isLocalUses(uses));
-  };
-
-  const dependabot = Bun.YAML.parse(
-    readFileSync(".github/dependabot.yml", "utf8"),
-  ) as { updates?: { "package-ecosystem"?: string; directory?: string }[] };
-
-  const watched = new Set(
-    (dependabot.updates ?? [])
-      .filter((u) => u["package-ecosystem"] === "github-actions")
-      .map((u) => u.directory)
-      .filter((d): d is string => d !== undefined),
-  );
-
-  const composites = readdirSync(".github/actions").filter(
-    (d) => actionFileFor(d) !== undefined,
-  );
-
-  const needsWatching = composites.filter((d) => thirdPartyUses(d).length > 0);
-
-  it("finds composite actions with third-party uses to check", () => {
-    // Guards the loops below against an empty list passing vacuously - a moved
-    // directory would otherwise turn this whole block into a no-op.
-    expect(composites.length).toBeGreaterThan(0);
-    expect(needsWatching.length).toBeGreaterThan(0);
-  });
-
-  it.each(
-    needsWatching,
-  )("the %s action has a dependabot entry for its own directory", (dir) => {
-    expect(watched).toContain(`/.github/actions/${dir}`);
-  });
-
-  it("has no dependabot entry pointing at a directory it need not watch", () => {
-    const stale = [...watched]
-      .filter((d) => d.startsWith("/.github/actions/"))
-      .filter(
-        (d) => !needsWatching.includes(d.slice("/.github/actions/".length)),
-      );
-
-    expect(stale).toEqual([]);
   });
 });

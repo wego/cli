@@ -67,59 +67,61 @@ updates:
         patterns:
           - "*"
 
-  # 2 and 3. The composite actions. These entries exist because the
-  #    `github-actions` ecosystem is DIRECTORY-SCOPED, and the `/` entry above
-  #    does not reach `.github/actions/*/action.yml`.
+  # 2. The composite actions, as ONE entry over a glob.
   #
-  #    The mechanism, from `github_actions/lib/dependabot/github_actions/
-  #    file_fetcher.rb` in dependabot-core, because it is not in the published
-  #    docs and it is what makes these two entries work:
+  #    The `github-actions` ecosystem is DIRECTORY-SCOPED, and the `/` entry
+  #    above does not reach `.github/actions/<dir>/action.yml`. The mechanism,
+  #    from dependabot-core, because none of it is in the published docs:
   #
   #      - `directory: "/"` is a special case. It fetches a ROOT-level
   #        `action.yml`/`action.yaml` if one exists, then scans
   #        `.github/workflows/`. Nothing else. There is no root `action.yml`
-  #        in this repository, so that entry sees the workflows and only the
-  #        workflows.
+  #        here, so that entry sees the workflows and only the workflows.
+  #        (`github_actions/lib/dependabot/github_actions/file_fetcher.rb`)
   #      - Any OTHER directory sets the scan root to that directory itself and
-  #        takes every file matching `/\.ya?ml$/` in it. Point an entry at
-  #        `/.github/actions/setup-bun` and the file it picks up is that
-  #        directory's `action.yml`.
+  #        takes every file in it matching `/\.ya?ml$/` - so a directory that
+  #        holds an `action.yml` is read as a manifest.
+  #      - `directories:` entries containing `*`, `?` or `[...]` are expanded
+  #        with `Dir.glob` BEFORE any ecosystem fetcher runs, so the expansion
+  #        is ecosystem-agnostic and each matched directory is then handled
+  #        exactly as a literal `directory:` would be.
+  #        (`updater/lib/dependabot/file_fetcher_command.rb`)
   #
-  #    So one entry per composite-action directory is not a workaround, it is
-  #    the supported shape. It is also why a `directories:` glob is not used
-  #    here: it would be shorter, and a glob that silently matches nothing is
-  #    precisely the failure this file exists to prevent. Two directories do
-  #    not need the brevity.
+  #    A glob rather than one entry per directory, deliberately. Listing the
+  #    directories by hand means a composite action added later is silently
+  #    unwatched until somebody remembers this file, which is the same class of
+  #    quiet gap the whole file exists to close. The glob makes coverage
+  #    structural: a new `.github/actions/<dir>/action.yml` is picked up with no
+  #    edit here and nothing to keep in sync.
   #
-  #    They are NOT grouped with the workflow bumps above, and not with each
-  #    other. Each one should be visibly attributable to its own directory, so
-  #    that "did this entry ever produce a pull request?" has an answer.
+  #    What it currently expands to, and why each matters:
+  #
+  #      setup-bun      `oven-sh/setup-bun` and `actions/cache` (as
+  #                     `actions/cache/restore` / `.../save`).
+  #      sign-manifest  `sigstore/cosign-installer`, which runs in the `sign`
+  #                     job - the only job in this repository holding
+  #                     `id-token: write`, and so the only one that can mint an
+  #                     OIDC token Fulcio will issue a signing certificate
+  #                     against. A disclosed vulnerability in that installer is
+  #                     a disclosed vulnerability in the release signer.
+  #      verify-build   no third-party `uses:`; matched, nothing to update.
+  #      verify-replace no third-party `uses:`; matched, nothing to update.
+  #
+  #    `*` is one level deep. A composite action nested deeper than
+  #    `.github/actions/<dir>/action.yml` would not be matched - none is today,
+  #    and that layout is the GitHub convention.
+  #
+  #    Kept OUT of the workflow group above, and ungrouped here, so each
+  #    directory's updates stay separately attributable: "did this ever produce
+  #    a pull request?" needs an answer per directory.
   #
   #    NOTE: Dependabot reads this file from the DEFAULT BRANCH only. Nothing
-  #    below takes effect, and `/network/updates` reports nothing about it,
-  #    until this is merged to `main`.
-
-  # `oven-sh/setup-bun` and `actions/cache` (as `actions/cache/restore` and
-  # `actions/cache/save`). Neither appears in the dependency graph.
+  #    here takes effect, and `/network/updates` reports nothing about it, until
+  #    this is merged to `main`. That page is also the ONLY place that confirms
+  #    the glob matched: an expansion that matches nothing fails quietly.
   - package-ecosystem: "github-actions"
-    directory: "/.github/actions/setup-bun"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "Asia/Singapore"
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore"
-      include: "scope"
-
-  # `sigstore/cosign-installer`. This one runs in the `sign` job - the only job
-  # in this repository holding `id-token: write`, and therefore the only one
-  # that can mint an OIDC token Fulcio will issue a signing certificate against.
-  # A disclosed vulnerability in the installer is a disclosed vulnerability in
-  # the release signer.
-  - package-ecosystem: "github-actions"
-    directory: "/.github/actions/sign-manifest"
+    directories:
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
       day: "monday"
