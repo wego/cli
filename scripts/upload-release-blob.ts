@@ -70,6 +70,14 @@ import {
 } from "./blob-consistency";
 import { putImmutableAssets, resolveStoreOrigin } from "./blob-publish";
 import {
+  computeAdvanceTargets,
+  isArgvError,
+  leadingFlagError,
+  parseMode,
+  parseRequireServing,
+  tagPositionError,
+} from "./release-argv";
+import {
   commitSidecarPath,
   identitiesForRing,
   manifestCoversAll,
@@ -79,12 +87,7 @@ import {
   sigPrefixForRing,
   sigPrefixForTag,
 } from "./release-signing";
-import {
-  isRing,
-  RELEASE_ASSET_BASENAME,
-  type Ring,
-  ringAcceptsVersion,
-} from "./ring-rules";
+import { RELEASE_ASSET_BASENAME, ringAcceptsVersion } from "./ring-rules";
 import { releaseTagError } from "./validate-release-tag";
 
 // The verification manifest every consumer cross-checks binaries against. It is
@@ -100,33 +103,16 @@ const MANIFEST = "SHA256SUMS.txt";
 // deliverable channel is certified consistent (see the advance block below).
 const VERSION_OBJECT = "VERSION";
 
-// Modes (see the file header). --freeze/--promote require an EXPLICIT argv tag;
-// only the bare-positional publish falls back to RELEASE_TAG.
-type Mode = "publish" | "freeze" | "promote";
-function parseMode(flag: string | undefined): Mode {
-  if (flag === "--promote") return "promote";
-  if (flag === "--freeze") return "freeze";
-  return "publish";
-}
+// Modes, the flag guards and the routing decision all live in `release-argv.ts`
+// - pure, and therefore reachable from a test. They used to sit here, closing
+// over `argv` and ending in `process.exit`, in a file whose first statements
+// open the Blob store: nothing could ask what `--promote --to stable` routes to
+// without running a publisher. The exiting stays here; the deciding moved.
 const argv = process.argv.slice(2);
-// Reject an unknown --flag up front with a clear message. (A bad *tag* is still
-// caught by the vX.Y.Z shape guard below, before any Blob access — but an
-// unrecognized flag would otherwise be silently treated as a publish tag.)
-if (
-  argv[0]?.startsWith("--") &&
-  argv[0] !== "--freeze" &&
-  argv[0] !== "--promote"
-) {
-  console.error(
-    `Unknown flag "${argv[0]}" - use --freeze or --promote, or a bare tag.`,
-  );
-  process.exit(1);
-}
 const mode = parseMode(argv[0]);
-// A stray flag in the tag position (e.g. `--freeze --typo`) — clearer than
-// letting it fall through to the tag-shape error below.
-if (mode !== "publish" && argv[1]?.startsWith("--")) {
-  console.error(`Unknown flag "${argv[1]}" after ${argv[0]} - expected a tag.`);
+const flagProblem = leadingFlagError(argv) ?? tagPositionError(argv, mode);
+if (flagProblem) {
+  console.error(flagProblem.error);
   process.exit(1);
 }
 // Strict argv shape per mode — a misplaced `--to` or a stray positional must
@@ -192,7 +178,13 @@ if (tagError) {
 // reason: a mistyped ring is a caller mistake, and the graceful no-token skip
 // below exits 0, so validating after it would swallow the typo entirely on a
 // local run.
-const requireServing = mode === "promote" ? parseRequireServing() : null;
+const requireServingResult =
+  mode === "promote" ? parseRequireServing(argv) : null;
+if (isArgvError(requireServingResult)) {
+  console.error(requireServingResult.error);
+  process.exit(1);
+}
+const requireServing = requireServingResult;
 
 const token = process.env.BLOB_READ_WRITE_TOKEN;
 if (!token) {
@@ -210,58 +202,14 @@ if (!token) {
   process.exit(0);
 }
 
-// The rings `next` and `stable` are the SAME stable line at two distances from the
-// install base - `ring-rules.ts` owns the rule, so the workflow's gates and this
-// script's guard below can never disagree:
-//   cli/next   - the candidate real people run. A fresh publish lands here.
-//   cli/stable - what everyone receives. Reached ONLY by promoting a next build.
-//
-// Which moving pointer(s) this run advances, if any. --freeze advances nothing;
-// --promote advances its `--to` target (default next); a bare publish advances
-// cli/next, so a local one-shot reproduces the release job's routing instead of
-// putting a fresh build in front of the whole install base.
-function parsePromoteTarget(): Ring {
-  const i = argv.indexOf("--to");
-  if (i < 0) return "next";
-  const v = argv[i + 1];
-  // Every ring is a nameable target, `edge` included. It was refused here while
-  // this lived in wego-ai, on the reasoning that the edge lane publishes its own
-  // `X.Y.Z-edge.<sha>` builds (publish-edge-blob.ts) and a plain release version
-  // must never land on `edge`. That is still true as a DEFAULT - the default is
-  // `next`, and nothing routes a release to `edge` on its own - but a parser that
-  // cannot even name a ring the promote lane operates on is the wrong place to
-  // enforce it: an operator promoting deliberately gets a usage error instead of
-  // the promote, and the real guards (the tag gate, `--require-serving`, and the
-  // byte-identity check against `cli/<tag>/`) are the ones that decide whether a
-  // given ring may be advanced.
-  if (v && isRing(v)) return v;
-  console.error(
-    `--to must name a ring: edge, next or stable (got "${v ?? ""}").`,
-  );
+// Which moving pointer(s) this run advances, if any. The rule, the defaults and
+// the `--to` parser now live in `release-argv.ts`; what stays here is the exit.
+const advanceResult = computeAdvanceTargets(mode, argv);
+if (isArgvError(advanceResult)) {
+  console.error(advanceResult.error);
   process.exit(1);
 }
-/**
- * `--require-serving <ring>`: the ring that must already serve this tag before the
- * promote may proceed, or `null` when the flag is absent. Resolved HERE, at argv
- * time and beside the tag gate, so a typo costs one cheap step rather than a Blob
- * round trip - the same reason `releaseTagError` runs before any store access.
- */
-function parseRequireServing(): Ring | null {
-  const i = argv.indexOf("--require-serving");
-  if (i < 0) return null;
-  const v = argv[i + 1];
-  if (v && isRing(v)) return v;
-  console.error(
-    `--require-serving must name a ring: edge, next or stable (got "${v ?? ""}").`,
-  );
-  process.exit(1);
-}
-function computeAdvanceTargets(): Ring[] {
-  if (mode === "promote") return [parsePromoteTarget()];
-  if (mode === "freeze") return [];
-  return ["next"];
-}
-const advanceTargets = computeAdvanceTargets();
+const advanceTargets = advanceResult;
 
 // Refused because `update` replaces the running binary on a CHECKSUM difference,
 // never a version comparison, so whatever a ring serves is what its install base

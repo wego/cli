@@ -201,11 +201,18 @@ describe("package.json: the contract scripts", () => {
   // Three assertions used to sit above this one, each comparing a script string
   // to its own literal: `postinstall`, `api-contract:refresh`,
   // `api-types:generate`. They restated `package.json` rather than constraining
-  // it, and the failure they imagined is loud anyway - `src/api-wire.ts` opens
-  // with `import type { components, operations } from "./api-types"`, so a tree
-  // where the generator did not run dies on TS2307 at the first `bun run
-  // typecheck`, named and immediate. What survives below is the one claim about
-  // these scripts that is NOT visible in the file: the order they run in.
+  // it.
+  //
+  // The `postinstall` one had already stopped being the guarantee it was written
+  // as. #88 moved the generation into the `typecheck` script precisely because
+  // `postinstall` covered one lane and left the release lane and every developer
+  // terminal comparing against whatever the last install happened to leave
+  // behind - and the suite above now states THAT positively, anchored across the
+  // whole generate-to-tsc boundary. A literal-match on `postinstall` beside it is
+  // a second, weaker spelling of a claim already made properly.
+  //
+  // What survives below is the one thing about these scripts that is NOT visible
+  // by reading them: the order the refresh runs in.
 
   // Not a restatement of package.json, and worth the line it costs:
   // `trustedDependencies` decides which DEPENDENCIES may run lifecycle scripts
