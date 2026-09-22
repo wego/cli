@@ -111,6 +111,44 @@ src/config-dir.ts     @sunny-wego @yeouchien-wego @chuyeowego
 src/target.ts @sunny-wego @yeouchien-wego @chuyeowego
 src/config.ts @sunny-wego @yeouchien-wego @chuyeowego
 
+# THE INPUT TO THE api<->cli CONTRACT CHECK. Owned for REVIEW VISIBILITY, not
+# for runtime reach - and the distinction is the reason this comment exists.
+#
+# NOTHING IN THIS FILE EXECUTES. It is read at build time by
+# `scripts/generate-api-types.ts`, which emits `src/api-types.d.ts`; that output
+# is not committed, is imported only with `import type`, and is erased before a
+# byte of it could reach the shipped binary. The endpoints the CLI actually
+# talks to come from `src/target.ts`, which is owned above. So this is NOT the
+# `bun.lock` case, and it is not claimed to be.
+#
+# What it does control is the contract CHECK ITSELF. Both halves of that chain
+# are already owned - the generator and `scripts/ci-contract-drift.test.ts` -
+# while the document they run against was not. That is backwards in the same
+# way `bun.lock` was: you cannot own a check and leave its input open.
+#
+#   - Checks A and C (`src/api-contract.ts`, under `bun run typecheck`) compare
+#     the CLI's Zod types against THIS file. Widening a request schema here
+#     makes Check C - the outbound-exactness half - stop objecting to a field
+#     the real API would reject.
+#   - Check B (`src/api-contract.test.ts`) walks THIS file to confirm the fields
+#     the CLI's behaviour depends on are still published. An edit here can make
+#     that walk pass for a path the API does not serve.
+#   - The CI drift step is `continue-on-error` with an explicit `exit 0` on
+#     every path, BY DESIGN (the API deploys on its own cadence). So a
+#     hand-edited contract earns a `::warning::` and merges. Nothing fails.
+#
+# The practical problem is size: at ~7,300 lines, a changed enum value, a
+# relaxed `required`, or a dropped field is invisible in a diff nobody scrolls.
+# A refresh commit is this file ALONE (`bun run api-contract:refresh`, per
+# CONTRIBUTING), so the owner's question is a cheap one - "is this the
+# generator's output, or did someone type it?" - which is exactly the review
+# this cannot get today.
+#
+# LOW URGENCY, recorded as such. No credential and no executable path runs
+# through here; the cost of being wrong is a weakened compile-time check, not a
+# redirected token.
+contract/openapi.json @sunny-wego @yeouchien-wego @chuyeowego
+
 # Deliberately NOT owned, so the omissions read as decisions rather than gaps:
 #
 #   - `src/commands.ts` and `src/index.ts` wire the login flow together, but they
