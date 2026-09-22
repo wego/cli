@@ -73,7 +73,7 @@ fi
 
 # --- targeted tests --------------------------------------------------------
 
-# 48 tests, ~155ms, over the workflow files. These read YAML and assert lane
+# 48 tests, ~110ms, over the workflow files. These read YAML and assert lane
 # properties; they are the slowest thing in this repository to learn from CI,
 # because a broken release lane reports when the release runs.
 if [ -n "$(staged .github)" ]; then
@@ -94,7 +94,7 @@ if [ -n "$(staged .github)" ]; then
     scripts/workflow-contexts.test.ts
 fi
 
-# 126 tests, ~40ms: the release, ring, plugin, tag and commit-message contracts.
+# 153 tests, ~25ms: the release, ring, plugin, tag, argv and commit-message contracts.
 # Pure file reading, no network, no subprocesses - which is why these are worth
 # running here and the other 12 test files in scripts/ (9.3s together) are not.
 if [ -n "$(staged scripts plugin)" ]; then
@@ -104,10 +104,11 @@ if [ -n "$(staged scripts plugin)" ]; then
     scripts/ring-rules.test.ts \
     scripts/release-platform-coverage.test.ts \
     scripts/validate-release-tag.test.ts \
-    scripts/commit-convention.test.ts
+    scripts/commit-convention.test.ts \
+    scripts/release-argv.test.ts
 fi
 
-# 25 tests, ~25ms: Check B (every dotted path the CLI's behaviour reads is still
+# 28 tests, ~20ms: Check B (every dotted path the CLI's behaviour reads is still
 # published by the vendored contract) and the shape of the contract wiring - that
 # the drift step cannot veto a merge, that the refresh only ever fetches
 # production, that the generated types stay out of git.

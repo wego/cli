@@ -9,9 +9,11 @@
  * faithfully executed by every gate in turn.
  *
  * Until now nothing could ask it anything. It closed over a module-level `argv`
- * and ended in `process.exit`, inside an 810-line file whose first statements
- * open the Blob store, so the only way to exercise a routing decision was to run
- * a publisher. `release-argv.ts` is that decision with the exiting taken out.
+ * and ended in `process.exit`, inside an 810-line module that runs its whole
+ * publish at import - no `import.meta.main` guard, every statement top-level -
+ * so the only way to exercise a routing decision was to start a publisher, and
+ * the first refusal it reached would exit the test runner with it.
+ * `release-argv.ts` is that decision with the exiting taken out.
  *
  * The mutations this suite kills:
  *   - `--freeze` routed to anything but `[]` -> it advances a pointer the
@@ -242,14 +244,15 @@ describe("computeAdvanceTargets", () => {
     expect(ok(computeAdvanceTargets("publish", ["v1.2.3"]))).toEqual(["next"]);
   });
 
-  it("ignores a stray --to on a publish rather than honouring it", () => {
-    // `--to` belongs to a promote. A publish that silently honoured it would
-    // advance `stable` from the wrong mode; the strict argv-shape guard in the
-    // publisher refuses this shape outright, and the router does not route it.
-    expect(
-      ok(computeAdvanceTargets("publish", ["v1.2.3", "--to", "stable"])),
-    ).toEqual(["next"]);
-  });
+  // A case feeding `["v1.2.3", "--to", "stable"]` to the publish branch used to
+  // sit here, titled "ignores a stray --to". It was removed, and the reason is
+  // worth stating so it does not come back: the publish branch returns `["next"]`
+  // WITHOUT reading argv, so that case exercised no branch the case above does
+  // not, and `upload-release-blob.ts` refuses the shape outright before the
+  // router is ever reached ("--to is only valid with --promote."). Its real cost
+  // was the title - it read as the router defending against a stray `--to`,
+  // which could talk a future reader into relaxing the upstream guard that is
+  // actually doing the work.
 
   it("advances the promote's target, defaulting to next", () => {
     expect(

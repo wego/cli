@@ -16,10 +16,19 @@
  * located, and it catches a great deal those two regexes never looked at. So
  * they went.
  *
- * What did NOT go is this suite, and the reason is not a preference: actionlint
- * parses `action.yml` as a WORKFLOW, so on a composite action it reports a
- * missing `jobs:` section and stops. The files below are exactly the ones it
- * cannot read, which is why the check survives its arrival.
+ * What did NOT go is this suite, and the reason is not a preference. actionlint
+ * never sees these files, for two independent reasons - measured, not assumed,
+ * against the 1.7.12 binary `ci-cli` pins:
+ *
+ *   - Its default discovery walks `.github/workflows/` only. `ci-cli` invokes it
+ *     with no path arguments, so `.github/actions/*'/'action.yml` is never opened
+ *     at all. This is the one that actually applies in CI.
+ *   - Handed such a file explicitly, it reads it as a WORKFLOW and stops on
+ *     `"jobs" section is missing in workflow`. So pointing CI at them would not
+ *     help either.
+ *
+ * The files below are therefore exactly the ones nothing else checks, which is
+ * why this survives actionlint's arrival.
  */
 import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";

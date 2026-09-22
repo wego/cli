@@ -198,23 +198,29 @@ describe("the generated types exist before anything compares them", () => {
 });
 
 describe("package.json: the contract scripts", () => {
-  // Three assertions used to sit above this one, each comparing a script string
-  // to its own literal: `postinstall`, `api-contract:refresh`,
-  // `api-types:generate`. They restated `package.json` rather than constraining
-  // it.
+  // One assertion used to sit above this: `postinstall` compared to its own
+  // literal. It restated `package.json` rather than constraining it, and the
+  // guarantee it was written for now lives somewhere better. `postinstall` runs
+  // on every `bun install` in every lane, so it was never lane-scoped - what it
+  // could not survive was an install that SKIPPED it (a cache hit, a changed
+  // flag, `--ignore-scripts`), which leaves a stale or absent
+  // `src/api-types.d.ts` everywhere at once. #88 answered that by moving the
+  // generation into the `typecheck` script, and the suite above asserts THAT
+  // positively, anchored across the whole generate-to-tsc boundary.
   //
-  // The `postinstall` one had already stopped being the guarantee it was written
-  // as. #88 moved the generation into the `typecheck` script precisely because
-  // `postinstall` covered one lane and left the release lane and every developer
-  // terminal comparing against whatever the last install happened to leave
-  // behind - and the suite above now states THAT positively, anchored across the
-  // whole generate-to-tsc boundary. A literal-match on `postinstall` beside it is
-  // a second, weaker spelling of a claim already made properly.
-  //
-  // What survives below is the one thing about these scripts that is NOT visible
-  // by reading them: the order the refresh runs in.
+  // The two that remain are not restatements.
 
-  // Not a restatement of package.json, and worth the line it costs:
+  // `api-types:generate` is the one script nothing else resolves. The typecheck
+  // regex above and the refresh assertion below both check that some OTHER
+  // script MENTIONS this name; neither says what it does. Point it at `echo
+  // noop` and both stay green while Checks A and C quietly compare against types
+  // nobody regenerated - which is the whole failure this file exists to prevent.
+  it("generates the types from the vendored contract, not from nothing", () => {
+    expect(scripts["api-types:generate"]).toBe(
+      "bun run scripts/generate-api-types.ts",
+    );
+  });
+
   // `trustedDependencies` decides which DEPENDENCIES may run lifecycle scripts
   // during `bun install` - the install that runs beside the signing identity and
   // the store token in three lanes. Empty is the claim: nothing in the tree gets

@@ -5,9 +5,10 @@
  * `release-signing.ts`, `blob-publish.ts` and `blob-consistency.ts` were all
  * extracted from it before: the decisions below are the ones that can be wrong,
  * and in the publisher they were unreachable. They closed over a module-level
- * `argv` and ended in `process.exit`, in a file whose first statements open the
- * Blob store - so importing it to ask "what does `--promote --to stable` route
- * to?" runs a publisher instead of answering.
+ * `argv` and ended in `process.exit`, in a module that runs its whole publish at
+ * import - no `import.meta.main` guard, every statement top-level - so importing
+ * it to ask "what does `--promote --to stable` route to?" starts a publisher
+ * instead of answering, and the first refusal it reaches exits the test runner.
  *
  * WHAT IS AT STAKE. `computeAdvanceTargets` decides whether a run moves
  * `cli/stable` - the pointer the entire install base follows - moves `cli/next`,

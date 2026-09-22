@@ -122,11 +122,28 @@ describe("LICENSE is the Apache 2.0 text, verbatim", () => {
     expect(licenseDigest(license)).toBe(CANONICAL_APACHE_2_SHA256);
   });
 
-  // A test that edited one word of the licence and asserted the digest moved
-  // used to sit here. It was asserting that SHA-256 is injective - a property of
-  // the hash, true of any two different inputs, and nothing this repository can
-  // get wrong. The digest pin above is the whole control; the landmarks below
-  // are how a failure gets diagnosed.
+  // THIS CASE WAS ONCE DELETED as "asserting that SHA-256 is injective". That
+  // reading was wrong, and the correction is the reason to keep it: the subject
+  // is not the hash, it is THIS FILE'S comparison. A `licenseDigest` that
+  // returned the pinned constant, a `readFileSync` that read the wrong path, a
+  // normalisation that flattened everything - each one makes the assertion above
+  // pass on any bytes at all, and nothing else here would notice.
+  //
+  // It is the same vacuity guard this repository already keeps in two other
+  // places: `pinDrift` refusing to read an empty bundle as agreement, and
+  // `workflow-lanes` refusing to compare PROMOTERS against a CODEOWNERS it
+  // parsed nothing out of. A claim needs an input that could have failed.
+  it("rejects an altered licence", () => {
+    // ONE word, inside the patent grant. The result keeps every landmark the
+    // test below checks and stays the same length, so it is exactly the file
+    // that test would have waved through.
+    const tampered = license.replace(
+      "royalty-free, irrevocable",
+      "royalty-free, revocable",
+    );
+    expect(tampered).not.toBe(license);
+    expect(licenseDigest(tampered)).not.toBe(CANONICAL_APACHE_2_SHA256);
+  });
 
   it("carries the title, the version line and the appendix", () => {
     // Kept for DIAGNOSIS, not for integrity. When the digest fails these say

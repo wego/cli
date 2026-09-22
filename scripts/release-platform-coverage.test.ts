@@ -496,20 +496,34 @@ function classify(): Map<string, Hit[]> {
 describe(`${LANE}: linux-x64 and darwin-arm64 run the same checks, at the same stage`, () => {
   const found = classify();
 
-  // A `runs on both platforms: <check>` case used to sit here, once per entry.
-  // It is now implied rather than asserted, and by three things in this same
-  // file: every check the list names is defined inside one of the two composite
-  // actions and NOWHERE in the workflow ("leaves no check-bearing step body in
-  // the workflow itself"), and each action is called from a Linux leg and a
-  // macOS leg ("calls each action from both platforms"). Presence on both
-  // platforms follows from those; restating it per check asserted nothing the
-  // structure did not already guarantee.
+  // THE CASE BELOW WAS ONCE DELETED AS REDUNDANT. It is not, and the argument
+  // that removed it is worth keeping as a warning.
   //
-  // STAGE does not follow, which is why the case below stays. It turns on WHERE
-  // the `uses:` step sits relative to publication, and a leg could move its call
-  // past the advance while the other's stays in front of it - with every
-  // structural assertion above still green.
+  // That argument ran: every check the list names lives inside one of the two
+  // composite actions and nowhere in the workflow ("leaves no check-bearing step
+  // body in the workflow itself"), and each action is called from a Linux leg and
+  // a macOS leg ("calls each action from both platforms") - so presence on both
+  // platforms follows, and asserting it per check restates the structure.
+  //
+  // It covers a check that vanishes from ONE leg. It says nothing about a check
+  // that vanishes from BOTH at once, and that is the likelier edit: a step
+  // deleted from the shared action during a refactor. Then `hits` is empty, and
+  // every one of the three assertions above is vacuously satisfied - `offenders`
+  // collects nothing because nothing matches, the action is still called from
+  // both runners because the CALL survived, and the stage comparison below reads
+  // `false === false` and passes. The proof would evaporate in silence, which is
+  // the exact failure this whole file exists to prevent.
+  //
+  // So presence is asserted, not inferred.
   for (const [check] of PARITY_CHECKS) {
+    it(`runs on both platforms: ${check}`, () => {
+      const hits = found.get(check) ?? [];
+      const linux = hits.filter((h) => h.plat === "linux");
+      const macos = hits.filter((h) => h.plat === "macos");
+      expect(linux.length).toBeGreaterThan(0);
+      expect(macos.length).toBeGreaterThan(0);
+    });
+
     it(`gates publication on both platforms, or on neither: ${check}`, () => {
       // Stage is not cosmetic. Pre-publication a failure PREVENTS a bad build from
       // reaching anyone; post-advance it can only describe one, because the ring it

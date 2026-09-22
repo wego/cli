@@ -105,9 +105,10 @@ const VERSION_OBJECT = "VERSION";
 
 // Modes, the flag guards and the routing decision all live in `release-argv.ts`
 // - pure, and therefore reachable from a test. They used to sit here, closing
-// over `argv` and ending in `process.exit`, in a file whose first statements
-// open the Blob store: nothing could ask what `--promote --to stable` routes to
-// without running a publisher. The exiting stays here; the deciding moved.
+// over `argv` and ending in `process.exit`. This module runs its whole publish
+// at import - no `import.meta.main` guard, every statement top-level - so
+// nothing could ask what `--promote --to stable` routes to without starting a
+// publisher. The exiting stays here; the deciding moved.
 const argv = process.argv.slice(2);
 const mode = parseMode(argv[0]);
 const flagProblem = leadingFlagError(argv) ?? tagPositionError(argv, mode);
