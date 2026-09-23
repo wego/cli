@@ -168,6 +168,8 @@ const EVALS: Record<string, string> = {
   not_configured: "not configured",
 };
 
+/** One GitHub API request, well under the gap between two looks. */
+const REQUEST_TIMEOUT_MS = 30_000;
 const RELEASE_TAG = /^v\d+\.\d+\.\d+$/;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const FENCE = /```json[^\S\n]*\n([\s\S]*?)```/g;
@@ -528,10 +530,14 @@ export function pollLine(
   const check = found.check;
   if (!check) return `${at}: not started yet`;
   if (check.status === "completed") {
-    return `${at}: completed: ${check.output?.title ?? check.conclusion ?? "no title"}`;
+    // The log is stdout, which the runner reads for workflow commands, so the
+    // writer's text is kept to one line (`cell`), as everywhere else it shows.
+    return `${at}: completed: ${cell(check.output?.title ?? check.conclusion ?? "no title")}`;
   }
   const link =
-    firstSeen && check.details_url ? `: wego-ai run ${check.details_url}` : "";
+    firstSeen && check.details_url
+      ? `: wego-ai run ${cell(check.details_url)}`
+      : "";
   return `${at}: in progress${link}`;
 }
 
@@ -704,8 +710,13 @@ function github(env: Env, fetcher: Fetch) {
     "User-Agent": "wego-cli-next-report",
     "X-GitHub-Api-Version": "2022-11-28",
   };
+  // A hung connection would otherwise hold one look past every deadline the
+  // wait keeps; timed out, it is one more failed look.
   const get = async (path: string): Promise<unknown> => {
-    const res = await fetcher(`${base}${path}`, { headers });
+    const res = await fetcher(`${base}${path}`, {
+      headers,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
     if (!res.ok) throw new Error(`GET ${path} answered HTTP ${res.status}`);
     return res.json();
   };

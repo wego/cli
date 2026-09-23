@@ -57,7 +57,7 @@ it("prints the caller's identity", async () => {
   needs `route(first, then)`, not a read count.
 - Logged-out, expired and refreshed sessions: `signIn(s.home, {...})` plus the
   fake's `accept` and `refresh` options (see `integration/auth.test.ts`).
-- Faults: `{ fault: "non-json" }`, `{ fault: "truncated" }`, `startDropper()`.
+- Faults: `{ fault: "non-json" }`, `startDropper()` (a reset) and `startDropper({ partial: true })` (a body cut off).
 - The test fails by itself if any request or answer breaks the contract, or a
   request reaches a route nobody declared. Do not assert that separately.
 - Keep a scenario under a few seconds. A path that needs a long wait is tested

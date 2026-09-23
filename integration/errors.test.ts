@@ -89,14 +89,27 @@ describe("error classes", () => {
     }
   });
 
-  for (const fault of ["non-json", "truncated"] as const) {
-    it(`a ${fault} body exits non-zero and prints nothing on stdout`, async () => {
-      const { result } = await placesAnswering({ fault });
+  it("a non-json body exits non-zero and prints nothing on stdout", async () => {
+    const { result } = await placesAnswering({ fault: "non-json" });
+    expect(result.code).not.toBe(0);
+    expect(result.out).toBe("");
+    expect(result.err).not.toBe("");
+  });
+
+  it("a body cut off mid-read exits non-zero and prints nothing on stdout", async () => {
+    signIn(s.home);
+    const dropper = startDropper({ partial: true });
+    try {
+      const result = await s.run(["places", "London"], {
+        env: { WEGO_API_URL: dropper.url },
+      });
       expect(result.code).not.toBe(0);
       expect(result.out).toBe("");
       expect(result.err).not.toBe("");
-    });
-  }
+    } finally {
+      dropper.stop();
+    }
+  });
 
   it("reaches nothing outside this machine", async () => {
     // The suite's own guarantee, not the CLI's: a real host is refused before a

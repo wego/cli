@@ -74,7 +74,7 @@ const query = (
   op: string,
 ) => Object.fromEntries(fake.requests(op)[0]?.query ?? []);
 
-/** The #1534 rule: the API's request-scoped `*Source` copies inside `metadata`
+/** The rule: the API's request-scoped `*Source` copies inside `metadata`
  *  are stripped at print time, so the CLI's own top-level label is the ONE
  *  `*Source` a payload carries per knob. The `locale` echo stays. */
 function expectOneSourcePerKnob(
@@ -465,7 +465,7 @@ describe("hotels search", () => {
     );
     expect(printed.settled).toBe("converged");
     // The one stderr line on a fresh machine is the currency-setting hint the
-    // search prints while no currency is stored (issue #1386).
+    // search prints while no currency is stored.
     expect(result.err.trim().split("\n")).toEqual([
       expect.stringContaining("config set currency"),
     ]);
@@ -489,8 +489,8 @@ describe("hotels search", () => {
     ["neither leaves it to the API's default", {}, [], "default", undefined],
   ] as const) {
     it(`names the layer the currency came from: ${rung}`, async () => {
-      // The create and the settle read must carry the SAME resolved currency
-      // (#1400), so the page is priced in the unit the search was created in.
+      // The create and the settle read must carry the SAME resolved currency,
+      // so the page is priced in the unit the search was created in.
       signIn(s.home);
       writeSettings(s.home, settings);
       const fake = s.fake({
@@ -599,7 +599,7 @@ describe("hotels search", () => {
     );
   });
 
-  it("converges on a steady candidate count while searchComplete stays false (#1084)", async () => {
+  it("converges on a steady candidate count while searchComplete stays false", async () => {
     signIn(s.home);
     const fake = s.fake({
       routes: [

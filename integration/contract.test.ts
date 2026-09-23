@@ -1,9 +1,14 @@
 /**
  * The contract check can fail. A validator that passes everything would make every
- * scenario vacuous, so each way it rejects is pinned here once.
+ * scenario vacuous, so each way it rejects is pinned here once, with the manifest
+ * check that stands before a provided binary runs.
  */
 
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { checkAgainstManifest } from "./harness/binary";
 import {
   matchOperation,
   operationById,
@@ -73,6 +78,16 @@ describe("contract check", () => {
     expect(validate({}, { type: "object", patternProperties: {} })).toEqual([
       '$: unsupported schema keyword "patternProperties"',
     ]);
+    // Inside a branch too, where a passing sibling would otherwise hide it.
+    const unread = { type: "object", patternProperties: {} };
+    for (const branches of [
+      { anyOf: [unread, { type: "object" }] },
+      { oneOf: [unread, { type: "object" }] },
+    ]) {
+      expect(validate({}, branches)).toEqual([
+        '$: unsupported schema keyword "patternProperties"',
+      ]);
+    }
   });
 
   it("records a request no route expects, and an invalid fixture", async () => {
@@ -105,6 +120,31 @@ describe("contract check", () => {
       expect(fake.violations).toEqual([]);
     } finally {
       fake.stop();
+    }
+  });
+});
+
+describe("a provided binary is checked before it runs", () => {
+  it("accepts matching bytes and refuses changed or unlisted ones", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wego-manifest-"));
+    try {
+      const bin = join(dir, "wego-linux-x64");
+      writeFileSync(bin, "the built bytes");
+      const sum = new Bun.CryptoHasher("sha256")
+        .update("the built bytes")
+        .digest("hex");
+      const manifest = join(dir, "SHA256SUMS.txt");
+      writeFileSync(manifest, `${sum}  wego-linux-x64\n`);
+      expect(() => checkAgainstManifest(bin, manifest)).not.toThrow();
+
+      writeFileSync(bin, "other bytes");
+      expect(() => checkAgainstManifest(bin, manifest)).toThrow(
+        /does not match/,
+      );
+      writeFileSync(manifest, `${sum}  wego-darwin-arm64\n`);
+      expect(() => checkAgainstManifest(bin, manifest)).toThrow(/lists no/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

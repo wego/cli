@@ -2,7 +2,7 @@
  * The contract every exchange in the fake is checked against: `contract/openapi.json`,
  * the vendored copy of the API's published document.
  *
- * This is what keeps the fake honest (#1328). A hand-written stand-in can only fail
+ * This is what keeps the fake honest. A hand-written stand-in can only fail
  * when it disagrees with itself; a fake whose every request and every answer must
  * satisfy the API's own published schema fails when the CLI and the API disagree,
  * which is the one disagreement this tier exists to catch.
@@ -183,7 +183,14 @@ export function validate(value: unknown, schema: Schema, at = "$"): string[] {
 
   if (s.anyOf || s.oneOf) {
     const branches = (s.anyOf ?? s.oneOf) as Schema[];
-    const passing = branches.filter((b) => validate(value, b, at).length === 0);
+    const results = branches.map((b) => validate(value, b, at));
+    // A branch the validator cannot read fails the whole schema: counting it as a
+    // mere mismatch would let a sibling branch pass the value unread.
+    const unsupported = results
+      .flat()
+      .filter((e) => e.includes("unsupported schema keyword"));
+    if (unsupported.length > 0) return unsupported;
+    const passing = results.filter((r) => r.length === 0);
     if (s.anyOf && passing.length === 0) {
       errors.push(`${at}: matches none of anyOf`);
     }

@@ -278,6 +278,18 @@ describe("the release lane's wait", () => {
     );
   });
 
+  it("keeps a writer's title on one line, so it cannot start a workflow command", () => {
+    const titled = check({
+      output: { title: "ok\n::stop-commands::x", summary: null, text: null },
+    });
+    expect(pollLine({ check: titled }, 60_000, false)).not.toContain("\n");
+    const running = check({
+      status: "in_progress",
+      details_url: "https://example.test/1\n::warning::x",
+    });
+    expect(pollLine({ check: running }, 60_000, true)).not.toContain("\n");
+  });
+
   it("does not look when the receiver is switched off (404)", async () => {
     const api = fakeApi(() => []);
     const clock = fakeClock();

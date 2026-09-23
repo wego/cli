@@ -24,7 +24,7 @@ exist at the process boundary.
 ## Why the fake can be trusted
 
 A fake that only answers what its author expected can only fail when it disagrees
-with itself (#1328). This one is held to the API's published contract instead:
+with itself. This one is held to the API's published contract instead:
 
 - **Every request** the binary sends is matched to an operation in
   `contract/openapi.json` and checked against it: path parameters, query parameters

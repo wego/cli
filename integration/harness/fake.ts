@@ -22,9 +22,8 @@ import {
  *  and `application/problem+json` from 400, which is what the API does. */
 export type Answer =
   | { status: number; body?: unknown; headers?: Record<string, string> }
-  /** Close the connection mid-body: the length promises more than arrives. */
-  | { fault: "truncated" }
-  /** A 200 whose body is not JSON: what a proxy's error page looks like. */
+  /** A 200 whose body is not JSON: what a proxy's error page looks like. A body
+   *  cut off mid-read is `startDropper({ partial: true })`. */
   | { fault: "non-json" };
 
 export interface Route {
@@ -148,14 +147,24 @@ function oauthError(error: string): Response {
   });
 }
 
-/** A port that accepts a connection and closes it before any answer: a reset, which
- *  a `Bun.serve` handler cannot produce. Point `WEGO_API_URL` at it. */
-export function startDropper(): { url: string; stop: () => void } {
+/** The start of an answer whose length promises far more body than is sent. */
+const PARTIAL_ANSWER =
+  "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 4096\r\n\r\n{";
+
+/** A port that accepts a connection and closes it, either before any answer (a
+ *  reset) or, with `partial`, one byte into a 4096-byte body. A `Bun.serve` handler
+ *  can produce neither: it rewrites the length to match the body it is given. Point
+ *  `WEGO_API_URL` at it. */
+export function startDropper(opts: { partial?: boolean } = {}): {
+  url: string;
+  stop: () => void;
+} {
   const listener = Bun.listen({
     hostname: "127.0.0.1",
     port: 0,
     socket: {
       data(socket) {
+        if (opts.partial) socket.write(PARTIAL_ANSWER);
         socket.end();
       },
     },
@@ -228,18 +237,9 @@ export function startFake(options: FakeOptions = {}): Fake {
 
   function send(answer: Answer): Response {
     if ("fault" in answer) {
-      if (answer.fault === "non-json") {
-        return new Response("<html>Bad gateway</html>", {
-          status: 200,
-          headers: { "content-type": "text/html" },
-        });
-      }
-      return new Response("{", {
+      return new Response("<html>Bad gateway</html>", {
         status: 200,
-        headers: {
-          "content-type": "application/json",
-          "content-length": "4096",
-        },
+        headers: { "content-type": "text/html" },
       });
     }
     return json(answer.status, answer.body ?? {}, answer.headers);

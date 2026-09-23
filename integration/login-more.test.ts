@@ -16,7 +16,7 @@ import { problem } from "./harness/fake";
 import { route } from "./harness/fixtures";
 import { loginThroughBrowser } from "./harness/login";
 import { useScenario } from "./harness/scenario";
-import { idToken, signIn, spawnWego } from "./harness/wego";
+import { idToken, signIn } from "./harness/wego";
 
 const s = useScenario();
 
@@ -27,31 +27,13 @@ const failurePath = () => join(s.home.configDir, "last-auth-failure.json");
 const idTokenExpiringIn = (ms: number) =>
   idToken({ exp: Math.floor((Date.now() + ms) / 1000) });
 
-/** Start `login`, wait for the authorize URL, and deliver the callback the
- *  "browser" would, returning the finished run. */
-async function loginWith(args: string[], env: Record<string, string>) {
-  const fake = s.fake();
-  const running = spawnWego(["login", ...args], {
-    fake,
-    home: s.home,
+/** Log in through the "browser" with login's own arguments and environment. */
+const loginWith = (args: string[], env: Record<string, string>) =>
+  loginThroughBrowser(s.fake(), s.home, {
+    tokens: { access_token: "access-9" },
+    args,
     env,
   });
-  const escaped = fake.authorizeUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const [printed] = await running.waitForErr(new RegExp(`${escaped}\\?\\S+`));
-  const authorize = new URL(printed).searchParams;
-  const redirectUri = authorize.get("redirect_uri") ?? "";
-  fake.armCode({
-    code: "code-1",
-    codeChallenge: authorize.get("code_challenge") ?? "",
-    redirectUri,
-    tokens: { access_token: "access-9" },
-  });
-  const state = encodeURIComponent(authorize.get("state") ?? "");
-  await fetch(`${redirectUri}?code=code-1&state=${state}`).catch(
-    () => undefined,
-  );
-  return { fake, result: await running.result };
-}
 
 /** A stored session whose access token has expired, so the next call refreshes. */
 function signInExpired(extra: { refreshToken?: string; idToken?: string }) {

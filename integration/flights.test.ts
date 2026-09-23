@@ -98,7 +98,7 @@ describe("flights search", () => {
     const printed = json<Printed & { results: { price: unknown }[] }>(result);
     expect(printed.searchId).toBe(body("flights-search").searchId);
     expect(printed.settled).toBe("converged");
-    // A card page, not trips: a price summary and no fares (#1308).
+    // A card page, not trips: a price summary and no fares.
     expect(printed.results[0]?.price).toEqual(
       body("flights-results").results[0].price,
     );
@@ -568,7 +568,7 @@ describe("flights results", () => {
   });
 
   it("a bare read inherits the stored currency and locale", async () => {
-    // Issue #1386: a plain read after a SAR search used to come back in USD.
+    // Regression: a plain read after a SAR search used to come back in USD.
     signIn(s.home);
     writeSettings(s.home, { currency: "SAR", locale: "ar" });
     const fake = s.fake({ routes: [route("flights-results")] });
@@ -637,7 +637,7 @@ describe("priced reads and their provenance", () => {
     it(`${read.argv.slice(0, 2).join(" ")} prints one *Source per knob, top level`, async () => {
       // The API's request-scoped copies inside `metadata` disagree with the CLI's
       // label by construction when a preference is stored, so they are stripped
-      // at print time and the echoes themselves are kept (#1534).
+      // at print time and the echoes themselves are kept.
       signIn(s.home);
       writeSettings(s.home, { currency: "SAR" });
       s.fake({ routes: read.routes() });

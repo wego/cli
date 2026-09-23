@@ -183,7 +183,7 @@ contract/openapi.json @sunny-wego @yeouchien-wego @chuyeowego
 #   - `harness/contract.ts` and `harness/fake.ts` hold every exchange to the
 #     contract. Relaxing the validator, or letting an unexpected request pass,
 #     turns the tier back into a fake that can only fail when it disagrees with
-#     itself (#1328), and every scenario still reads green.
+#     itself, and every scenario still reads green.
 #   - `fixtures/` is what the fake answers with. A fixture copied from a real
 #     response must not carry the account it came from; review is the check.
 integration/ @sunny-wego @yeouchien-wego @chuyeowego

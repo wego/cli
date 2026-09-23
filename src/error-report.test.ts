@@ -114,6 +114,18 @@ describe("isTimeoutError", () => {
 });
 
 describe("formatCliError (actionable stderr line)", () => {
+  it("names the auth server and why it could not be reached", () => {
+    const msg = formatCliError(
+      new TokenEndpointUnreachableError(
+        "https://auth.example.test/token",
+        new Error("certificate has expired"),
+      ),
+      "wego",
+    );
+    expect(msg).toContain("https://auth.example.test/token");
+    expect(msg).toContain("(certificate has expired)");
+  });
+
   it("includes code, detail, trace_id, and Retry-After for an API error", () => {
     const msg = formatCliError(
       new ApiHttpError(503, "GET /v1/flights/searches/:id/results", {

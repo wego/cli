@@ -17,7 +17,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, posix, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -58,26 +58,64 @@ function unitTestFiles(): string[] {
   return out.sort();
 }
 
-/** `import { a, type B, c as d } from "<spec>"` → the imported names. */
-export function importedNames(source: string, spec: RegExp): string[] {
+/** Every module a test file pulls in: the static clause (`undefined` for a
+ *  dynamic `import()` or `require`, which can reach any export) and the specifier. */
+export function imports(
+  source: string,
+): { clause: string | undefined; spec: string }[] {
+  const found: { clause: string | undefined; spec: string }[] = [];
+  const staticRe =
+    /\b(?:import|export)\s+([^;"'`]*?)\s*from\s*["']([^"']+)["']/g;
+  for (const m of source.matchAll(staticRe)) {
+    found.push({ clause: (m[1] ?? "").trim(), spec: m[2] ?? "" });
+  }
+  const bareRe = /\bimport\s*["']([^"']+)["']/g;
+  for (const m of source.matchAll(bareRe)) {
+    found.push({ clause: "", spec: m[1] ?? "" });
+  }
+  const dynamicRe = /\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g;
+  for (const m of source.matchAll(dynamicRe)) {
+    found.push({ clause: undefined, spec: m[1] ?? "" });
+  }
+  return found;
+}
+
+/** `{ a, type B, c as d }` → the value names it imports. */
+function namedImports(clause: string): string[] {
   const names: string[] = [];
-  const re = /import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+"([^"]+)"/g;
-  for (const m of source.matchAll(re)) {
-    if (!spec.test(m[2] ?? "")) continue;
-    for (const raw of (m[1] ?? "").split(",")) {
-      const name = raw.trim();
-      if (!name || name.startsWith("type ")) continue;
-      names.push(name.split(/\s+as\s+/)[0]?.trim() ?? name);
-    }
+  for (const raw of (/\{([^}]*)\}/.exec(clause)?.[1] ?? "").split(",")) {
+    const name = raw.trim();
+    if (!name || name.startsWith("type ")) continue;
+    names.push(name.split(/\s+as\s+/)[0]?.trim() ?? name);
   }
   return names;
 }
 
+/** The `src/` module a specifier names from `file`, whatever the directory depth
+ *  and extension: `../commands` from `src/testing/x.test.ts` is `commands`. */
+function srcModule(file: string, spec: string): string | undefined {
+  if (!spec.startsWith(".")) return undefined;
+  const resolved = posix
+    .normalize(posix.join(posix.dirname(file.replaceAll("\\", "/")), spec))
+    .replace(/\.(ts|js)$/, "");
+  return resolved.startsWith("src/")
+    ? resolved.slice("src/".length)
+    : undefined;
+}
+
+/** `path` is relative to the repository root, so a specifier resolves from it. */
 export function violations(path: string, source: string): string[] {
   const found: string[] = [];
-  for (const [module, entries] of Object.entries(ENTRY_POINTS)) {
-    const spec = new RegExp(`^(\\./|\\.\\./src/)${module}$`);
-    for (const name of importedNames(source, spec)) {
+  for (const { clause, spec } of imports(source)) {
+    const module = srcModule(path, spec);
+    const entries = module ? ENTRY_POINTS[module] : undefined;
+    if (!module || !entries || clause?.startsWith("type ")) continue;
+    // A namespace, default, bare or dynamic import reaches every export.
+    if (clause === undefined || !/^\{[^}]*\}$/.test(clause)) {
+      found.push(`${path} imports all of ${module}`);
+      continue;
+    }
+    for (const name of namedImports(clause)) {
       if (entries.includes(name))
         found.push(`${path} imports ${name} from ${module}`);
     }
@@ -102,27 +140,50 @@ describe("unit tests stay below the command boundary", () => {
   it("catches each way in", () => {
     expect(
       violations(
-        "x.test.ts",
+        "src/x.test.ts",
         [
           'import { run } from "./index";',
           'import { parseLoginArgs, login as doLogin } from "./commands";',
           'import { config } from "./config-command";',
           'import { runCli } from "./testing/cli-runner";',
+          'import * as cmd from "./commands";',
+          'const t = await import("./telemetry-command");',
+          'import { hotels } from "./commands.ts";',
         ].join("\n"),
       ),
     ).toEqual([
-      "x.test.ts imports run from index",
-      "x.test.ts imports login from commands",
-      "x.test.ts imports config from config-command",
-      "x.test.ts imports the in-process CLI runner",
+      "src/x.test.ts imports run from index",
+      "src/x.test.ts imports login from commands",
+      "src/x.test.ts imports config from config-command",
+      "src/x.test.ts imports all of commands",
+      "src/x.test.ts imports hotels from commands",
+      "src/x.test.ts imports all of telemetry-command",
+      "src/x.test.ts imports the in-process CLI runner",
     ]);
+    // From any directory depth.
+    expect(
+      violations(
+        "src/testing/x.test.ts",
+        'import { whoami } from "../commands";',
+      ),
+    ).toEqual(["src/testing/x.test.ts imports whoami from commands"]);
+    expect(
+      violations(
+        "scripts/sub/x.test.ts",
+        'import { run } from "../../src/index";',
+      ),
+    ).toEqual(["scripts/sub/x.test.ts imports run from index"]);
   });
 
   it("lets a parser and a type through", () => {
     expect(
       violations(
-        "x.test.ts",
-        'import { type FlightsDeps, parseFlightSearchArgs } from "./commands";',
+        "src/x.test.ts",
+        [
+          'import { type FlightsDeps, parseFlightSearchArgs } from "./commands";',
+          'import type * as Commands from "./commands";',
+          'import { run } from "./other/index";',
+        ].join("\n"),
       ),
     ).toEqual([]);
   });

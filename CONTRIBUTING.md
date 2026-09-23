@@ -245,7 +245,7 @@ Or one at a time:
 bun run lint         # biome check: formatting, lint rules, import order
 bun run format       # the same, writing every safe fix
 bun run typecheck    # tsc --noEmit
-bun test             # unit tests
+bun run test         # unit tests
 bun run test:integration   # the compiled binary against a contract-checked fake
 ```
 

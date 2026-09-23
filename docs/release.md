@@ -147,7 +147,7 @@ reading it.
 2. The receiver accepts exactly one identity: a `push` of `refs/tags/<tag>` from
    `wego/cli/.github/workflows/release-cli.yml@refs/tags/<tag>`, with the body's
    `sha`. Anything else is a `400`, `401` or `403`. It then starts wego-ai's
-   `cli-next-smoke.yml` for that tag.
+   smoke workflow for that tag.
 3. That workflow writes two check runs on the tag's commit, as the gate App (id
    `4987365`, `checks: write` on this repository only):
    - **`cli-next-smoke`**: it installs the published binary after verifying its

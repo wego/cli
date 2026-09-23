@@ -26,12 +26,27 @@ export async function loginThroughBrowser(
       redirectUri: string,
       state: string,
     ) => string | { url: string; headers: Record<string, string> };
+    /** Login's arguments: `--no-browser` unless a scenario says otherwise. */
+    args?: string[];
+    env?: Record<string, string>;
   },
 ): Promise<LoginRun> {
-  const running = spawnWego(["login", "--no-browser"], { fake, home });
+  const running = spawnWego(["login", ...(opts.args ?? ["--no-browser"])], {
+    fake,
+    home,
+    env: opts.env,
+  });
   const escaped = fake.authorizeUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const [printed] = await running.waitForErr(new RegExp(`${escaped}\\?\\S+`));
-  const authorize = new URL(printed).searchParams;
+  let authorize: URLSearchParams;
+  try {
+    const [printed] = await running.waitForErr(new RegExp(`${escaped}\\?\\S+`));
+    authorize = new URL(printed).searchParams;
+  } catch (err) {
+    // Otherwise the binary keeps its loopback port and outlives the
+    // scenario's home directory.
+    running.kill();
+    throw err;
+  }
   const redirectUri = authorize.get("redirect_uri") ?? "";
   const state = authorize.get("state") ?? "";
   fake.armCode({

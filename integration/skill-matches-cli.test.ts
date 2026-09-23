@@ -54,15 +54,24 @@ export function longFlags(command: string): string[] {
   return [...new Set(command.match(/(?<![\w-])--[a-z][a-z0-9-]*/g) ?? [])];
 }
 
+/** Whether `help` lists `flag` as a whole token, so `--page` is not found inside
+ *  `--page-size`. */
+function listsFlag(help: string, flag: string): boolean {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^\\w-])${escaped}(?![\\w-])`, "m").test(help);
+}
+
 const home = makeHome();
 const helpCache = new Map<string, { code: number; out: string }>();
 
 /** `wego <path> --help`, falling back to the parent when a word is an argument
- *  rather than a subcommand (`config set currency`, `places London`). */
+ *  rather than a subcommand (`config set currency`, `places London`). The first
+ *  word is never dropped: root help always answers, so falling back to it would
+ *  pass a renamed top-level command. */
 async function helpFor(
   path: string[],
 ): Promise<{ path: string[]; out: string } | undefined> {
-  for (let n = path.length; n >= 0; n -= 1) {
+  for (let n = path.length; n >= Math.min(1, path.length); n -= 1) {
     const candidate = path.slice(0, n);
     const key = candidate.join(" ");
     let result = helpCache.get(key);
@@ -90,7 +99,7 @@ describe("the skill matches the CLI", () => {
       const help = await helpFor(commandPath(command));
       expect(help, `no \`--help\` answers for: ${command}`).toBeDefined();
       const missing = longFlags(command).filter(
-        (flag) => flag !== "--help" && !help?.out.includes(flag),
+        (flag) => flag !== "--help" && !listsFlag(help?.out ?? "", flag),
       );
       expect(
         missing,
@@ -129,5 +138,13 @@ describe("reading the skill", () => {
       "--check",
       "--locale",
     ]);
+  });
+
+  it("finds a flag in help only as a whole token", () => {
+    const help = "  --page-size <n>  Results per page\n  --types <list>";
+    expect(listsFlag(help, "--page")).toBe(false);
+    expect(listsFlag(help, "--type")).toBe(false);
+    expect(listsFlag(help, "--page-size")).toBe(true);
+    expect(listsFlag("--sort=price", "--sort")).toBe(true);
   });
 });
