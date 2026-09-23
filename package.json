@@ -19,6 +19,7 @@
     "format": "biome check --write",
     "typecheck": "bun run api-types:generate && bunx --package @typescript/native tsc --noEmit",
     "test": "bun --env-file=.env.local.example test ./src ./scripts",
+    "test:integration": "bun test --timeout 30000 --preload ./integration/harness/preload.ts ./integration",
     "check": "bun run lint && bun run typecheck && bun run test",
     "prepare": "husky"
   },

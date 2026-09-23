@@ -1,0 +1,8 @@
+{
+  "op": "getFareBookingLink",
+  "status": 200,
+  "body": {
+    "bookingUrl": "https://www.wego.com/flights/searches/x/economy/1a:0c:0i/s1msr:TR610~10/f_88_1/booking?ulang=en&placement_type=integrated_booking&from_v2=true",
+    "expires": true
+  }
+}

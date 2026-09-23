@@ -11,7 +11,18 @@
     // `api-types:generate` and is not committed. The vendored contract itself
     // IS formatted here like everything else - `api-contract:refresh` runs
     // biome over it after writing, so a refresh never leaves this red.
-    "includes": ["**", "!node_modules", "!dist", "!src/api-types.d.ts"]
+    //
+    // `scripts/next-report/payloads/` is the cross-repository interface with
+    // wego-ai, which tests its writer against the same files byte for byte. They
+    // are not this repository's to reformat, and `malformed.json` is invalid on
+    // purpose.
+    "includes": [
+      "**",
+      "!node_modules",
+      "!dist",
+      "!src/api-types.d.ts",
+      "!scripts/next-report/payloads"
+    ]
   },
   "formatter": {
     "enabled": true,

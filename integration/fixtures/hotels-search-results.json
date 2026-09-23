@@ -1,0 +1,68 @@
+{
+  "op": "getHotelSearchResults",
+  "status": 200,
+  "body": {
+    "searchId": "hs-dxb-0001",
+    "currencyCode": "USD",
+    "searchComplete": true,
+    "stay": {
+      "checkIn": "2026-10-23",
+      "checkOut": "2026-10-25",
+      "nights": 2,
+      "occupancy": { "adults": 2, "childrenAges": [11], "rooms": 1 }
+    },
+    "metadata": {
+      "page": 1,
+      "pageSize": 10,
+      "resultCount": 2,
+      "totalCandidates": 415,
+      "totalBeforeFilters": 415,
+      "filterOptions": {
+        "amenities": [{ "name": "Swimming Pool", "count": 310 }],
+        "propertyTypes": [{ "name": "Hotel", "count": 380 }],
+        "brands": [{ "name": "Hyatt", "count": 6 }],
+        "chains": [{ "name": "Hyatt Hotels", "count": 6 }],
+        "districts": [{ "name": "Bur Dubai", "count": 42 }],
+        "rateTypes": [{ "name": "Free Cancellation", "count": 201 }],
+        "guestTypes": [{ "name": "couple", "count": 390 }]
+      },
+      "hasMore": true,
+      "snapshotCandidateCount": 415,
+      "currencyCode": "USD",
+      "currencyCodeSource": "explicit",
+      "locale": "en",
+      "localeSource": "explicit"
+    },
+    "results": [
+      {
+        "hotelId": 85481,
+        "name": "Grand Hyatt Dubai",
+        "pageUrl": "https://www.wego.com/hotels/united-arab-emirates/dubai/grand-hyatt-dubai-85481",
+        "star": 5,
+        "review": { "score": 8.9, "count": 5120 },
+        "price": {
+          "scope": "booking",
+          "amountPerNight": 214.5,
+          "totalUsd": 429,
+          "currency": "USD"
+        },
+        "refundable": "available",
+        "badges": []
+      },
+      {
+        "hotelId": 262411,
+        "name": "Rove Downtown",
+        "pageUrl": "https://www.wego.com/hotels/united-arab-emirates/dubai/rove-downtown-262411",
+        "star": 3,
+        "price": {
+          "scope": "booking",
+          "amountPerNight": 96,
+          "totalUsd": 192,
+          "currency": "USD"
+        },
+        "refundable": "unknown",
+        "badges": []
+      }
+    ]
+  }
+}

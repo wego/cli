@@ -1,0 +1,11 @@
+{
+  "op": "getHotel",
+  "status": 200,
+  "body": {
+    "hotelId": 85481,
+    "name": "Grand Hyatt Dubai",
+    "pageUrl": "https://www.wego.com/hotels/united-arab-emirates/dubai/grand-hyatt-dubai-85481",
+    "star": 5,
+    "location": {}
+  }
+}

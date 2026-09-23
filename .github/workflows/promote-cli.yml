@@ -29,6 +29,54 @@ permissions:
   contents: read
 
 jobs:
+  # wego-ai's verdicts for the tag, the smoke (`cli-next-smoke`) and the skill
+  # evals (`cli-next-evals`), one line each with a link, at the top of this run's
+  # summary, so the person promoting sees them beside the gates. The evals can
+  # take hours, so this is often the first place their result is shown.
+  # `release-cli.yml`'s `next-report` shows the smoke's full table.
+  #
+  # READ-ONLY AND GATES NOTHING. No job needs it, it is `continue-on-error`, and
+  # the script exits 0 on every state it knows, so a missing, running or bad
+  # report never holds a promote back and never lets one through. The promoter
+  # decides; the banner only makes sure the verdict was in front of them.
+  #
+  # One look, no polling: "No report yet, started N min ago" is a true answer, and
+  # a promote that waited behind a smoke would be a gate by another name.
+  #
+  # `checks: read` and `contents: read`, nothing else: no environment, no secret,
+  # no `id-token`. It checks out `main` (the dispatch ref), not the tag: a tag cut
+  # before `scripts/next-report.ts` existed has no script to run. The script asks
+  # the API for the tag's commit and reads only a check written by wego-ai's App.
+  next-report:
+    name: next report for ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Show the next report banner
+        continue-on-error: true
+        env:
+          TAG: ${{ inputs.tag }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          bun run scripts/next-report.ts --banner
+          code=$?
+          if [ "$code" -ne 0 ]; then
+            echo "● No report: next-report exited $code" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::next-report exited $code before writing a banner."
+          fi
+          exit 0
+
   # The human gate.
   #
   # Not an environment with required reviewers - and no longer because we cannot

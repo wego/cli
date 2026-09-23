@@ -1,6 +1,7 @@
 name: ci-cli
 
-# Lint, typecheck and unit tests. Runs on every pull request and every push to main.
+# Lint, typecheck, unit tests and the integration suite. Runs on every pull
+# request and every push to main.
 #
 # The job name `ci-cli` is the required status check on `main`. Do not rename it
 # without a ruleset change. There is no path filter: a filtered workflow does not
@@ -231,3 +232,20 @@ jobs:
       # so it would audit the same commit concurrently.
       - name: Audit the installed dependency tree (bun.lock)
         run: bun audit --audit-level=high
+
+      # The compiled `wego` binary against a local fake API (`integration/`). The
+      # unit tests above run the source; this runs what `bun build --compile` makes
+      # of it, which is what ships. Hermetic: the fake is a `Bun.serve` on loopback
+      # and every other request is refused, so a red here is this change, never the
+      # network.
+      #
+      # A step of `ci-cli`, not a job of its own, so the one required check on
+      # `main` already blocks on it and no ruleset change is needed. linux-x64 only:
+      # the suite compiles the host binary when `WEGO_INTEGRATION_BINARY` is unset.
+      # The other four targets run in `release-cli.yml`, against the binaries that
+      # release built.
+      - name: Integration tests (compiled binary, fake API)
+        env:
+          # The suite drives a production build. Do not post CI runs as product usage.
+          WEGO_CLI_TELEMETRY: "0"
+        run: bun run test:integration

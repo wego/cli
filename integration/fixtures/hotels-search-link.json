@@ -1,0 +1,8 @@
+{
+  "op": "getHotelSearchLink",
+  "status": 200,
+  "body": {
+    "searchUrl": "https://www.wego.com/hotels/searches/bkk/2026-10-23/2026-10-25?guests=2&ulang=en",
+    "expires": false
+  }
+}

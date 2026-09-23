@@ -49,17 +49,25 @@ to the tag is that merge.
 
 ### 2. `release-cli.yml`, on the tag
 
-Fires on `push: tags: ['v*']`. Seven jobs:
+Fires on `push: tags: ['v*']`. Ten jobs:
 
 | Job | Runner | What it is for |
 |---|---|---|
 | `prepare` | ubuntu | Refuses a tag that is not on `main`, then lint, format, typecheck and unit tests |
 | `build` | ubuntu | One job, not a matrix: `bun build --compile` cross-compiles all five targets in it. **No `environment:`**, deliberately, so it cannot reach the store token |
-| `sign` | ubuntu | Signs `SHA256SUMS.txt` with keyless cosign. **No `environment:`** either, and `id-token: write` is granted here and nowhere else. The job that can sign cannot write the store, and the job that writes the store cannot sign |
+| `integration (<target>)` | one per target | The integration tier (`integration/`) against the binary `build` produced for that target, on that target's own runner: linux x64 and arm64, macOS arm64 and Intel, Windows. `release` **needs** all five, so a binary that fails its scenarios is never published |
+| `sign` | ubuntu | Signs `SHA256SUMS.txt` with keyless cosign. **No `environment:`** either. The job that can sign cannot write the store, and the job that writes the store cannot sign |
 | `leave-macos` | macOS | Runs the pre-publication checks against `wego-darwin-arm64`. `release` **needs** it, so darwin gates publication rather than reporting after it |
 | `release` | ubuntu | `environment: release`, `concurrency: group: ring-next` with `cancel-in-progress: false`, because a cancel mid-copy is a half-moved ring. The only job that advances a ring. **`contents: read`** – it holds the store token, so it must not also hold repository write |
 | `announce` | ubuntu | Creates the GitHub Release and attaches `SHA256SUMS.txt`. **`contents: write` and no `environment:`** – the mirror image of `release`, and the reason the two are separate jobs |
 | `replace-macos` | macOS | The darwin half of the post-pointer replace proof. `needs: release`, because the checks in it read the ring |
+| `notify-verify` | ubuntu | Asks wego-ai to smoke and evaluate this release against staging. `id-token: write` and nothing else: no `environment:`, no secret, no variable. See [The next report](#the-next-report) |
+| `next-report` | ubuntu | Waits for wego-ai's answer and writes it at the top of this run's summary. `checks: read` and `contents: read`; `continue-on-error`, so it never turns the run red |
+
+`id-token: write` is granted to exactly three jobs in two files: `sign` in
+`edge-cli.yml`, and `sign` and `notify-verify` here.
+`scripts/workflow-shape.test.ts` names that set and fails on any other job
+holding it, at any level, in any workflow file.
 
 The commit-point order inside `release` matters and is fixed: **binaries and the
 `COMMIT` sidecar first, then the record, then `SHA256SUMS.txt`, then a
@@ -120,6 +128,106 @@ a rollback does not reach a machine whose binary cannot take one.
 
 ---
 
+## The next report
+
+Every gate above is about the artifact, and the integration tier is about the
+binary against the API's contract. None of them runs the binary against a real
+backend, because hosted runners cannot reach one and there is no production login
+for CI. That run happens in wego-ai, against staging, and its answer comes back
+into the release run before anyone promotes.
+
+It **reports; it never blocks.** Promoting is a person's decision, made after
+reading it.
+
+### How it works
+
+1. Once `cli/next` serves the new tag, `notify-verify` posts `{"tag", "sha"}` to
+   `https://api.wego.com/.well-known/internal/cli-verify` with this run's GitHub OIDC token
+   (audience `wego-cli-verify`).
+2. The receiver accepts exactly one identity: a `push` of `refs/tags/<tag>` from
+   `wego/cli/.github/workflows/release-cli.yml@refs/tags/<tag>`, with the body's
+   `sha`. Anything else is a `400`, `401` or `403`. It then starts wego-ai's
+   `cli-next-smoke.yml` for that tag.
+3. That workflow writes two check runs on the tag's commit, as the gate App (id
+   `4987365`, `checks: write` on this repository only):
+   - **`cli-next-smoke`**: it installs the published binary after verifying its
+     signed record, smokes it against staging, and completes the check with a
+     verdict. Minutes.
+   - **`cli-next-evals`**: then, if the smoke passed, the skill evals on the tag's
+     skill and binary, against the previous version's scores. Up to hours. Which
+     sets run depends on what changed since the last evaluated release (below).
+4. `next-report` waits for the smoke check, up to 45 minutes, logging every look,
+   and writes its verdict at the top of this run's summary, with one line on
+   where the evals are. The promote banner shows both.
+
+**This repository holds no credential for any of it, and no setting.** The OIDC
+token is signed by GitHub; nothing here can write a check or widen what the
+receiver allows. The eval material (cases, scores, transcripts) never leaves
+wego-ai; the check carries only the verdict and a part table.
+
+`notify-verify` reads the receiver's answer by status:
+
+| Status | Means | The job |
+|---|---|---|
+| `202` | Started | passes |
+| `409` | A retry replayed a token the receiver had already spent, so the first attempt started it | passes, with a notice |
+| `404` | The receiver is switched off | passes, with a notice: **this release was not verified** |
+| anything else | Refused | **fails**. Nothing depends on it, the release is already published, but a refused request is a broken pipeline and should be loud |
+
+### Reading it
+
+The verdict comes first, then only what changed against the previous release.
+The smoke (`cli-next-smoke`):
+
+| Verdict | Check conclusion | Means |
+|---|---|---|
+| **✓ Ready** | `success` | Every part matched or improved on the previous version |
+| **⚠ Look first** | `neutral` | Something changed past its threshold: a search round trip was not reached twice in a row, or startup is noticeably slower |
+| **✗ Staging problem** | `failure` | A must-pass step failed and staging's own health check was failing too: probably not this release |
+| **✗ Binary problem** | `failure` | A must-pass step failed while staging was healthy, or the binary is not the tag |
+| **● No report** | none | The receiver is switched off, the request was refused, or wego-ai did not start within 10 minutes |
+| **● No report yet** | `in_progress` | Still running after 45 minutes; the promote banner shows it once it arrives |
+
+The skill evals (`cli-next-evals`), one line under the smoke's verdict:
+
+| Line | Check conclusion | Means |
+|---|---|---|
+| **Skill evals: ✓ Ready** | `success` | Every set that ran held against its baseline |
+| **Skill evals: ⚠ Look first** | `neutral` | A set scored lower than its baseline: read the private report before promoting |
+| **Skill evals: ● Skipped** | `skipped` | Nothing the evals measure changed, or they were turned off for this run; the reason is in the line |
+| **● Skill evals: running** / **not started yet** | `in_progress` / none | Still going; the promote banner shows the result once it lands |
+
+Only a check written by the gate App is read. `cli-next-smoke` is a name, and
+anything that can write checks on this repository could use it. The check's link
+points at the private wego-ai run, which org members can open.
+
+What the smoke runs: the install with its signed record; that the binary is the
+tag (its version, the commit its signed build record names, and the embedded skill equal to the tag's
+`skills/wego/SKILL.md`); `whoami`, `places` and the four `info` commands; three
+real error responses; flights and hotels round trips to a booking link, judged
+tolerantly because staging's inventory varies; and timings, report-only.
+
+Which evals run is wego-ai's decision, from what changed since the last release
+that was evaluated:
+
+| The release changed | Frozen regression set | Persona subset |
+|---|---|---|
+| `skills/` | runs | runs |
+| any command's `--help` text | runs | runs |
+| other `src/` | runs | skipped |
+| neither (docs, CI, tests) | skipped | skipped |
+
+A skipped set says so in the report, with the reason and the version its baseline
+comes from. wego-ai's workflow can force a full run or none.
+
+### Asking again
+
+Re-run the **`notify-verify`** job alone, then **`next-report`**. Nothing else
+depends on either, so nothing is re-published, and the receiver accepts the re-run:
+same workflow, same tag, a fresh token. GitHub allows re-runs for 30 days.
+
+---
+
 ## An edge build
 
 `edge-cli.yml` runs on every push to `main` — and on nothing else. It has no
@@ -146,7 +254,10 @@ It has no rollback mode. A promote only ever advances `cli/stable` onto what
 `cli/next` serves, so every gate below may assume `next == tag` unconditionally.
 Putting `stable` back on an earlier release is `rollback-cli.yml`.
 
-Two jobs:
+Three jobs. The first, **`next-report`**, only reads: it prints the tag's next
+report as a banner at the top of the run (`checks: read`, `continue-on-error`,
+needed by nothing), so the verdict is in front of whoever approves. It gates
+nothing.
 
 **`approve`** holds no secrets and no variables, and `promote` cannot begin until
 it passes. It refuses unless *both* the dispatcher and whoever started this

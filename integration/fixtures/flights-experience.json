@@ -1,0 +1,23 @@
+{
+  "op": "getTripExperience",
+  "status": 200,
+  "body": {
+    "tripId": "s1msr:TR638~3~1250~1425",
+    "legs": [
+      {
+        "id": "SIN-BKK:TR638~3:0",
+        "departureAirportCode": "SIN",
+        "arrivalAirportCode": "BKK",
+        "stopsCount": 0,
+        "signals": {
+          "overnight": false,
+          "longStopover": false,
+          "earlyDeparture": false,
+          "lateArrival": true,
+          "oldAircraft": true
+        }
+      }
+    ],
+    "metadata": { "legCount": 1 }
+  }
+}

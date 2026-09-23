@@ -1,0 +1,39 @@
+{
+  "schema": "cli-next-smoke/v1",
+  "version": "1.5.0",
+  "sha": "0123456789abcdef0123456789abcdef01234567",
+  "previous": "1.4.2",
+  "verdict": "ready",
+  "headline": "nothing new is wrong in v1.5.0",
+  "parts": [
+    {
+      "id": "binary",
+      "result": "pass",
+      "detail": "version · commit · skill"
+    },
+    {
+      "id": "stable",
+      "result": "pass",
+      "value": "6/6",
+      "previous": "6/6"
+    },
+    {
+      "id": "errors",
+      "result": "pass",
+      "value": "3/3",
+      "previous": "3/3"
+    },
+    {
+      "id": "search",
+      "result": "pass",
+      "value": "flights ✓ hotels ✓"
+    },
+    {
+      "id": "startup_ms",
+      "result": "report",
+      "value": 41,
+      "previous": 39
+    }
+  ],
+  "run_url": "https://github.com/wego/wego-ai/actions/runs/1"
+}

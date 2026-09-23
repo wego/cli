@@ -35,18 +35,36 @@
  * signing calls that drifted apart, killing an edge run and then the first real
  * release (see `.github/actions/sign-manifest`). Comments were present throughout.
  *
- * ASSERTED BY PROPERTY, NOT BY NAME. Nothing here pins the string "sign": the
- * claim is "exactly one job may sign, it is the one that runs the signing action,
- * and it can do nothing else". Rename the job freely; violate the shape and this
- * fails.
+ * ASSERTED BY PROPERTY WHERE THERE IS A PROPERTY. Nothing here pins the string
+ * "sign": the claim is "the job that may sign is the one that runs the signing
+ * action, and it can do nothing else". Rename the job freely; violate the shape
+ * and this fails.
+ *
+ * `ID_TOKEN_HOLDERS` below is the one deliberate exception, and it is a LIST
+ * because there is no longer a property that separates the holders. Two jobs now
+ * want an OIDC token for unrelated reasons: `sign` exchanges it for a Fulcio
+ * certificate, and the verification job presents it as an identity to a
+ * receiver in wego-ai that writes a check run back. "The job that runs cosign"
+ * does not describe the second kind, and "any job that needs an identity"
+ * describes every job anyone will ever want to add. So the set is enumerated, and
+ * widening it is a diff a release signer reviews rather than a property that
+ * quietly admits one more.
  *
  * The mutations this suite kills:
- *   - `id-token: write` added at workflow level, or to a second job -> "exactly one".
+ *   - `id-token: write` added at workflow level, or to a job outside the named
+ *     set -> "exactly these jobs".
  *   - the signing job given `setup-bun`, `bun install` or any `bun run` -> "installs nothing".
- *   - the signing job given an `environment:` or the store token -> "cannot reach the store".
+ *   - the signing job or a verification job given an `environment:` or the store
+ *     token -> "cannot reach the store".
  *   - a store-writing job given `id-token: write` -> "cannot sign".
  *   - a lane given a `workflow_call` trigger, or a job delegating to a reusable
  *     workflow -> "the signing call stays in the lane file".
+ *   - a verification job given a guard or a setting, or its body grown a third
+ *     field -> "always asks, and sends only what the receiver needs".
+ *   - the verification job given a checkout or any grant beside `id-token` ->
+ *     "an identity leaves, and nothing else does".
+ *   - a report reader given a write grant, an OIDC token or a secret, or made
+ *     able to go red -> "reads the report, and nothing else".
  */
 import { describe, expect, it } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -61,6 +79,33 @@ const SIGNING_LANES: string[] = ["edge-cli.yml", "release-cli.yml"];
 
 /** Every lane that can write a ring, signing or not. */
 const PUBLISHING_LANES: string[] = [...SIGNING_LANES, "promote-cli.yml"];
+
+/**
+ * EVERY JOB IN THE REPOSITORY THAT MAY HOLD `id-token: write`, by file and name.
+ *
+ * Three, in two files, and they are two kinds of thing:
+ *
+ *   edge-cli.yml    sign            cosign, for the edge ring's signed record
+ *   release-cli.yml sign            cosign, for the release manifest
+ *   release-cli.yml notify-verify   the release's identity, to the verify receiver
+ *
+ * The receiver in wego-ai reads the token's claims - `repository`, `event_name`,
+ * `ref`, `job_workflow_ref`, `sha` - and answers 403 to anything else, so the
+ * value of `id-token: write` in the verification job is precisely that it cannot
+ * be minted anywhere else and still match. A fourth job quietly granted the
+ * permission is a fourth place a token naming this repository can be produced, and
+ * `workflow-lanes.test.ts` cannot see it because none of these jobs touches a ring.
+ */
+const ID_TOKEN_HOLDERS: Record<string, string[]> = {
+  "edge-cli.yml": ["sign"],
+  "release-cli.yml": ["sign", "notify-verify"],
+};
+
+/** The job that presents an identity rather than signs with one. */
+const VERIFY_JOBS: [string, string][] = [["release-cli.yml", "notify-verify"]];
+
+/** The one receiver, spelled out in the workflow rather than read from a setting. */
+const RECEIVER_URL = "https://api.wego.com/.well-known/internal/cli-verify";
 
 const STORE_TOKEN = "BLOB_READ_WRITE_TOKEN";
 
@@ -85,6 +130,7 @@ const isLocalUses = (uses: string): boolean =>
   uses.startsWith("./") || uses.startsWith("$/");
 
 interface Step {
+  name?: string;
   uses?: string;
   run?: string;
   env?: Record<string, unknown>;
@@ -94,6 +140,8 @@ interface Job {
   environment?: unknown;
   env?: Record<string, unknown>;
   steps?: Step[];
+  needs?: string | string[];
+  if?: string;
   /** A job-level `uses:` is how a reusable workflow is called. */
   uses?: string;
 }
@@ -135,24 +183,61 @@ function signingJobs(wf: Workflow): string[] {
     .map(([name]) => name);
 }
 
+/**
+ * 1 - the whole security claim, half one, and now stated over the WHOLE directory
+ * rather than per signing lane.
+ *
+ * Scoping it to the two signing lanes was right while `sign` was the only holder
+ * anywhere; it is not right now, because a third file can grant the permission and
+ * a suite that only reads two files would never look. `readdirSync` is what makes
+ * "no other job, in no other workflow" an assertion rather than an intention.
+ */
+describe("id-token: write is granted to exactly the named jobs", () => {
+  const files = readdirSync(".github/workflows")
+    .filter((f) => /\.ya?ml$/.test(f))
+    .sort();
+
+  it("finds the workflows the named set refers to", () => {
+    // A renamed file would otherwise drop out of the scan AND out of the
+    // comparison, leaving this suite green having asserted nothing about it.
+    for (const file of Object.keys(ID_TOKEN_HOLDERS)) {
+      expect(
+        files,
+        `${file} is named in ID_TOKEN_HOLDERS but does not exist`,
+      ).toContain(file);
+    }
+  });
+
+  it.each(files)("%s grants it to exactly the jobs named for it", (file) => {
+    const holders = signers(lane(file));
+    // A workflow-level grant reaches every job in the file, including ones added
+    // later by someone who never read this test.
+    expect(
+      holders,
+      `${file} grants id-token at workflow level, which reaches every job in it`,
+    ).not.toContain("<workflow-level>");
+    expect(
+      holders.sort(),
+      `${file}'s id-token holders are not the named set. Widening it is a deliberate edit to ID_TOKEN_HOLDERS, reviewed by a release signer.`,
+    ).toEqual([...(ID_TOKEN_HOLDERS[file] ?? [])].sort());
+  });
+});
+
 describe.each(SIGNING_LANES)("%s: the signing capability", (file) => {
   const wf = lane(file);
 
-  // 1 — the whole security claim, half one.
-  it("grants id-token to exactly one job, and never at workflow level", () => {
-    const holders = signers(wf);
-    expect(holders).not.toContain("<workflow-level>");
-    expect(holders).toHaveLength(1);
-  });
-
   it("gives it to the job that actually signs, and to no other", () => {
-    expect(signingJobs(wf)).toEqual(signers(wf));
+    // Still a property: whatever else holds an OIDC token in this file, exactly
+    // one job runs the signing action, and it is one of the named holders.
+    const signing = signingJobs(wf);
+    expect(signing).toHaveLength(1);
+    expect(signers(wf)).toContain(signing[0] as string);
   });
 
   // 2 — the signing job runs no repository code, so there is nothing in it to
   // abuse the token it holds. `sign-manifest` needs cosign and a dist/ only.
   it("keeps the signing job free of anything that installs or runs dependencies", () => {
-    const [name] = signers(wf);
+    const [name] = signingJobs(wf);
     const steps = wf.jobs[name as string]?.steps ?? [];
     for (const step of steps) {
       expect(step.uses ?? "").not.toContain("setup-bun");
@@ -162,10 +247,278 @@ describe.each(SIGNING_LANES)("%s: the signing capability", (file) => {
 
   // 3 — and cannot reach the store even if something in it did run.
   it("keeps the store token and its environment out of the signing job", () => {
-    const [name] = signers(wf);
+    const [name] = signingJobs(wf);
     const job = wf.jobs[name as string] as Job;
     expect(job.environment).toBeUndefined();
     expect(JSON.stringify(job)).not.toContain(STORE_TOKEN);
+  });
+});
+
+/**
+ * THE VERIFICATION JOBS: an identity leaves, and nothing else does.
+ *
+ * It holds `id-token: write` so a receiver in wego-ai can read a token GitHub
+ * signed and decide, from its claims alone, whether this repository is asking. The
+ * whole arrangement rests on this repository holding NO credential for it, which is
+ * three separate properties and not one:
+ *
+ *   - no `environment:`, so the job cannot be handed the store token the way
+ *     `release` and the promote lanes are;
+ *   - no `secrets.` reference, so nothing is handed to it directly either;
+ *   - the request body carries the tag and the sha and nothing more, so a future
+ *     field cannot become a place to put something that matters.
+ *
+ * And no switch: the job always asks, and a receiver that is switched off answers
+ * 404, which the job reports as "not verified" rather than as a red release.
+ */
+describe.each(
+  VERIFY_JOBS,
+)("%s %s: presents an identity, holds no secret", (file, name) => {
+  const wf = lane(file);
+  const job = wf.jobs[name] as Job | undefined;
+  const text = JSON.stringify(job ?? {});
+
+  it("exists", () => {
+    expect(job, `${file} has no job '${name}'`).toBeDefined();
+  });
+
+  it("declares no environment, so it can never be handed the store token", () => {
+    expect(job?.environment).toBeUndefined();
+    expect(text).not.toContain(STORE_TOKEN);
+  });
+
+  it("reads no secret at all", () => {
+    expect(text).not.toContain("secrets.");
+  });
+
+  it("always runs, and asks the one receiver", () => {
+    // A guard or a variable here would be a second switch beside the receiver's.
+    expect(job?.if, `${file} ${name} must not be guarded`).toBeUndefined();
+    expect(text).not.toContain("vars.");
+    const post = (job?.steps ?? []).find((s) => s.env?.RECEIVER !== undefined);
+    expect(post?.env?.RECEIVER).toBe(RECEIVER_URL);
+  });
+
+  it("reads a switched-off receiver as not verified, not as a failure", () => {
+    const post = (job?.steps ?? []).find((s) => s.env?.RECEIVER !== undefined);
+    const arm = /\n\s*404\)([^;]*);;/.exec(post?.run ?? "");
+    expect(arm, `${file} ${name} has no 404) arm`).not.toBeNull();
+    expect(arm?.[1]).toContain("::notice::");
+    expect(arm?.[1]).not.toContain("exit 1");
+  });
+
+  it("sends the tag and the sha, and nothing else", () => {
+    // The receiver also accepts `suites`, `platforms` and `reason`. None is this
+    // repository's decision, and an unused field is one more thing two
+    // repositories have to keep agreeing about.
+    const post = (job?.steps ?? []).find((s) =>
+      (s.run ?? "").includes("jq -cn"),
+    );
+    expect(post?.run, `${file} ${name} builds no request body`).toBeDefined();
+    const body = /jq -cn([^']*)'([^']*)'/.exec(post?.run ?? "");
+    expect(body?.[2]).toBe("{tag:$tag, sha:$sha}");
+    // `--arg`, so the two values are jq data rather than jq program text.
+    expect(post?.run).toContain('--arg tag "$TAG"');
+    expect(post?.run).toContain('--arg sha "$SHA"');
+  });
+
+  it("interpolates no expression into a run body", () => {
+    // Everything arrives through `env:`. A `${{ }}` inside `run:` is substituted by
+    // the runner before bash sees it, which is how an input becomes code.
+    for (const step of job?.steps ?? []) {
+      expect(
+        step.run ?? "",
+        `${file} ${name}: a run: body interpolates a \${{ }} expression`,
+      ).not.toContain("${{");
+    }
+  });
+});
+
+/**
+ * The one `needs:` edge worth asserting, and why it is not simply "no edge".
+ *
+ * `notify-verify` waits for the job that advances `cli/next`, because a
+ * verification of bytes the ring is not yet serving proves nothing. That job is
+ * also the one holding the store token, so the edge exists on purpose and cannot be
+ * removed. What must stay true is that it is the ONLY such edge: `needs:` passes a
+ * job's outputs, never its secrets, but each additional edge to a token-bearing job
+ * is another place a future output could carry something it should not.
+ */
+describe("release-cli.yml: notify-verify waits for the pointer, and nothing else privileged", () => {
+  const wf = lane("release-cli.yml");
+
+  /** The job whose steps move `cli/next`. Found by the step, not by its name. */
+  const advancer = Object.entries(wf.jobs).find(([, job]) =>
+    (job.steps ?? []).some((s) => s.name === "Advance cli/next"),
+  )?.[0];
+
+  it("finds the job that advances cli/next", () => {
+    expect(advancer).toBeDefined();
+  });
+
+  it("needs no store-writing job but that one", () => {
+    const job = wf.jobs["notify-verify"] as Job | undefined;
+    const needs = job?.needs === undefined ? [] : [job.needs].flat();
+    const privileged = needs.filter((n) => storeWriters(wf).includes(n));
+    expect(privileged).toEqual([advancer as string]);
+  });
+});
+
+/**
+ * What `notify-verify` hands on, and what it holds while doing it.
+ *
+ * `next-report` reads the receiver's answer from a job output, so the output is
+ * part of the interface: rename it on one side and the reader sees an empty
+ * status, which it reads as "refused", and every report says so. And the job
+ * holds exactly one grant. It checks nothing out and reads no tree, so
+ * `contents: read` would be a second capability with no step to use it.
+ */
+describe("release-cli.yml: notify-verify hands on the answer, and holds only the token", () => {
+  const wf = lane("release-cli.yml");
+  const job = wf.jobs["notify-verify"] as
+    | (Job & { outputs?: Record<string, string> })
+    | undefined;
+  const post = (job?.steps ?? []).find((s) => s.env?.RECEIVER !== undefined) as
+    | (Step & { id?: string })
+    | undefined;
+
+  it("holds id-token: write and no other grant", () => {
+    expect(job?.permissions).toEqual({ "id-token": "write" });
+  });
+
+  it("checks nothing out and installs nothing", () => {
+    for (const step of job?.steps ?? []) {
+      expect(step.uses ?? "").not.toContain("actions/checkout");
+      expect(step.uses ?? "").not.toContain("setup-bun");
+      expect(step.run ?? "").not.toMatch(/\bbun (install|run|x)\b/);
+    }
+  });
+
+  it("asks for a token with the audience the receiver checks", () => {
+    expect(post?.run).toContain("audience=wego-cli-verify");
+  });
+
+  it("exposes the status output next-report reads, from the step that asks", () => {
+    expect(post?.id).toBeDefined();
+    expect(job?.outputs?.status?.replace(/\s+/g, "")).toBe(
+      `\${{steps.${post?.id}.outputs.status}}`,
+    );
+    // Written before the request, so a step that dies before an answer still
+    // leaves `error` to read, and again after it, with the code.
+    const run = post?.run ?? "";
+    expect(run.indexOf("status=error")).toBeGreaterThanOrEqual(0);
+    expect(run.indexOf("status=error")).toBeLessThan(run.indexOf("curl"));
+    expect(run).toContain('echo "status=$CODE" >> "$GITHUB_OUTPUT"');
+  });
+
+  it("fails loudly on any answer it does not name", () => {
+    const arm = /\n\s*\*\)([^;]*);;/.exec(post?.run ?? "");
+    expect(arm?.[1]).toContain("::error::");
+    expect(arm?.[1]).toContain("exit 1");
+  });
+});
+
+/**
+ * THE REPORT READERS: they read a check run, and can do nothing else.
+ *
+ * Two jobs run `scripts/next-report.ts`: `release-cli.yml`'s `next-report`, which
+ * waits for wego-ai's verdict after a release, and the banner at the top of
+ * `promote-cli.yml`. Both read another repository's text into a public summary,
+ * and both are advice rather than gates, which is two separate properties:
+ *
+ *   - READ-ONLY. `checks: read` for the API, `contents: read` for the checkout,
+ *     nothing else. No environment, no `id-token`, and no secret but the run's
+ *     own `github.token`: a reader that could write, sign or reach the store is a
+ *     privileged job whose input is text from outside this repository.
+ *   - NEVER RED. `continue-on-error` on the job, and a step that ends in
+ *     `exit 0`. A red reader would read as a failed release, or on the promote
+ *     lane as a refused gate, over a report that is only ever advice.
+ */
+const READERS: [string, string][] = [
+  ["release-cli.yml", "next-report"],
+  ["promote-cli.yml", "next-report"],
+];
+
+describe.each(
+  READERS,
+)("%s %s: reads the report, and nothing else", (file, name) => {
+  const wf = lane(file);
+  const job = wf.jobs[name] as
+    | (Job & { "continue-on-error"?: unknown })
+    | undefined;
+  const text = JSON.stringify(job ?? {});
+  const step = (job?.steps ?? []).find((s) =>
+    (s.run ?? "").includes("scripts/next-report.ts"),
+  );
+
+  it("exists, and runs the report script", () => {
+    expect(job, `${file} has no job '${name}'`).toBeDefined();
+    expect(step).toBeDefined();
+  });
+
+  it("holds checks: read, at most contents: read beside it, and nothing else", () => {
+    const grants = job?.permissions ?? {};
+    expect(grants.checks).toBe("read");
+    for (const [scope, level] of Object.entries(grants)) {
+      expect(
+        ["checks", "contents"],
+        `${file} ${name} grants ${scope}`,
+      ).toContain(scope);
+      expect(level, `${file} ${name} grants ${scope}: ${level}`).toBe("read");
+    }
+  });
+
+  it("declares no environment and reads no secret but the run's own token", () => {
+    expect(job?.environment).toBeUndefined();
+    expect(text).not.toContain(STORE_TOKEN);
+    expect(text).not.toContain("secrets.");
+    expect(text).not.toContain("vars.");
+    const tokens = [...text.matchAll(/\$\{\{\s*([^}]*?)\s*\}\}/g)]
+      .map((m) => m[1] ?? "")
+      .filter((expr) => /token/i.test(expr));
+    expect(tokens).toEqual(["github.token"]);
+  });
+
+  it("can never go red", () => {
+    expect(job?.["continue-on-error"]).toBe(true);
+    expect(step?.run?.trimEnd().endsWith("exit 0")).toBe(true);
+  });
+
+  it("is needed by no other job", () => {
+    for (const [other, j] of Object.entries(wf.jobs)) {
+      const needs = j.needs === undefined ? [] : [j.needs].flat();
+      expect(needs, `${file}: '${other}' needs '${name}'`).not.toContain(name);
+    }
+  });
+
+  it("interpolates no expression into a run body", () => {
+    for (const s of job?.steps ?? []) {
+      expect(s.run ?? "").not.toContain("${{");
+    }
+  });
+});
+
+describe("release-cli.yml: next-report runs whenever notify-verify ran", () => {
+  const job = lane("release-cli.yml").jobs["next-report"] as Job | undefined;
+
+  it("waits for notify-verify, red included, and only when it ran", () => {
+    // Without `always()` a refused request (a red notify-verify) would skip the
+    // one job that says why there is no report. Without the result check it
+    // would also run on a release that never published, and report on nothing.
+    expect(job?.needs).toContain("notify-verify");
+    const cond = (job?.if ?? "").replace(/\s+/g, " ");
+    expect(cond).toContain("always()");
+    expect(cond).toContain("needs.notify-verify.result == 'failure'");
+    expect(cond).toContain("needs.notify-verify.result == 'success'");
+  });
+
+  it("hands the script the receiver's answer through env", () => {
+    const step = (job?.steps ?? []).find((s) =>
+      (s.run ?? "").includes("scripts/next-report.ts"),
+    );
+    expect(String(step?.env?.NOTIFY_STATUS).replace(/\s+/g, "")).toBe(
+      `\${{needs.notify-verify.outputs.status}}`,
+    );
   });
 });
 

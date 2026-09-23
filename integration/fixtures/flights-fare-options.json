@@ -1,0 +1,25 @@
+{
+  "op": "getFareOptions",
+  "status": 200,
+  "body": {
+    "fareId": "f_88_1",
+    "currencyCode": "USD",
+    "options": [
+      {
+        "fareOptionId": "SQ_ECO_LITE",
+        "name": "Economy Lite",
+        "price": { "total": 512.3, "totalUsd": 512.3, "currency": "USD" },
+        "refundable": false,
+        "exchangeable": false,
+        "baggage": { "cabin": "7kg included" },
+        "penalties": []
+      }
+    ],
+    "metadata": {
+      "currencyCode": "USD",
+      "currencyCodeSource": "explicit",
+      "locale": "en",
+      "localeSource": "explicit"
+    }
+  }
+}

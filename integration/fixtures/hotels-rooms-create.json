@@ -1,0 +1,10 @@
+{
+  "op": "createHotelSearch",
+  "status": 201,
+  "body": {
+    "searchId": "hs-85481-0001",
+    "occupancy": { "adults": 2, "childrenAges": [], "rooms": 1 },
+    "siteCode": "US",
+    "siteCodeSource": "default"
+  }
+}

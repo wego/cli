@@ -1,0 +1,30 @@
+{
+  "op": "getPlaces",
+  "status": 200,
+  "body": {
+    "results": [
+      {
+        "id": 1,
+        "code": "LON",
+        "name": "London",
+        "type": "city",
+        "cityCode": "LON",
+        "latitude": 51.5,
+        "longitude": -0.12
+      },
+      {
+        "id": 2,
+        "code": "LHR",
+        "name": "London Heathrow Airport",
+        "type": "airport",
+        "cityCode": "LON"
+      }
+    ],
+    "metadata": {
+      "resultCount": 2,
+      "totalCandidates": 2,
+      "hasMore": false,
+      "hasAmbiguity": false
+    }
+  }
+}

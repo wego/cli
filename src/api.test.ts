@@ -1031,10 +1031,8 @@ describe("fetchFlightTrip", () => {
 
   it("puts `--view detail` on the wire and parses the detail variant", async () => {
     // The `?view=` half of the flag, at the layer that owns the query string.
-    // `commands.test.ts` owns the parse/validate half, and `flights-e2e` proves the
-    // default read still works through the real subprocess — the detail body itself
-    // is unreachable offline, since no capture records its v6-trip + amenities
-    // fan-out (`apps/api` `NOT_YET_REPLAYABLE_VARIANTS`).
+    // `parseFlightTripArgs` owns the parse/validate half, and
+    // `integration/flights.test.ts` drives `--view` through the compiled binary.
     let seen: URL | undefined;
     // The DETAIL shape, which is not the default trip: `legs[]` instead of
     // `outbound`/`return`, and a `provider` OBJECT instead of a flat
@@ -1480,8 +1478,8 @@ describe("fetchHotelResults response tolerance (moved here in #1341)", () => {
     // The settle counter is `.int().nonnegative().optional().catch(undefined)`, so a
     // negative, fractional, non-numeric or null value degrades to undefined and the
     // caller falls back to item-presence. Asserted here because it is the RESPONSE
-    // SCHEMA's behaviour: `hotels.test.ts` drives the settle through injected deps,
-    // which never reach this parse.
+    // SCHEMA's behaviour: `integration/hotels.test.ts` drives the settle through
+    // the binary, against contract-valid answers that never carry a malformed count.
     for (const bad of [-1, 2.5, "not-a-number", null] as unknown[]) {
       const http = (() =>
         Promise.resolve(
@@ -1558,7 +1556,7 @@ describe("fetchFlightResults response tolerance (moved here in #1341)", () => {
     // `.int().nonnegative().optional().catch(undefined)`: a negative, fractional,
     // non-numeric or null count degrades to undefined so the settle falls back to
     // item-presence instead of converging on a bogus number or throwing. The
-    // consequence is asserted in `commands.test.ts`; the parse is asserted here.
+    // fallback itself is `settle`'s, in `search-engine.test.ts`; the parse is asserted here.
     for (const bad of [-1, 2.5, "not-a-number", null] as unknown[]) {
       const page = await read(body(bad));
       expect(page.metadata?.snapshotFareCount).toBeUndefined();
@@ -1591,8 +1589,8 @@ describe("fetchHotelReviews builds the wire query", () => {
   }
 
   it("puts the hotel in the path and every flag under its published name", async () => {
-    // `hotels.test.ts` asserts the flag → parameter MAPPING against injected deps,
-    // which never reach this serialization. One request legitimately carries both
+    // `integration/hotels.test.ts` asserts what reaches the wire from argv; this
+    // pins the serialization at the layer that writes it. One request legitimately carries both
     // spellings: kebab for the net-new knob, camel for the mirrored one.
     const { seen, http } = urlFor();
     await fetchHotelReviews(
@@ -1651,9 +1649,8 @@ describe("fetchSearchLink builds the wire query", () => {
   }
 
   it("puts the whole search context on the wire under its published names", async () => {
-    // `commands.test.ts` asserts the argv → params MAPPING against injected deps,
-    // which never reach this serialization — so the KEY names are asserted here, at
-    // the layer that writes them. `applyFlightLinkQuery` is shared with
+    // `integration/flights.test.ts` asserts what reaches the wire from argv; the
+    // KEY names are asserted here too, at the layer that writes them. `applyFlightLinkQuery` is shared with
     // `booking-link`, so a rename would silently move both.
     const { seen, http } = urlFor();
     await fetchSearchLink(

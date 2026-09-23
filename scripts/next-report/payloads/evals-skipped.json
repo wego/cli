@@ -1,0 +1,23 @@
+{
+  "schema": "cli-next-evals/v1",
+  "version": "1.5.0",
+  "sha": "0123456789abcdef0123456789abcdef01234567",
+  "previous": "1.4.2",
+  "verdict": "not_run",
+  "headline": "nothing in skills/ or src/ changed since v1.4.2",
+  "sets": [
+    {
+      "id": "frozen",
+      "result": "not_run",
+      "baseline": "1.4.2",
+      "reason": "no change to the skill or src/ since v1.4.2"
+    },
+    {
+      "id": "persona",
+      "result": "not_run",
+      "baseline": "1.4.2",
+      "reason": "no change to the skill or any --help since v1.4.2"
+    }
+  ],
+  "run_url": "https://github.com/wego/wego-ai/actions/runs/1"
+}

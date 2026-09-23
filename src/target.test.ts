@@ -1,12 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  buildTargetReport,
-  formatTargetReport,
-  type InfoDeps,
-  info,
-} from "./commands";
+import { buildTargetReport, formatTargetReport } from "./commands";
 import { CLI_ENV_VARS, loadCliConfig, resolveConfigScope } from "./config";
 import { EXIT } from "./error-report";
 import {
@@ -249,92 +244,14 @@ describe("one binary, every backend", () => {
 });
 
 // --- visibility -------------------------------------------------------------
-
-/** `info target` reads nothing and calls nothing, so every dep it must not touch
- *  throws if it does. */
-function infoDeps(): InfoDeps & { out: string[]; err: string[] } {
-  const out: string[] = [];
-  const err: string[] = [];
-  const unreachable = (name: string) => async () => {
-    throw new Error(`info target must not call ${name}`);
-  };
-  return {
-    out,
-    err,
-    log: (m) => out.push(m),
-    error: (m) => err.push(m),
-    loadCredentials: unreachable("loadCredentials") as never,
-    saveCredentials: unreachable("saveCredentials") as never,
-    refreshTokens: unreachable("refreshTokens") as never,
-    loadSettings: unreachable("loadSettings") as never,
-    recordAuthFailure: unreachable("recordAuthFailure") as never,
-    fetchHolidays: unreachable("fetchHolidays") as never,
-    fetchVisaFree: unreachable("fetchVisaFree") as never,
-    fetchSchedules: unreachable("fetchSchedules") as never,
-    fetchNearbyPlaces: unreachable("fetchNearbyPlaces") as never,
-  };
-}
-
 describe("a non-prod target is visible", () => {
-  it("names the target, its origin and the resolved endpoints for a reader", async () => {
-    const deps = infoDeps();
-    const code = await info(
-      config({ argv: argv("--target", "staging") }),
-      ["target"],
-      deps,
-    );
-    expect(code).toBe(0);
-    // The readable rendering is on STDERR, where every other human line in this
-    // CLI goes; stdout is the JSON contract (asserted below).
-    const text = deps.err.join("\n");
-    expect(text).toContain("staging");
-    expect(text).toContain("--target");
-    expect(text).toContain(STAGING_API_URL);
-    expect(text).toContain(STAGING_AUTH_HOST);
-    // The promise the axis makes, written down where a person reads it.
-    expect(text).toContain("suppressed");
-  });
-
-  it("keeps stdout parseable as JSON with NO --json, like every info command", async () => {
-    // The regression guard for a real defect this PR shipped and CodeRabbit
-    // caught: the table used to go to stdout, so an agent following SKILL.md's
-    // operating contract item 4 ("treat successful stdout from `info *` as
-    // JSON") would JSON.parse a text table and throw. `--json` is absent here on
-    // purpose - that is the case that was broken, and the case that a caller who
-    // never read this flag's docs will hit.
-    const deps = infoDeps();
-    const code = await info(
-      config({ argv: argv("--target", "staging") }),
-      ["target"],
-      deps,
-    );
-    expect(code).toBe(0);
-    expect(JSON.parse(deps.out.join("\n")).target).toBe("staging");
-  });
-
-  it("prints the same stdout object with and without --json", async () => {
-    // So the flag cannot drift into choosing a FORMAT: it only suppresses the
-    // stderr decoration.
-    const plain = infoDeps();
-    const jsonOnly = infoDeps();
-    const cfg = () => config({ argv: argv("--target", "staging") });
-    expect(await info(cfg(), ["target"], plain)).toBe(0);
-    expect(await info(cfg(), ["target", "--json"], jsonOnly)).toBe(0);
-    expect(jsonOnly.out).toEqual(plain.out);
-    // ...and that it really does suppress it.
-    expect(jsonOnly.err).toEqual([]);
-    expect(plain.err.length).toBe(1);
-  });
-
-  it("answers machine output as one JSON object", async () => {
-    const deps = infoDeps();
-    const code = await info(
-      config({ env: { WEGO_TARGET: "staging" } }),
-      ["target", "--json"],
-      deps,
-    );
-    expect(code).toBe(0);
-    expect(JSON.parse(deps.out.join("\n"))).toEqual({
+  // What `wego info target` prints, and that stdout stays one JSON object with or
+  // without --json, is `integration/target.test.ts`, which runs the binary. The
+  // report it renders is built here.
+  it("reports a staging run with every resolved endpoint", () => {
+    expect(
+      buildTargetReport(config({ env: { WEGO_TARGET: "staging" } })),
+    ).toEqual({
       target: "staging",
       source: "env",
       apiUrl: STAGING_API_URL,
@@ -343,6 +260,18 @@ describe("a non-prod target is visible", () => {
       credentialsPath: `/tmp/xdg/wego/${STAGING_AUTH_HOST}/credentials.json`,
       telemetrySuppressed: true,
     });
+  });
+
+  it("renders the target, its origin and the endpoints for a reader", () => {
+    const text = formatTargetReport(
+      buildTargetReport(config({ argv: argv("--target", "staging") })),
+    );
+    expect(text).toContain("staging");
+    expect(text).toContain("--target");
+    expect(text).toContain(STAGING_API_URL);
+    expect(text).toContain(STAGING_AUTH_HOST);
+    // The promise the axis makes, written down where a person reads it.
+    expect(text).toContain("suppressed");
   });
 
   it("reports a prod run as prod, and not suppressed", () => {
@@ -354,16 +283,6 @@ describe("a non-prod target is visible", () => {
       telemetrySuppressed: false,
     });
     expect(formatTargetReport(report)).toContain("as configured");
-  });
-
-  it("prints its usage on --help and rejects an unknown argument", async () => {
-    const help = infoDeps();
-    expect(await info(config(), ["target", "--help"], help)).toBe(0);
-    expect(help.out.join("\n")).toContain("info target");
-
-    const bad = infoDeps();
-    expect(await info(config(), ["target", "--jsn"], bad)).toBe(EXIT.USAGE);
-    expect(bad.err.join("\n")).toContain("--jsn");
   });
 });
 

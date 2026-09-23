@@ -1,0 +1,9 @@
+{
+  "op": "createFlightSearch",
+  "status": 201,
+  "body": {
+    "searchId": "s1msr",
+    "siteCode": "US",
+    "siteCodeSource": "default"
+  }
+}
