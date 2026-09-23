@@ -55,7 +55,7 @@ Fires on `push: tags: ['v*']`. Ten jobs:
 |---|---|---|
 | `prepare` | ubuntu | Refuses a tag that is not on `main`, then lint, format, typecheck and unit tests |
 | `build` | ubuntu | One job, not a matrix: `bun build --compile` cross-compiles all five targets in it. **No `environment:`**, deliberately, so it cannot reach the store token |
-| `integration (<target>)` | one per target | The integration tier (`integration/`) against the binary `build` produced for that target, on that target's own runner: linux x64 and arm64, macOS arm64 and Intel, Windows. `release` **needs** all five, so a binary that fails its scenarios is never published |
+| `integration (<target>)` | one per target | The integration tier (`integration/`) against the binary `build` produced for that target, on that target's own runner: linux x64 and arm64, macOS arm64 and Intel, Windows. `release` **needs** all five, so a binary that fails its scenarios is never published. There is no override, by design: a flaky scenario or a stuck runner holds `cli/next` until **Re-run failed jobs** on the run passes it, and a real failure is fixed and re-tagged |
 | `sign` | ubuntu | Signs `SHA256SUMS.txt` with keyless cosign. **No `environment:`** either. The job that can sign cannot write the store, and the job that writes the store cannot sign |
 | `leave-macos` | macOS | Runs the pre-publication checks against `wego-darwin-arm64`. `release` **needs** it, so darwin gates publication rather than reporting after it |
 | `release` | ubuntu | `environment: release`, `concurrency: group: ring-next` with `cancel-in-progress: false`, because a cancel mid-copy is a half-moved ring. The only job that advances a ring. **`contents: read`** – it holds the store token, so it must not also hold repository write |
@@ -172,7 +172,7 @@ wego-ai; the check carries only the verdict and a part table.
 | `202` | Started | passes |
 | `409` | A retry replayed a token the receiver had already spent, so the first attempt started it | passes, with a notice |
 | `404` | The receiver is switched off | passes, with a notice: **this release was not verified** |
-| anything else | Refused | **fails**. Nothing depends on it, the release is already published, but a refused request is a broken pipeline and should be loud |
+| anything else | Refused | **fails**, because a refused request is a broken pipeline and should be loud. The release is already published, and nothing waits on this job: the promote gate reads the release run job by job and leaves out `notify-verify` and `next-report`, so a receiver outage never holds back a promote, a fix-forward included |
 
 ### Reading it
 
@@ -316,7 +316,7 @@ Before the move:
 |---|---|
 | Validate the tag | A tag that is not a plain release version |
 | Record the rollback target | Nothing, but it reads what `cli/stable` serves **now**, because the move is what destroys that answer. Every failure message after this point names the tag to put back, and the lane it belongs to: `1.0.x` and `1.1.0` are `cli-vX.Y.Z` in wego-ai's lane, `1.2.0` and later are `vX.Y.Z` through `rollback-cli.yml` here |
-| Require a completed, successful release run | A tag whose release lane never finished, so `cli/<tag>/` may be half-written |
+| Require a completed, successful release run | A tag whose release lane never finished, so `cli/<tag>/` may be half-written. Read job by job: every job must have succeeded, the publishing job included, except the report-only `notify-verify` and `next-report`, so a receiver outage or a report still being waited for does not hold a promote back |
 | Refuse a tag whose tree cannot publish the plugin | A promote that succeeds having silently published nothing. Checked before the ring moves, for that reason |
 | Require the legacy bridge pin to be live | Moving `cli/stable` while the pin is down, which strands every 1.0.x install permanently |
 | Walk the pre-relay route | The pin *pointing* somewhere without anything being there. The check above reads one header; this one walks the whole 1.0.x route, pin then frozen prefix then live pointer, against the ring as it stands. A collected object or an expired certificate passes the header probe and strands the same installs |

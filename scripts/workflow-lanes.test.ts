@@ -636,3 +636,42 @@ describe("release-cli.yml: integration runs every built target before publicatio
     expect(ancestryOf("integration", wf.jobs)).not.toContain("release");
   });
 });
+
+/**
+ * PROMOTE GATES ON THE PUBLISHING JOBS, NOT ON THE REPORTS.
+ *
+ * `promote-cli.yml` reads the release run job by job and leaves out two jobs by
+ * their display names, because `notify-verify` goes red on a receiver outage and
+ * `next-report` keeps the run in progress for up to 45 min. The names are strings
+ * in a script, so a rename in `release-cli.yml` would silently gate on the reports
+ * again (the old failure) or, worse, find no publishing job and refuse every
+ * promote. Both directions are pinned here.
+ */
+describe("promote-cli.yml: the release gate names real jobs", () => {
+  const release = workflow("release-cli.yml") as {
+    jobs: Record<string, { name?: string }>;
+  };
+  const promote = workflow("promote-cli.yml") as {
+    jobs: Record<
+      string,
+      { steps?: { name?: string; with?: { script?: string } }[] }
+    >;
+  };
+  const gate =
+    Object.values(promote.jobs)
+      .flatMap((j) => j.steps ?? [])
+      .find(
+        (s) =>
+          s.name === "Require a completed, successful release run for the tag",
+      )?.with?.script ?? "";
+
+  it.each([
+    ["notify-verify", "report-only"],
+    ["next-report", "report-only"],
+    ["release", "the publishing job"],
+  ])("%s's display name is the one the gate uses (%s)", (id) => {
+    const name = release.jobs[id]?.name;
+    expect(name).toBeDefined();
+    expect(gate).toContain(`"${name}"`);
+  });
+});

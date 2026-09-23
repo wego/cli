@@ -246,14 +246,26 @@ jobs:
           echo "rollback target: $tag via $lane"
 
       # `cli/<tag>/` can exist half-written if the release lane did not finish.
-      # Require one completed, successful `release-cli.yml` run for this tag.
-      # `branch=<tag>` is how the Actions API filters a tag-push run.
-      # `github-script`, not `gh`: one shape across the lanes.
+      # Require one `release-cli.yml` run for this tag in which the publishing job
+      # ran and every job succeeded, apart from the two report-only jobs.
+      #
+      # Job by job, not the run's conclusion: `notify-verify` goes red when wego-ai's
+      # receiver refuses or is down, and `next-report` keeps the run in progress for
+      # up to 45 min. Neither says anything about the bytes, and gating on the run
+      # would let a receiver outage hold back a fix-forward promote. Any other job,
+      # including one added later, is gated by default. `scripts/workflow-lanes.test.ts`
+      # pins both names below to the jobs in `release-cli.yml`.
+      #
+      # `branch=<tag>` is how the Actions API filters a tag-push run. `filter:
+      # latest` reads a re-run's latest attempt. `github-script`, not `gh`: one
+      # shape across the lanes.
       - name: Require a completed, successful release run for the tag
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const tag = process.env.TAG;
+            const REPORT_ONLY = new Set(["Request release verification", "next report"]);
+            const PUBLISH = "Publish CLI binaries to cli/next";
             const { data } = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -261,16 +273,35 @@ jobs:
               branch: tag,
               per_page: 100,
             });
-            const ok = data.workflow_runs.filter(
-              (r) => r.status === "completed" && r.conclusion === "success",
-            ).length;
+            let ok = 0;
+            for (const run of data.workflow_runs) {
+              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                filter: "latest",
+                per_page: 100,
+              });
+              const gated = jobs.filter((j) => !REPORT_ONLY.has(j.name));
+              const published = gated.some((j) => j.name === PUBLISH);
+              const failing = gated.filter(
+                (j) => j.status !== "completed" || j.conclusion !== "success",
+              );
+              if (published && failing.length === 0) {
+                ok += 1;
+              } else {
+                core.info(
+                  `run ${run.id}: ${published ? "" : `no "${PUBLISH}" job; `}${failing.map((j) => `${j.name}=${j.conclusion ?? j.status}`).join(", ")}`,
+                );
+              }
+            }
             if (ok < 1) {
               core.setFailed(
-                `No completed, successful release-cli.yml run for ${tag}. cli/stable serves every install, so it is only ever advanced onto bytes a release run finished and verified. Re-run or fix the release for ${tag} first.`,
+                `No release-cli.yml run for ${tag} in which every publishing job completed successfully. cli/stable serves every install, so it is only ever advanced onto bytes a release run finished and verified. Re-run or fix the release for ${tag} first.`,
               );
               return;
             }
-            core.info(`ok: release-cli.yml completed successfully for ${tag} (${ok} run(s)).`);
+            core.info(`ok: release-cli.yml published and verified ${tag} (${ok} run(s)). Report-only jobs are not gated.`);
         env:
           TAG: ${{ inputs.tag }}
 

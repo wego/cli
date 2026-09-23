@@ -33,7 +33,9 @@ name: Release (cli)
 # bytes are published and `cli/next` has moved by the time it runs. It carries no
 # `continue-on-error` on purpose: a request that silently did not happen is worse
 # than a red job, because the promote banner would then show "No report" for a
-# reason nobody saw.
+# reason nobody saw. A red here makes the run's conclusion `failure`, so
+# `promote-cli.yml` reads this run job by job and leaves out `notify-verify` and
+# `next-report`: a receiver outage must not hold back a promote.
 #
 # `next-report` IS NEVER RED. It waits for wego-ai's `cli-next-smoke` check, looks
 # once at its `cli-next-evals` check, and writes both into this run's summary, for
@@ -697,14 +699,15 @@ jobs:
           # dispatched and is answered 409. Failing on that would report "verification
           # not requested" for a verification that was requested and is running.
           #
-          # `--retry` therefore covers transport only: without `--fail`, curl exits 0
-          # on any HTTP status, so nothing but a connection-level error is retried.
+          # `--retry` retries a connection error, a timeout, and an HTTP 408, 429 or
+          # 5xx answer, reusing the same JWT and so the same `jti`. That is safe
+          # because the receiver spends the `jti` only once the dispatch succeeded: a
+          # 5xx left it unspent, so the retry is a fresh attempt, and a 409 still
+          # means a first attempt dispatched and its answer was lost.
           #
-          # The root cause is that `--retry` REUSES the JWT, so every attempt carries
-          # the same `jti` and a 409 cannot be told from a first attempt's. Minting a
-          # fresh token per attempt would remove the 409 entirely and make one worth
-          # failing on. Not done: it buys a distinction nobody acts on, and the
-          # receiver's guard is the thing keeping a replay from dispatching twice.
+          # Minting a fresh token per attempt would remove the 409 entirely and make
+          # one worth failing on. Not done: it buys a distinction nobody acts on, and
+          # the receiver's guard is the thing keeping a replay from dispatching twice.
           #
           # `jq -c` prints exactly `{"tag":"vX.Y.Z","sha":"<40 hex>"}`, and `--arg`
           # makes both values jq data rather than jq program text.
@@ -721,7 +724,7 @@ jobs:
             # Switched off is a state, not a fault: a notice, so it reads as
             # "not verified" without a red release.
             404) echo "::notice::the receiver is switched off (404), so $TAG was not verified. Re-run this job once it is on." ;;
-            *)   echo "::error::the receiver refused the request for $TAG (HTTP $CODE). $TAG is published and cli/next has moved. This job asks for verification and nothing that publishes depends on it. Re-run this job once the reason above is fixed."
+            *)   echo "::error::the receiver refused the request for $TAG (HTTP $CODE). $TAG is published and cli/next has moved. promote-cli.yml does not wait on this job, so $TAG can still be promoted. Re-run this job once the reason above is fixed to get its report."
                  exit 1 ;;
           esac
 
@@ -748,7 +751,7 @@ jobs:
   next-report:
     name: next report
     needs: [prepare, notify-verify]
-    if: always() && (needs.notify-verify.result == 'success' || needs.notify-verify.result == 'failure')
+    if: ${{ !cancelled() && (needs.notify-verify.result == 'success' || needs.notify-verify.result == 'failure') }}
     continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 55

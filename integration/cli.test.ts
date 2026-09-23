@@ -100,11 +100,21 @@ describe("the entrypoint", () => {
       ["info", "holidays", "help"],
       ["places", "--help"],
       ["feedback", "--help"],
+      // The ways out of a bad install must answer even when nothing else can.
+      ["update", "--help"],
+      ["uninstall", "--help"],
+      ["skill", "--help"],
     ]) {
       const result = await s.run(args, { env: NO_BACKEND });
       expect({ args, code: result.code }).toEqual({ args, code: 0 });
       expect(result.out).toMatch(/Usage:/);
     }
+  });
+
+  it("lists the skill's installs with no backend configured", async () => {
+    const result = await s.run(["skill", "list"], { env: NO_BACKEND });
+    expect(result.code).toBe(0);
+    expect(result.err).not.toMatch(/is required for source usage/);
   });
 
   it.skipIf(baked)(

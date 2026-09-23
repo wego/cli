@@ -158,14 +158,6 @@ const LABELS: Record<string, string> = {
   errors: "Error responses",
   search: "Search round trips",
   startup_ms: "Startup",
-  evals: "Skill evals",
-};
-
-const EVALS: Record<string, string> = {
-  ok: "ok",
-  below: "below",
-  not_run: "not run",
-  not_configured: "not configured",
 };
 
 /** One GitHub API request, well under the gap between two looks. */
@@ -305,14 +297,6 @@ function partCells(part: Part): [string, string] {
     const ms = (v: string | number | undefined) =>
       v === undefined ? "–" : cell(`${v} ms`);
     return [ms(part.previous), ms(part.value)];
-  }
-  if (part.id === "evals") {
-    return [
-      part.previous === undefined
-        ? "–"
-        : cell(EVALS[String(part.previous)] ?? String(part.previous)),
-      cell(EVALS[part.result] ?? part.result),
-    ];
   }
   return [stepCell(part, "previous"), stepCell(part, "current")];
 }

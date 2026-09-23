@@ -502,12 +502,14 @@ describe("release-cli.yml: next-report runs whenever notify-verify ran", () => {
   const job = lane("release-cli.yml").jobs["next-report"] as Job | undefined;
 
   it("waits for notify-verify, red included, and only when it ran", () => {
-    // Without `always()` a refused request (a red notify-verify) would skip the
-    // one job that says why there is no report. Without the result check it
-    // would also run on a release that never published, and report on nothing.
+    // Without `!cancelled()` a refused request (a red notify-verify) would skip
+    // the one job that says why there is no report; `always()` would also keep it
+    // waiting up to 55 min after someone cancelled the run. Without the result
+    // check it would run on a release that never published, and report on nothing.
     expect(job?.needs).toContain("notify-verify");
     const cond = (job?.if ?? "").replace(/\s+/g, " ");
-    expect(cond).toContain("always()");
+    expect(cond).toContain("!cancelled()");
+    expect(cond).not.toContain("always()");
     expect(cond).toContain("needs.notify-verify.result == 'failure'");
     expect(cond).toContain("needs.notify-verify.result == 'success'");
   });

@@ -5,7 +5,7 @@ import {
   UnauthorizedError,
 } from "./api";
 import type { ProblemCode } from "./api-wire";
-import { TokenEndpointUnreachableError } from "./oauth";
+import { causeText, TokenEndpointUnreachableError } from "./oauth";
 import { SettingsFileError } from "./settings";
 
 /**
@@ -182,9 +182,7 @@ export function formatCliError(err: unknown, prog: string): string {
   }
   if (err instanceof TokenEndpointUnreachableError) {
     // The cause tells a refused connection from DNS, TLS, a proxy or the deadline.
-    const cause =
-      err.cause instanceof Error ? err.cause.message : String(err.cause);
-    return `Could not reach the auth server at ${err.url} – check WEGO_AUTH_TOKEN_URL and your network connection. (${cause})`;
+    return `Could not reach the auth server at ${err.url} – check WEGO_AUTH_TOKEN_URL and your network connection. (${causeText(err.cause)})`;
   }
   if (isTimeoutError(err)) {
     return "Request timed out. The API did not respond within the deadline – retry the command (re-poll with the same searchId).";
