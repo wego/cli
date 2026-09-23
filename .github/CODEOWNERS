@@ -111,6 +111,12 @@ src/config-dir.ts     @sunny-wego @yeouchien-wego @chuyeowego
 src/target.ts @sunny-wego @yeouchien-wego @chuyeowego
 src/config.ts @sunny-wego @yeouchien-wego @chuyeowego
 
+# THE DECLARED SCOPE. The self-update and credential entries above cite
+# SECURITY.md as their reason for being owned. If any writer could narrow that
+# scope without a signer's review, the stated reason for owning those paths
+# could shrink with it.
+/SECURITY.md @sunny-wego @yeouchien-wego @chuyeowego
+
 # THE INPUT TO THE api<->cli CONTRACT CHECK. Owned for REVIEW VISIBILITY, not
 # for runtime reach - and the distinction is the reason this comment exists.
 #
