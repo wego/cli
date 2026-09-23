@@ -6,6 +6,7 @@ import {
   formatCliError,
   isTimeoutError,
 } from "./error-report";
+import { TokenEndpointUnreachableError } from "./oauth";
 
 /** Every published code with the status `apps/api` pairs it with (`CODE_META` in
  *  `apps/api/src/errors.ts`) and the exit class it owes. Two arms have to agree
@@ -86,6 +87,16 @@ describe("exitCodeForError (issue #1110 taxonomy)", () => {
       exitCodeForError(new DOMException("timed out", "TimeoutError")),
     ).toBe(EXIT.TIMEOUT);
     expect(exitCodeForError(new TypeError("fetch failed"))).toBe(EXIT.TIMEOUT);
+    // Whatever the platform's fetch threw, an unreached token endpoint is the
+    // network class, not a generic error (Bun on Linux throws a plain Error).
+    expect(
+      exitCodeForError(
+        new TokenEndpointUnreachableError(
+          "http://127.0.0.1:9/token",
+          new Error("ECONNREFUSED"),
+        ),
+      ),
+    ).toBe(EXIT.TIMEOUT);
   });
 
   it("falls back to generic error for anything else", () => {

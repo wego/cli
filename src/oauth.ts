@@ -128,6 +128,25 @@ export function parseTokenResponse(json: unknown, now = Date.now()): TokenSet {
  * failure (a captive portal, a 5xx HTML page) — and the snippet stays off
  * stderr, reached only by the local failure record.
  */
+/**
+ * The token endpoint was never reached: connection refused, DNS, TLS, reset, or
+ * the deadline. Typed here rather than left as whatever `fetch` threw, because
+ * that differs by platform: Bun raises a `TypeError` for a refused connection on
+ * macOS and an `Error` on Linux, and only a `TypeError` read as a network
+ * failure, so the same unreachable auth server exited 7 on one and 2 on the other
+ * (found by `integration/login-more.test.ts` on the Linux runner). The api
+ * client wraps its own `fetch` the same way (`ApiUnreachableError`).
+ */
+export class TokenEndpointUnreachableError extends Error {
+  constructor(
+    readonly url: string,
+    readonly cause: unknown,
+  ) {
+    super(`could not reach the auth server at ${url}`);
+    this.name = "TokenEndpointUnreachableError";
+  }
+}
+
 export class TokenEndpointError extends Error {
   readonly status: number;
   readonly statusText: string;
@@ -327,12 +346,17 @@ async function postToken(
   config: CliConfig,
   body: Record<string, string>,
 ): Promise<TokenSet> {
-  const res = await fetch(config.tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(body).toString(),
-    signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
-  });
+  let res: Response;
+  try {
+    res = await fetch(config.tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(body).toString(),
+      signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new TokenEndpointUnreachableError(config.tokenUrl, err);
+  }
   if (!res.ok) {
     // Read the body so the auth server's OAuth2 `error` survives instead of
     // being discarded at the throw site (investigation #1360, H5). Bounded, and
