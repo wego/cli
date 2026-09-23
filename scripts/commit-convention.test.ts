@@ -170,11 +170,15 @@ describe("the convention the reviewer bot is told about", () => {
     expect(requirements).toContain("Conventional Commits");
   });
 
-  it.each([...TYPES])("names the type %s", (type) => {
-    expect(requirements).toContain(type);
-  });
-
-  it.each([...KNOWN_SCOPES])("names the scope %s", (scope) => {
-    expect(requirements).toContain(scope);
+  // ONE assertion, where there used to be 24 - an `it.each` over every type and
+  // every known scope. The claim was never "the prose contains `feat`" 24 times
+  // over; it is "the bot's list and the gate's list name the same things", and a
+  // set difference states exactly that while naming whatever drifted. The 24
+  // titles carried no information the failure message does not.
+  it("names every type and scope the gate knows", () => {
+    const missing = [...TYPES, ...KNOWN_SCOPES].filter(
+      (token) => !requirements.includes(token),
+    );
+    expect(missing).toEqual([]);
   });
 });

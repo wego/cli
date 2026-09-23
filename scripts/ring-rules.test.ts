@@ -111,12 +111,14 @@ describe("ringAcceptsVersion (the crossed-pair refusal)", () => {
 });
 
 describe("one filename on every prefix", () => {
+  // The loop that used to wrap these ran the same ring-independent assertion
+  // once per ring: `assetName` takes a PLATFORM and no ring, which is the
+  // property being claimed, so iterating rings tested the same thing three times
+  // and read as though it were testing three things.
   it("names the same wego-* asset on every ring", () => {
     expect(RELEASE_ASSET_BASENAME).toBe("wego");
-    for (const _ring of RINGS) {
-      expect(assetName("linux-x64")).toBe("wego-linux-x64");
-      expect(assetName("linux-x64")).not.toContain("wegostaging");
-    }
+    expect(assetName("linux-x64")).toBe("wego-linux-x64");
+    expect(assetName("linux-x64")).not.toContain("wegostaging");
   });
 
   it("puts each ring's pointer under cli/<ring>", () => {

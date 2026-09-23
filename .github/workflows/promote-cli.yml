@@ -190,9 +190,11 @@ jobs:
             1.0.*|1.1.*) tag="cli-v$version"; lane="wego-ai's promote-cli.yml" ;;
             *)           tag="v$version";     lane="this repository's rollback-cli.yml" ;;
           esac
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "how=ROLL BACK: run $lane with tag=$tag." >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "how=ROLL BACK: run $lane with tag=$tag."
+          } >> "$GITHUB_OUTPUT"
           echo "rollback target: $tag via $lane"
 
       # `cli/<tag>/` can exist half-written if the release lane did not finish.
