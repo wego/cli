@@ -100,12 +100,12 @@ as an upstream action, a dependency or a vendor.
 - What a release carries once it is built is described under "How releases are
   protected" below.
 
-**Insiders:** members of the organization acting within the access they were
-granted are out of scope. A member who is coerced, a member who is negligent,
-and a member whose account is taken over through the person, by phishing or
-social engineering, stay in scope. A leaked or stolen member credential is also
-in scope, but it ranks below issues an outsider can reach. That ranking is
-deliberate.
+**Insiders:** Members of the organization acting within the access they were 
+granted are out of scope for this policy. Insider risk is managed through Wego’s 
+internal access and monitoring controls. A member who is coerced or negligent, or 
+whose account is taken over through phishing or social engineering, remains in 
+scope. Leaked or stolen member credentials are also in scope and are triaged 
+based on their demonstrated impact.
 
 ## How releases are protected
 
