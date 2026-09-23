@@ -92,14 +92,15 @@ export function tagPositionError(argv: string[], mode: Mode): ArgvError | null {
  * `--to <ring>`, defaulting to `next`.
  *
  * Every ring is nameable, `edge` included. It was refused here while this lived
- * in wego-ai, on the reasoning that the edge lane publishes its own
- * `X.Y.Z-edge.<sha>` builds and a plain release must never land on `edge`. That
- * is still true as a DEFAULT - the default is `next`, and nothing routes a
- * release to `edge` on its own - but a parser that cannot even name a ring the
- * promote lane operates on is the wrong place to enforce it. An operator
- * promoting deliberately would get a usage error instead of the promote, and the
- * real guards (the tag gate, `--require-serving`, and the byte-identity check
- * against `cli/<tag>/`) are the ones that decide whether a ring may be advanced.
+ * in the previous repository, on the reasoning that the edge lane publishes
+ * its own `X.Y.Z-edge.<sha>` builds and a plain release must never land on
+ * `edge`. That is still true as a DEFAULT - the default is `next`, and nothing
+ * routes a release to `edge` on its own - but a parser that cannot even name a
+ * ring the promote lane operates on is the wrong place to enforce it. An
+ * operator promoting deliberately would get a usage error instead of the
+ * promote, and the real guards (the tag gate, `--require-serving`, and the
+ * byte-identity check against `cli/<tag>/`) are the ones that decide whether a
+ * ring may be advanced.
  */
 export function parsePromoteTarget(argv: string[]): Ring | ArgvError {
   const i = argv.indexOf("--to");
