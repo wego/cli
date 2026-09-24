@@ -835,10 +835,11 @@ jobs:
       # and a failed run leaves a draft. `release-badge.yml` is the only thing that
       # makes a release "Latest".
       #
-      # Idempotent. Done means published with SHA256SUMS.txt attached. A draft that
+      # Idempotent. Done means published with SHA256SUMS.txt uploaded. A draft that
       # already has the asset is a run that failed between upload and publish, and
-      # is published now. A missing release is created as a draft, so every path
-      # uploads before it publishes. Notes span prev_tag to this tag.
+      # is published now. A half-uploaded asset is replaced. A missing release is
+      # created as a draft, so every path uploads before it publishes. Notes span
+      # prev_tag to this tag.
       - name: GitHub Release (changelog + record)
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -849,7 +850,12 @@ jobs:
             const fs = require("node:fs");
             const tag = process.env.TAG;
             const { owner, repo } = context.repo;
-            const hasManifest = (r) => r.assets.some((a) => a.name === "SHA256SUMS.txt");
+            // Only an `uploaded` asset counts. A failed upload (502) can leave an
+            // empty asset in the `starter` state, and a same-name upload is refused
+            // until it is deleted.
+            const MANIFEST = "SHA256SUMS.txt";
+            const hasManifest = (r) =>
+              r.assets.some((a) => a.name === MANIFEST && a.state === "uploaded");
 
             // Notes from prev_tag to this tag. prev_tag is computed once, in
             // `prepare`. Every PR in this repository is a CLI PR, so no path filter.
@@ -895,12 +901,16 @@ jobs:
             }
 
             if (!hasManifest(release)) {
+              for (const stale of release.assets.filter((a) => a.name === MANIFEST)) {
+                core.info(`Deleting ${MANIFEST} left in state '${stale.state}' by an earlier upload.`);
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: stale.id });
+              }
               // github-script runs at the workspace root.
               await github.rest.repos.uploadReleaseAsset({
                 owner, repo,
                 release_id: release.id,
-                name: "SHA256SUMS.txt",
-                data: fs.readFileSync("dist/SHA256SUMS.txt"),
+                name: MANIFEST,
+                data: fs.readFileSync(`dist/${MANIFEST}`),
               });
             }
 

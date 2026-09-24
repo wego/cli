@@ -456,7 +456,7 @@ running?"
 |---|---|---|
 | Whatever `cli/stable` serves | `prerelease: false`, `make_latest: true` | The build every `wego update` receives |
 | Anything published after it | `prerelease: true` | On `cli/next`, not yet promoted |
-| A tag whose release run has not finished, or failed | draft | Nothing public: its build is on no ring |
+| A tag whose release run has not finished, or failed | draft | Not announced yet. Usually on no ring, but if the run failed in `announce`, `release` already moved `cli/next` to it: read `ring=next` before assuming it shipped nowhere |
 | Anything published before it | untouched | Historical record; cannot take the badge |
 
 So between a release and its promote, the new version reads **Pre-release** and
