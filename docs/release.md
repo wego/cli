@@ -41,7 +41,9 @@ Releasing is **two human actions**, and neither of them types a version.
 
 `release-please.yml` keeps exactly one release PR open against `main`. Merging it
 is the release: it computes the version from the conventional-commit history,
-writes `CHANGELOG.md`, and cuts the tag `vX.Y.Z`.
+writes `CHANGELOG.md`, and cuts the tag `vX.Y.Z` with a **draft** GitHub Release.
+The draft stays private until `announce` publishes it, after `cli/next` serves the
+build (see [The GitHub "Latest" badge](#the-github-latest-badge)).
 
 No workflow in this repository accepts a typed version, and `release-cli.yml` has
 no manual-dispatch entry. The only way to a release is the tag, and the only way
@@ -59,7 +61,7 @@ Fires on `push: tags: ['v*']`. Ten jobs:
 | `sign` | ubuntu | Signs `SHA256SUMS.txt` with keyless cosign. **No `environment:`** either. The job that can sign cannot write the store, and the job that writes the store cannot sign |
 | `leave-macos` | macOS | Runs the pre-publication checks against `wego-darwin-arm64`. `release` **needs** it, so darwin gates publication rather than reporting after it |
 | `release` | ubuntu | `environment: release`, `concurrency: group: ring-next` with `cancel-in-progress: false`, because a cancel mid-copy is a half-moved ring. The only job that advances a ring. **`contents: read`** – it holds the store token, so it must not also hold repository write |
-| `announce` | ubuntu | Creates the GitHub Release and attaches `SHA256SUMS.txt`. **`contents: write` and no `environment:`** – the mirror image of `release`, and the reason the two are separate jobs |
+| `announce` | ubuntu | Attaches `SHA256SUMS.txt` to release-please's draft and publishes it as a pre-release, never `Latest`. **`contents: write` and no `environment:`** – the mirror image of `release`, and the reason the two are separate jobs |
 | `replace-macos` | macOS | The darwin half of the post-pointer replace proof. `needs: release`, because the checks in it read the ring |
 | `notify-verify` | ubuntu | Asks wego-ai to smoke and evaluate this release against staging. `id-token: write` and nothing else: no `environment:`, no secret, no variable. See [The next report](#the-next-report) |
 | `next-report` | ubuntu | Waits for wego-ai's answer and writes it at the top of this run's summary. `checks: read` and `contents: read`; `continue-on-error`, so it never turns the run red |
@@ -452,21 +454,41 @@ running?"
 | Release | Flag | Why |
 |---|---|---|
 | Whatever `cli/stable` serves | `prerelease: false`, `make_latest: true` | The build every `wego update` receives |
-| Anything published after it | `prerelease: true` | Released and on `cli/next`, not yet promoted |
+| Anything published after it | `prerelease: true` | On `cli/next`, not yet promoted |
+| A tag whose release run has not finished, or failed | draft | Nothing public: its build is on no ring |
 | Anything published before it | untouched | Historical record; cannot take the badge |
 
 So between a release and its promote, the new version reads **Pre-release** and
 the badge stays on the previous one. A promote moves it up; a rollback moves it
 back down and re-marks what it passed.
 
+### Who publishes
+
+GitHub awards `Latest` to a release **at birth**: `make_latest` "defaults to
+`true` for newly published releases". release-please can only create a release
+at merge, before anything is built, and has no setting for `make_latest` or for
+publishing later. Its native part is `draft` and `force-tag-creation` in
+`release-please-config.json`: a private draft, with the tag pushed anyway so
+`release-cli.yml` starts.
+
+The rest is custom, and only where release-please has no option:
+
+| What | Where |
+|---|---|
+| Publish the draft as a pre-release, with `make_latest: "false"`, once `cli/next` serves it | `announce` in `release-cli.yml` |
+| Make a release `Latest`, publishing it first if a rollback names a draft | `release-badge.yml` |
+| Fail if release-please created the release but not the tag (an older release-please ignores `force-tag-creation`) | `release-please.yml` |
+
+Before this, release-please published a full release at merge. Each new tag held
+`Latest` for a few seconds, then read Pre-release minutes before `cli/next`
+served it. v1.4.0 kept that label after its run failed and nothing shipped.
+
 ### Why it is a reconciler
 
-GitHub awards `Latest` to a release **at birth** – `make_latest` "defaults to
-`true` for newly published releases" – so every tag release-please cuts takes the
-badge before anything is published. On 2026-09-16 that misled for an hour and a
-half: v1.3.0 was released at 14:11, its promote failed at 14:28, `cli/stable` was
-rolled back to v1.2.7 at 14:30, and GitHub went on advertising v1.3.0 as `Latest`
-until v1.3.1 was promoted at 15:49.
+On 2026-09-16 the badge misled for an hour and a half: v1.3.0 was released at
+14:11, its promote failed at 14:28, `cli/stable` was rolled back to v1.2.7 at
+14:30, and GitHub went on advertising v1.3.0 as `Latest` until v1.3.1 was
+promoted at 15:49.
 
 The badge is **derived** state – a function of one fact, what `cli/stable`
 serves. Writing it from the release, promote and rollback lanes would make it an
