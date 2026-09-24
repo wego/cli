@@ -102,7 +102,7 @@ describe("promote-cli.yml: has no rollback mode", () => {
     expect(move?.run).toContain("--require-serving next");
   });
 
-  // Run 35975011066: the token was minted after the move, so a key GitHub refused
+  // The token used to be minted after the move, so a key GitHub refused
   // left `stable` moved with the plugin unpublished, and the fix was a rollback.
   // Minted before the move, the same bad key fails the promote with `stable`
   // untouched. The mint must also not wait on the move's output, or it cannot

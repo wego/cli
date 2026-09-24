@@ -329,12 +329,11 @@ jobs:
       # Mint the plugin token BEFORE the move, so a key GitHub refuses fails the
       # promote while `stable` is still where it was. Minted after the move, a bad
       # key moved `stable` and then published nothing, and the only way back was a
-      # rollback (run 35975011066). The token lasts an hour and this job times out
-      # at 30 minutes, so it is still valid when the publish below uses it.
+      # rollback. The token lasts an hour and this job times out at 30 minutes, so
+      # it is still valid when the publish below uses it.
       #
       # Skipped when the flag is off. Without this guard the publish step ran with
-      # no token and REQUIRE_PUBLISH, and failed after `stable` had moved
-      # (wego/foundations#129, run 34610149769).
+      # no token and REQUIRE_PUBLISH, and failed after `stable` had moved.
       - name: Mint the plugin publish token
         id: plugin-token
         if: vars.SKILLS_PUBLISH_ENABLED == 'true'
