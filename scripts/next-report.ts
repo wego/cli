@@ -175,9 +175,18 @@ export function commandMessage(text: string): string {
   return text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 }
 
-/** A table cell: one line, and no `|` to split the row. */
+/**
+ * A table cell: one line, and no `|` to split the row. Also printed to stdout,
+ * which the runner reads for workflow commands: one line stops a `::` command,
+ * which must start the line, but the legacy `##[` form is found anywhere in it,
+ * so a zero-width space splits its `##`.
+ */
 function cell(text: string): string {
-  return text.replace(/\r?\n/g, " ").replace(/\|/g, "\\|").trim();
+  return text
+    .replace(/\r?\n/g, " ")
+    .replace(/\|/g, "\\|")
+    .replace(/##\[/g, "#​#[")
+    .trim();
 }
 
 /**

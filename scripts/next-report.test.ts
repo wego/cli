@@ -290,6 +290,15 @@ describe("the release lane's wait", () => {
     expect(pollLine({ check: running }, 60_000, true)).not.toContain("\n");
   });
 
+  it("breaks a legacy ##[ command in a writer's title, which the runner finds mid-line", () => {
+    const titled = check({
+      output: { title: "ok ##[stop-commands]x", summary: null, text: null },
+    });
+    const line = pollLine({ check: titled }, 60_000, false);
+    expect(line).not.toContain("##[");
+    expect(line).toContain("stop-commands]x");
+  });
+
   it("does not look when the receiver is switched off (404)", async () => {
     const api = fakeApi(() => []);
     const clock = fakeClock();

@@ -249,12 +249,13 @@ jobs:
       # Require one `release-cli.yml` run for this tag in which the publishing job
       # ran and every job succeeded, apart from the two report-only jobs.
       #
-      # Job by job, not the run's conclusion: `notify-verify` goes red when wego-ai's
-      # receiver refuses or is down, and `next-report` keeps the run in progress for
-      # up to 45 min. Neither says anything about the bytes, and gating on the run
-      # would let a receiver outage hold back a fix-forward promote. Any other job,
-      # including one added later, is gated by default. `scripts/workflow-lanes.test.ts`
-      # pins both names below to the jobs in `release-cli.yml`.
+      # Job by job, not the run's conclusion: `notify-verify` goes red when the
+      # verification receiver refuses or is down, and `next-report` keeps the run
+      # in progress for up to 45 min. Neither says anything about the bytes, and
+      # gating on the run would let a receiver outage hold back a fix-forward
+      # promote. Any other job, including one added later, is gated by default.
+      # `scripts/workflow-lanes.test.ts` pins both names below to the jobs in
+      # `release-cli.yml`.
       #
       # `branch=<tag>` is how the Actions API filters a tag-push run. `filter:
       # latest` reads a re-run's latest attempt. `github-script`, not `gh`: one
