@@ -175,6 +175,19 @@ src/skill-embed.ts @sunny-wego @yeouchien-wego @chuyeowego
 # redirected token.
 contract/openapi.json @sunny-wego @yeouchien-wego @chuyeowego
 
+# THE INTEGRATION TIER. Unlike the unit tests below, it is a release gate:
+# `release` needs `integration (<target>)` on all five targets, so what this
+# directory accepts is what may be published. Two things in it are a small diff
+# away from making that gate vacuous or unsafe:
+#
+#   - `harness/contract.ts` and `harness/fake.ts` hold every exchange to the
+#     contract. Relaxing the validator, or letting an unexpected request pass,
+#     turns the tier back into a fake that can only fail when it disagrees with
+#     itself, and every scenario still reads green.
+#   - `fixtures/` is what the fake answers with. A fixture copied from a real
+#     response must not carry the account it came from; review is the check.
+integration/ @sunny-wego @yeouchien-wego @chuyeowego
+
 # Deliberately NOT owned, so the omissions read as decisions rather than gaps:
 #
 #   - `src/commands.ts` and `src/index.ts` wire the login flow together, but they

@@ -23,6 +23,7 @@ node_modules/
 # Claude Code — user-local settings
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.claude/worktrees/
 !.claude/settings.json
 
 # OS / IDE

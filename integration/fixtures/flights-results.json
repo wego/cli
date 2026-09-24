@@ -1,0 +1,67 @@
+{
+  "op": "getFlightSearchResults",
+  "status": 200,
+  "body": {
+    "searchId": "s1msr",
+    "currencyCode": "USD",
+    "metadata": {
+      "page": 1,
+      "pageSize": 10,
+      "resultCount": 1,
+      "totalCandidates": 1,
+      "hasMore": false,
+      "filterOptions": {
+        "alliances": [{ "code": "star_alliance", "count": 1 }],
+        "airlines": [
+          { "code": "SQ", "name": "Singapore Airlines", "count": 1 }
+        ],
+        "bookingSites": [{ "code": "expedia.com", "count": 1 }],
+        "stopoverAirports": [],
+        "aircraft": [{ "code": "333", "count": 1 }]
+      },
+      "snapshotTripCount": 1,
+      "snapshotFareCount": 1,
+      "currencyCode": "USD",
+      "currencyCodeSource": "explicit",
+      "locale": "en",
+      "localeSource": "explicit"
+    },
+    "results": [
+      {
+        "tripId": "s1msr:TR610~10",
+        "badges": ["cheapest"],
+        "stops": 0,
+        "durationMinutes": 205,
+        "price": {
+          "total": 100,
+          "currency": "USD",
+          "scope": "party",
+          "websiteCount": 11,
+          "hasWegoFare": true
+        },
+        "legs": [
+          {
+            "from": "SIN",
+            "to": "BKK",
+            "departsAt": "2026-03-01T08:00:00",
+            "arrivesAt": "2026-03-01T09:25:00",
+            "arrivalDayOffset": 0,
+            "overnight": false,
+            "durationMinutes": 205,
+            "stops": 0,
+            "via": [],
+            "airlines": [
+              {
+                "code": "SQ",
+                "name": "Singapore Airlines",
+                "logoUrl": "https://l/SQ"
+              }
+            ],
+            "aircraft": ["A330"],
+            "transportTypes": ["FLIGHT"]
+          }
+        ]
+      }
+    ]
+  }
+}

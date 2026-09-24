@@ -245,8 +245,17 @@ Or one at a time:
 bun run lint         # biome check: formatting, lint rules, import order
 bun run format       # the same, writing every safe fix
 bun run typecheck    # tsc --noEmit
-bun test             # unit tests
+bun run test         # unit tests
+bun run test:integration   # the compiled binary against a contract-checked fake
 ```
+
+The integration tier builds the binary and runs every command as its own process
+against a local fake of the API, which is held to `contract/openapi.json` in both
+directions. It needs no network and no account, takes about a minute, and
+`ci-cli` runs it on every pull request. A unit test never asserts on
+a command's stdout, stderr or exit code; a scenario in `integration/` does
+(`scripts/unit-tier-guard.test.ts` holds that line). `integration/README.md` says
+how to write one.
 
 All of it must be clean. `ci-cli` runs the same checks — plus gitleaks over every
 ref, shellcheck, `bun audit`, and a Conventional Commits check on your pull

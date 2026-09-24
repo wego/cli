@@ -487,3 +487,191 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
     });
   }
 });
+
+/**
+ * THE PROMOTE BANNER IS A READING, NOT A GATE.
+ *
+ * `next-report` at the top of `promote-cli.yml` shows wego-ai's verdict for the
+ * tag. It is deliberately outside the gate chain: a promote is a human decision,
+ * and the banner exists so the verdict was in front of that human, not to make
+ * the decision for them. Two ways it could quietly become a gate:
+ *
+ *   - a job `needs:` it, directly or through another job, so a red or slow
+ *     banner holds `approve` or `promote` back;
+ *   - it grows a `needs:` of its own, so it waits behind the gate it is meant to
+ *     sit beside, and the promoter reads the verdict after the pointer moved.
+ *
+ * Its capabilities (read-only, no secret, never red) are asserted with the
+ * release lane's reader in `workflow-shape.test.ts`.
+ */
+describe("promote-cli.yml: the next report banner gates nothing", () => {
+  const wf = workflow("promote-cli.yml") as {
+    jobs: Record<
+      string,
+      Job & {
+        "continue-on-error"?: unknown;
+        steps?: { run?: string; "continue-on-error"?: unknown }[];
+      }
+    >;
+  };
+  const banner = Object.entries(wf.jobs).find(([, job]) =>
+    (job.steps ?? []).some((s) =>
+      /scripts\/next-report\.ts\s+--banner/.test(s.run ?? ""),
+    ),
+  );
+
+  it("exists, in one job", () => {
+    expect(banner).toBeDefined();
+  });
+
+  it("is in no other job's needs chain", () => {
+    const name = banner?.[0] as string;
+    for (const other of Object.keys(wf.jobs)) {
+      expect(
+        ancestryOf(other, wf.jobs),
+        `promote-cli.yml: '${other}' waits for the banner`,
+      ).not.toContain(name);
+    }
+  });
+
+  it("waits for nothing itself", () => {
+    expect(needsOf(banner?.[1])).toEqual([]);
+  });
+
+  it("cannot fail the run, at the job or at the step", () => {
+    const job = banner?.[1];
+    expect(job?.["continue-on-error"]).toBe(true);
+    const step = (job?.steps ?? []).find((s) =>
+      (s.run ?? "").includes("next-report.ts"),
+    );
+    expect(
+      (step as Record<string, unknown> | undefined)?.["continue-on-error"],
+    ).toBe(true);
+  });
+});
+
+/**
+ * THE INTEGRATION MATRIX COVERS WHAT THE RELEASE BUILDS, AND HOLDS PUBLICATION.
+ *
+ * `integration` runs the compiled binary against a fake API on each target's own
+ * runner. Its matrix is a literal and `scripts/build-release.ts`'s target list is
+ * another, and nothing makes them move together: a sixth target added to the
+ * build would ship with no job ever having executed it, green. So the set is
+ * derived from the build script, not restated here.
+ *
+ * And a job `release` does not need is decoration. The whole point is that a
+ * target that cannot run its own commands never reaches `cli/next`.
+ */
+describe("release-cli.yml: integration runs every built target before publication", () => {
+  const wf = workflow("release-cli.yml") as {
+    jobs: Record<
+      string,
+      Job & {
+        name?: string;
+        strategy?: {
+          "fail-fast"?: boolean;
+          matrix?: {
+            include?: { target: string; runner: string; asset: string }[];
+          };
+        };
+      }
+    >;
+  };
+  const job = wf.jobs.integration;
+  const include = job?.strategy?.matrix?.include ?? [];
+
+  /** The asset names `build-release.ts` writes: `wego-<suffix>`, per target. */
+  const built = [
+    ...readFileSync("scripts/build-release.ts", "utf8").matchAll(
+      /\{\s*target:\s*"bun-[^"]+",\s*suffix:\s*"([^"]+)"\s*\}/g,
+    ),
+  ].map((m) => `wego-${m[1]}`);
+
+  it("reads a target list out of the build script", () => {
+    // A reshaped TARGETS table would otherwise parse as "builds nothing" and the
+    // comparison below would pass against an empty matrix.
+    expect(built.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("covers exactly the assets the build produces", () => {
+    expect(include.map((e) => e.asset).sort()).toEqual([...built].sort());
+  });
+
+  it("runs each target on a runner that can execute it", () => {
+    const families: Record<string, string> = {
+      linux: "ubuntu-",
+      darwin: "macos-",
+      windows: "windows-",
+    };
+    for (const { target, runner, asset } of include) {
+      expect(asset, `${target} runs ${asset}`).toContain(target);
+      const [os = "", arch = ""] = target.split("-");
+      expect(
+        runner.startsWith(families[os] ?? "?"),
+        `${target} on ${runner}`,
+      ).toBe(true);
+      // `macos-latest` is Apple silicon and `ubuntu-latest` is x64, so the other
+      // architecture needs a label that names it.
+      if (os === "linux" && arch === "arm64") expect(runner).toMatch(/-arm$/);
+      if (os === "darwin" && arch === "x64") expect(runner).toMatch(/intel/);
+    }
+  });
+
+  it("names each leg by its target, and lets every leg finish", () => {
+    expect(job?.name).toBe(`integration (\${{ matrix.target }})`);
+    expect(job?.strategy?.["fail-fast"]).toBe(false);
+  });
+
+  it("drives the built artifact, not a binary of its own", () => {
+    const step = (job?.steps ?? []).find((s) =>
+      (s.run ?? "").includes("bun run test:integration"),
+    );
+    expect(String(step?.env?.WEGO_INTEGRATION_BINARY)).toContain(
+      `\${{ matrix.asset }}`,
+    );
+  });
+
+  it("holds publication: release needs it, and it does not need release", () => {
+    expect(needsOf(wf.jobs.release)).toContain("integration");
+    expect(ancestryOf("integration", wf.jobs)).not.toContain("release");
+  });
+});
+
+/**
+ * PROMOTE GATES ON THE PUBLISHING JOBS, NOT ON THE REPORTS.
+ *
+ * `promote-cli.yml` reads the release run job by job and leaves out two jobs by
+ * their display names, because `notify-verify` goes red on a receiver outage and
+ * `next-report` keeps the run in progress for up to 45 min. The names are strings
+ * in a script, so a rename in `release-cli.yml` would silently gate on the reports
+ * again (the old failure) or, worse, find no publishing job and refuse every
+ * promote. Both directions are pinned here.
+ */
+describe("promote-cli.yml: the release gate names real jobs", () => {
+  const release = workflow("release-cli.yml") as {
+    jobs: Record<string, { name?: string }>;
+  };
+  const promote = workflow("promote-cli.yml") as {
+    jobs: Record<
+      string,
+      { steps?: { name?: string; with?: { script?: string } }[] }
+    >;
+  };
+  const gate =
+    Object.values(promote.jobs)
+      .flatMap((j) => j.steps ?? [])
+      .find(
+        (s) =>
+          s.name === "Require a completed, successful release run for the tag",
+      )?.with?.script ?? "";
+
+  it.each([
+    ["notify-verify", "report-only"],
+    ["next-report", "report-only"],
+    ["release", "the publishing job"],
+  ])("%s's display name is the one the gate uses (%s)", (id) => {
+    const name = release.jobs[id]?.name;
+    expect(name).toBeDefined();
+    expect(gate).toContain(`"${name}"`);
+  });
+});

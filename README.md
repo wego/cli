@@ -319,6 +319,13 @@ Commits on `main`. Merging the open release PR is what releases: the version is
 computed from the commits, the tag is written, and the tag starts the build and
 publish. Nobody types a version.
 
+Nothing is published until every built target passes the integration tier
+(`integration/`: the compiled binary against a local fake held to the API's
+contract). Once `cli/next` serves the new version, wego-ai smokes it against
+staging and evaluates its skill, and the verdict appears at the top of the release
+run, and again when promoting to `cli/stable`. See
+[docs/release.md](docs/release.md#the-next-report).
+
 ## License
 
 Copyright 2026 Wego.

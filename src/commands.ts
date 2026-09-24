@@ -2061,7 +2061,7 @@ function applyOccupancyFlags(
   if (locale) body.locale = locale;
 }
 
-async function settleRates<
+export async function settleRates<
   T extends { searchComplete?: boolean; rates?: unknown[] },
 >(
   read: () => Promise<T>,
@@ -2655,14 +2655,14 @@ const ROOMS_FLAGS = new Set<string>([
   "--locale",
 ]);
 
-interface RoomsPlan {
+export interface RoomsPlan {
   hotelId: number;
   searchId?: string;
   createBody?: HotelsSearchBody;
   ratesQuery: WireQueryValues<"getHotelRates">;
 }
 
-function parseRoomsArgs(args: string[]): RoomsPlan {
+export function parseRoomsArgs(args: string[]): RoomsPlan {
   const { positional, single } = tokenizeFlagSets(
     args,
     HOTELS_ROOMS_USAGE,
@@ -2708,7 +2708,7 @@ function parseRoomsArgs(args: string[]): RoomsPlan {
   // the create body: it copies all three, so an explicit flag reaches the create
   // as well as the rates read and never loses to a stored setting for half the
   // operation. Do NOT re-copy them here — two reviewers read this function alone
-  // and reported the flags as dropped. `hotels.test.ts` pins all three.
+  // and reported the flags as dropped. `integration/hotels.test.ts` pins all three.
   applyOccupancyFlags(createBody, single);
   return { hotelId, createBody, ratesQuery };
 }

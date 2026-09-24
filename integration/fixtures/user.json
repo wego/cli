@@ -1,0 +1,11 @@
+{
+  "op": "getCurrentUser",
+  "status": 200,
+  "body": {
+    "sub": "integration@example.com",
+    "scope": "openid profile users",
+    "email": "integration@example.com",
+    "name": "Integration Test",
+    "uid": 1001
+  }
+}

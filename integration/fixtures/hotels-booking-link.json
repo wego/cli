@@ -1,0 +1,8 @@
+{
+  "op": "getHotelRateBookingLink",
+  "status": 200,
+  "body": {
+    "bookingUrl": "https://www.wego.com/hotels/booking/checkout?search_id=hs-85481-0001",
+    "expires": true
+  }
+}

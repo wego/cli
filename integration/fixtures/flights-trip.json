@@ -1,0 +1,43 @@
+{
+  "op": "getFlightTrip",
+  "status": 200,
+  "body": {
+    "tripId": "s1msr:TR610~10",
+    "stops": 0,
+    "durationMinutes": 205,
+    "outbound": {
+      "from": "SIN",
+      "to": "BKK",
+      "departsAt": "2026-03-01T08:00:00",
+      "arrivesAt": "2026-03-01T09:25:00",
+      "durationMinutes": 205,
+      "stops": 0,
+      "airlines": ["SQ"],
+      "transportTypes": ["FLIGHT"]
+    },
+    "fares": [
+      {
+        "kind": "wego",
+        "fareId": "f_88_1",
+        "providerCode": "wego.com",
+        "providerName": "Wego",
+        "price": {
+          "total": 100,
+          "totalUsd": 100,
+          "currency": "USD",
+          "scope": "party",
+          "includesFees": true
+        },
+        "refundable": false,
+        "hasFareOptions": true,
+        "handoffUrl": "https://www.wego.com/flights/booking"
+      }
+    ],
+    "metadata": {
+      "currencyCode": "USD",
+      "currencyCodeSource": "explicit",
+      "locale": "en",
+      "localeSource": "explicit"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "op": "getVisaFreeDestinations",
+  "status": 200,
+  "body": {
+    "results": [
+      { "countryCode": "TH", "name": "Thailand", "keyCityCode": "BKK" }
+    ],
+    "metadata": {
+      "resultCount": 1,
+      "totalCandidates": 1,
+      "hasMore": false,
+      "passportCountryCode": "PH",
+      "upstreamPagesFetched": 1,
+      "coverage": "complete"
+    }
+  }
+}

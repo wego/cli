@@ -1,0 +1,26 @@
+{
+  "op": "getHotelReviews",
+  "status": 200,
+  "body": {
+    "hotelId": 85481,
+    "metadata": {
+      "page": 1,
+      "pageSize": 10,
+      "resultCount": 1,
+      "totalCandidates": 49,
+      "hasMore": true,
+      "topics": ["breakfast"],
+      "matchedTerms": ["breakfast", "Breakfast"]
+    },
+    "results": [
+      {
+        "rating": 9.2,
+        "postedAt": "2026-06-14",
+        "providerCode": "booking.com",
+        "guestType": "couple",
+        "pros": ["Breakfast spread was huge"],
+        "cons": []
+      }
+    ]
+  }
+}

@@ -9,6 +9,7 @@ import {
   redactSecrets,
   refreshTokens,
   TokenEndpointError,
+  TokenEndpointUnreachableError,
 } from "./oauth";
 import { loadTestCliConfig } from "./test-config";
 
@@ -114,6 +115,19 @@ describe("token endpoint calls", () => {
   const realFetch = globalThis.fetch;
   afterEach(() => {
     globalThis.fetch = realFetch;
+  });
+
+  it("a refresh that never reaches the endpoint says why, in its message", async () => {
+    // A failed refresh prints only the message, so the cause must be in it.
+    globalThis.fetch = (() =>
+      Promise.reject(
+        new Error("unable to get local issuer certificate"),
+      )) as unknown as typeof fetch;
+    const err = await refreshTokens(config, "rt").catch((e) => e);
+    expect(err).toBeInstanceOf(TokenEndpointUnreachableError);
+    expect(err.message).toBe(
+      "could not reach the auth server at https://auth.wego.com/user-auth/v2/users/oauth/token (unable to get local issuer certificate)",
+    );
   });
 
   it("exchangeCode posts the authorization_code grant form-encoded", async () => {

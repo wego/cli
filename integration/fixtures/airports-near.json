@@ -1,0 +1,24 @@
+{
+  "op": "getNearbyPlaces",
+  "status": 200,
+  "body": {
+    "results": [
+      {
+        "id": 212,
+        "code": "LCY",
+        "name": "London City Airport",
+        "type": "airport"
+      }
+    ],
+    "metadata": {
+      "resultCount": 1,
+      "totalCandidates": 1,
+      "hasMore": false,
+      "origin": {
+        "latitude": 51.5,
+        "longitude": -0.12,
+        "resolvedFrom": "place"
+      }
+    }
+  }
+}

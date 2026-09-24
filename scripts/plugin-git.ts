@@ -19,7 +19,7 @@ import { redactRemote } from "./plugin-publish";
 // call time (Sonar typescript:S4036 - a writable directory earlier on PATH could
 // shadow the binary, and these processes hold a publish credential). `NOSONAR`
 // does not suppress hotspots, so the fix is the resolution, not a comment. Same
-// idiom as `src/testing/cli-runner.ts` and `apps/docs/scripts/diff-board.ts`.
+// idiom as `integration/harness/binary.ts` and `apps/docs/scripts/diff-board.ts`.
 //
 // Resolved LAZILY, on the first git call. Both scripts have paths that return
 // before any git runs - `--print-plan` and the graceful token skip - and both

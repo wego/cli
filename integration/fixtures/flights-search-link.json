@@ -1,0 +1,8 @@
+{
+  "op": "getFlightSearchLink",
+  "status": 200,
+  "body": {
+    "searchUrl": "https://www.wego.com/flights/searches/SIN-BKK-2026-09-15/economy/1a:0c:0i?ulang=en",
+    "expires": false
+  }
+}

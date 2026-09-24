@@ -1,0 +1,41 @@
+{
+  "op": "getFlightSchedules",
+  "status": 200,
+  "body": {
+    "results": [
+      {
+        "airlineCode": "SQ",
+        "flightNumber": "SQ 322",
+        "departureAirportCode": "SIN",
+        "arrivalAirportCode": "LHR",
+        "departureTime": "23:05",
+        "arrivalTime": "05:50",
+        "durationMinutes": 825,
+        "stopsCount": 0,
+        "arrivalDayOffset": 1,
+        "segments": [
+          {
+            "departureAirportCode": "SIN",
+            "arrivalAirportCode": "LHR",
+            "departureTime": "23:05",
+            "arrivalTime": "05:50",
+            "airlineCode": "SQ"
+          }
+        ],
+        "operatingPeriods": []
+      }
+    ],
+    "metadata": {
+      "page": 1,
+      "pageSize": 200,
+      "resultCount": 1,
+      "totalCandidates": 1,
+      "hasMore": false,
+      "coverage": "complete",
+      "from": { "requested": "SIN", "resolvedCityCode": "SIN" },
+      "to": { "requested": "LHR", "resolvedCityCode": "LON" },
+      "siteCode": "SG",
+      "siteCodeSource": "explicit"
+    }
+  }
+}

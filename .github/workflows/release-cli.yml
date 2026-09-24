@@ -20,9 +20,27 @@ name: Release (cli)
 # wego-darwin-arm64, wego-darwin-x64, wego-linux-arm64, wego-linux-x64,
 # wego-windows-x64.exe, each also gzipped, plus VERSION and SHA256SUMS.txt.
 #
-# Jobs: prepare, build, sign, leave-macos, release, replace-macos. `sign` is the
-# only job with `id-token: write`. `release` is the only job with the store token.
-# `scripts/workflow-shape.test.ts` asserts this split.
+# Jobs: prepare, build, sign, leave-macos, integration, release, notify-verify,
+# next-report, announce, replace-macos. `sign` and `notify-verify` are the only
+# jobs with `id-token: write`, and they hold it for unrelated reasons: `sign`
+# exchanges the token for a Fulcio certificate, `notify-verify` presents it as an
+# identity to a receiver that writes a check run back. `release` is the only job
+# with the store token, and neither of the two can reach it.
+# `scripts/workflow-shape.test.ts` asserts this split and names the exact set.
+#
+# `notify-verify` IS ALLOWED TO GO RED. Nothing that publishes needs it, and a red
+# there means "verification was not requested", never "the release failed". The
+# bytes are published and `cli/next` has moved by the time it runs. It carries no
+# `continue-on-error` on purpose: a request that silently did not happen is worse
+# than a red job, because the promote banner would then show "No report" for a
+# reason nobody saw. A red here makes the run's conclusion `failure`, so
+# `promote-cli.yml` reads this run job by job and leaves out `notify-verify` and
+# `next-report`: a receiver outage must not hold back a promote.
+#
+# `next-report` IS NEVER RED. It waits for wego-ai's `cli-next-smoke` check, looks
+# once at its `cli-next-evals` check, and writes both into this run's summary, for
+# a person to read before promoting. It is advice, so every outcome, including
+# "no report", is a green job.
 #
 # Signing identity (the Fulcio SAN):
 #   https://github.com/wego/cli/.github/workflows/release-cli.yml@refs/tags/vX.Y.Z
@@ -43,7 +61,8 @@ on:
 
 # Floor for the jobs without their own `permissions:` block. `prepare`, `build` and
 # the macOS jobs only read. A job-level block replaces this one. `id-token` is
-# granted on `sign` only; a workflow-level grant would reach every job.
+# granted on `sign` and `notify-verify` only; a workflow-level grant would reach
+# every job.
 permissions:
   contents: read
 
@@ -303,10 +322,97 @@ jobs:
           asset: wego-darwin-arm64
           version: ${{ needs.prepare.outputs.version }}
 
+  # The integration suite (`integration/`) against every binary this release
+  # built, each on a runner that can execute it. `release` needs this job, so a
+  # target that fails blocks publication for all of them: `cli/next` serves one
+  # manifest, and a release with a broken platform in it has no backward path.
+  #
+  # `leave-macos` and `release` prove that a build can update and be replaced;
+  # this proves that the commands themselves work once compiled, on every target
+  # and not only the two those jobs run on. It is hermetic: the fake API is a
+  # `Bun.serve` on loopback, so nothing here reaches production or staging, and a
+  # red is this build.
+  #
+  # `WEGO_INTEGRATION_BINARY` names the artifact `build` produced. Without it the
+  # suite compiles a host binary of its own, which would test the tree, not the
+  # bytes about to be published.
+  #
+  # `fail-fast: false`: one red target should not cancel the others, or the run
+  # reports one failure where there may be three.
+  #
+  # darwin-x64 runs on `macos-15-intel`, GitHub's Intel label since `macos-13` was
+  # retired. No `environment:` and no `id-token`.
+  integration:
+    name: integration (${{ matrix.target }})
+    needs: [prepare, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+            asset: wego-linux-x64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            asset: wego-linux-arm64
+          - target: darwin-arm64
+            runner: macos-latest
+            asset: wego-darwin-arm64
+          - target: darwin-x64
+            runner: macos-15-intel
+            asset: wego-darwin-x64
+          - target: windows-x64
+            runner: windows-latest
+            asset: wego-windows-x64.exe
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      WEGO_CLI_TELEMETRY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Download built binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-binaries
+          path: dist
+
+      # The suite refuses to run a binary that does not match its manifest line
+      # (`WEGO_INTEGRATION_MANIFEST`): verify-then-execute, on every target.
+      - name: Download the manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-checksums
+          path: dist
+
+      # An artifact does not keep the executable bit. Windows has none to restore.
+      - name: Make the binary executable
+        if: runner.os != 'Windows'
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: chmod +x "dist/$ASSET"
+
+      # `github.workspace`, not `$PWD`: on Windows the step's bash reports a
+      # `/d/a/...` path that Bun cannot open, and the runner's own path is one
+      # every platform's Bun reads.
+      - name: Integration tests (${{ matrix.asset }})
+        shell: bash
+        env:
+          WEGO_INTEGRATION_BINARY: ${{ github.workspace }}/dist/${{ matrix.asset }}
+          WEGO_INTEGRATION_MANIFEST: ${{ github.workspace }}/dist/SHA256SUMS.txt
+        run: bun run test:integration
+
   # The only job that moves a ring.
   release:
     name: Publish CLI binaries to cli/next
-    needs: [prepare, build, sign, leave-macos]
+    needs: [prepare, build, sign, leave-macos, integration]
     # One group: every release writes `cli/next`. Do not cancel a run in progress:
     # a cancel between the binaries and the manifest leaves the ring half-moved.
     concurrency:
@@ -522,6 +628,160 @@ jobs:
 
       # No skill steps. The SKILL.md ships inside the binary.
 
+  # Ask the private receiver to smoke this release against staging.
+  #
+  # Hosted runners cannot reach staging, so wego-ai runs the smoke, against the
+  # bytes `cli/next` now serves. It writes the answer back as a `cli-next-smoke`
+  # check run on this commit, as its GitHub App (id 4987365), and `next-report`
+  # below reads it into this run's summary. Nothing gates on it.
+  #
+  # THIS REPOSITORY HOLDS NO CREDENTIAL FOR ANY OF IT. What travels is a GitHub
+  # Actions OIDC token, which GitHub signs and this job merely asks for; the
+  # receiver decides what it is worth by reading the claims. The identity it admits
+  # for this lane is: `repository == wego/cli`, `event_name == push`,
+  # `ref == refs/tags/<tag>`, `sha == body.sha`, and a `job_workflow_ref` naming
+  # THIS file at THIS tag. A fork, a branch run, or a call from another workflow
+  # produces a token that does not match, and the receiver answers 403.
+  #
+  # NO SWITCH ON THIS SIDE. The job always asks; the receiver's own switch, in
+  # wego-ai, decides. Switched off, it answers 404, read below as "not verified".
+  #
+  # `needs: [prepare, release]` is the whole dependency set, and `release` is on it
+  # because the smoke is of what `cli/next` now serves. That is also the only edge
+  # to a job holding the store token, and this job cannot reach the token through
+  # it: `needs` passes outputs, not secrets, and this job declares no
+  # `environment:`, which is where the token lives.
+  notify-verify:
+    name: Request release verification
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The receiver's answer, for `next-report`: the HTTP code, or `error` when the
+    # request never got one. Written first as `error` so a step that dies before
+    # the answer still leaves a value to read; a later write of the same key wins.
+    outputs:
+      status: ${{ steps.ask.outputs.status }}
+    # NO `environment:`, ever. This job holds `id-token: write`, so every step of it
+    # can mint a token under an identity a receiver trusts; an environment here
+    # would put the store token in the same job, which is the pairing
+    # `workflow-shape.test.ts` exists to refuse.
+    #
+    # `id-token: write` alone. No `contents: read` either: there is no checkout,
+    # and a job-level block replaces the workflow floor rather than adding to it.
+    permissions:
+      id-token: write
+    steps:
+      # No checkout: nothing in the tree is read, so there is no repository code
+      # beside the OIDC token. Same reasoning as `sign`.
+      #
+      # Everything the receiver is told arrives through `env:`, never interpolated
+      # into the script. The tag comes from `prepare`, which parsed it from the ref,
+      # and the sha is the commit that started this run, the same one the check run
+      # will be written onto.
+      - name: Present this run's identity and ask for verification
+        id: ask
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ github.sha }}
+          # A literal, not a variable: one production receiver, and a setting here
+          # would be a second switch beside the receiver's own. Under `/.well-known/`
+          # because that prefix on this host is served by the API.
+          RECEIVER: https://api.wego.com/.well-known/internal/cli-verify
+        run: |
+          set -euo pipefail
+          echo "status=error" >> "$GITHUB_OUTPUT"
+          JWT=$(curl -sS --retry 3 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=wego-cli-verify" | jq -r .value)
+          echo "::add-mask::$JWT"
+          # The status is read rather than left to `--fail-with-body`, because 409 is
+          # not a failure here. The receiver spends the token's `jti` for 15 minutes,
+          # so a `--retry` after a LOST RESPONSE replays a request it already
+          # dispatched and is answered 409. Failing on that would report "verification
+          # not requested" for a verification that was requested and is running.
+          #
+          # `--retry` retries a connection error, a timeout, and an HTTP 408, 429 or
+          # 5xx answer, reusing the same JWT and so the same `jti`. That is safe
+          # because the receiver spends the `jti` only once the dispatch succeeded: a
+          # 5xx left it unspent, so the retry is a fresh attempt, and a 409 still
+          # means a first attempt dispatched and its answer was lost.
+          #
+          # Minting a fresh token per attempt would remove the 409 entirely and make
+          # one worth failing on. Not done: it buys a distinction nobody acts on, and
+          # the receiver's guard is the thing keeping a replay from dispatching twice.
+          #
+          # `jq -c` prints exactly `{"tag":"vX.Y.Z","sha":"<40 hex>"}`, and `--arg`
+          # makes both values jq data rather than jq program text.
+          BODY="$RUNNER_TEMP/cli-verify.out"
+          CODE=$(curl -sS --retry 3 -o "$BODY" -w '%{http_code}' -X POST "$RECEIVER" \
+            -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
+            -d "$(jq -cn --arg tag "$TAG" --arg sha "$SHA" '{tag:$tag, sha:$sha}')")
+          echo "status=$CODE" >> "$GITHUB_OUTPUT"
+          # Bounded: this is another system's body landing in a PUBLIC log.
+          head -c 500 "$BODY"; echo
+          case "$CODE" in
+            202) echo "::notice::verification started for $TAG (202). next-report shows the result in this run's summary." ;;
+            409) echo "::notice::verification had already started for $TAG (409). A retry replayed a token the receiver had spent, so the first attempt dispatched and the smoke is running." ;;
+            # Switched off is a state, not a fault: a notice, so it reads as
+            # "not verified" without a red release.
+            404) echo "::notice::the receiver is switched off (404), so $TAG was not verified. Re-run this job once it is on." ;;
+            *)   echo "::error::the receiver refused the request for $TAG (HTTP $CODE). $TAG is published and cli/next has moved. promote-cli.yml does not wait on this job, so $TAG can still be promoted. Re-run this job once the reason above is fixed to get its report."
+                 exit 1 ;;
+          esac
+
+  # wego-ai's answer, in this run's summary: the smoke's verdict, a link to the
+  # private run, one row per part beside the previous release, and one line on the
+  # skill evals. Rendered by `scripts/next-report.ts`, which reads only the
+  # `cli-next-smoke` and `cli-next-evals` checks written by wego-ai's App (id
+  # 4987365) and ignores those names from anyone else. It waits for the smoke
+  # only; the evals can take hours, and the promote banner shows them.
+  #
+  # Runs whenever `notify-verify` ran, red included, because the report says why
+  # there is none: a 404 and a refusal are written at once, with no wait. Skipped
+  # when `notify-verify` was, which is every run that did not publish. After a
+  # 202 or 409 it looks every 30 s, for up to 45 min.
+  #
+  # NEVER RED, three ways over: the script exits 0 on every state it knows, the
+  # step turns a crash into a summary line and `exit 0`, and the job is
+  # `continue-on-error`. Nothing needs it. A red here would read as a failed
+  # release and send someone looking for a fault in the bytes.
+  #
+  # `checks: read` for the API read and `contents: read` for the checkout, and
+  # nothing else: no environment, no secret, no `id-token`. `github.token` is the
+  # run's own token, scoped to those two grants.
+  next-report:
+    name: next report
+    needs: [prepare, notify-verify]
+    if: ${{ !cancelled() && (needs.notify-verify.result == 'success' || needs.notify-verify.result == 'failure') }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Wait for wego-ai's report and show it
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ github.sha }}
+          NOTIFY_STATUS: ${{ needs.notify-verify.outputs.status }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          bun run scripts/next-report.ts
+          code=$?
+          if [ "$code" -ne 0 ]; then
+            echo "● No report: next-report exited $code" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::next-report exited $code before writing a report."
+          fi
+          exit 0
+
   # The GitHub Release, split out of `release` so no job holds both the store token
   # and repository write.
   #
@@ -633,8 +893,8 @@ jobs:
   #
   # One job, not one per check: the runner boot, checkout and install dominate the
   # cost; each check takes seconds. No `environment:` and no `id-token`.
-  # `macos-latest` is Apple silicon. darwin-x64, linux-arm64 and Windows are built
-  # and not run.
+  # `macos-latest` is Apple silicon. darwin-x64, linux-arm64 and Windows are not
+  # replace-tested; `integration` runs the commands on all five before publication.
   replace-macos:
     name: Prove the replace path on macOS
     needs: [prepare, release]
