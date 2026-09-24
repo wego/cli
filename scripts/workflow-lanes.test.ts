@@ -101,6 +101,28 @@ describe("promote-cli.yml: has no rollback mode", () => {
       .find((s) => s.name === "Advance cli/stable");
     expect(move?.run).toContain("--require-serving next");
   });
+
+  // The token used to be minted after the move, so a key GitHub refused
+  // left `stable` moved with the plugin unpublished, and the fix was a rollback.
+  // Minted before the move, the same bad key fails the promote with `stable`
+  // untouched. The mint must also not wait on the move's output, or it cannot
+  // run first.
+  it("mints the plugin token before cli/stable moves", () => {
+    const wf = workflow("promote-cli.yml") as {
+      jobs: Record<
+        string,
+        { steps?: { id?: string; name?: string; if?: string }[] }
+      >;
+    };
+    const steps = Object.values(wf.jobs).find((j) =>
+      (j.steps ?? []).some((s) => s.name === "Advance cli/stable"),
+    )?.steps;
+    const mint = steps?.findIndex((s) => s.id === "plugin-token") ?? -1;
+    const move = steps?.findIndex((s) => s.name === "Advance cli/stable") ?? -1;
+    expect(mint).toBeGreaterThanOrEqual(0);
+    expect(mint).toBeLessThan(move);
+    expect(steps?.[mint]?.if ?? "").not.toContain("steps.promote");
+  });
 });
 
 describe("the two lanes serialise against each other", () => {

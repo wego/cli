@@ -326,6 +326,25 @@ jobs:
           echo "::error::$TAG has no plugin publish lane in its tree (missing:$missing) and SKILLS_PUBLISH_ENABLED is on. Refusing before cli/stable moves: promoting would move both rings and then skip the publish, which reports success for a promote that published nothing. If you meant to put cli/stable back on an EARLIER release, use rollback-cli.yml - it publishes no plugin and does not care."
           exit 1
 
+      # Mint the plugin token BEFORE the move, so a key GitHub refuses fails the
+      # promote while `stable` is still where it was. Minted after the move, a bad
+      # key moved `stable` and then published nothing, and the only way back was a
+      # rollback. The token lasts an hour and this job times out at 30 minutes, so
+      # it is still valid when the publish below uses it.
+      #
+      # Skipped when the flag is off. Without this guard the publish step ran with
+      # no token and REQUIRE_PUBLISH, and failed after `stable` had moved.
+      - name: Mint the plugin publish token
+        id: plugin-token
+        if: vars.SKILLS_PUBLISH_ENABLED == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.SKILLS_PUBLISH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SKILLS_PUBLISH_APP_PRIVATE_KEY }}
+          owner: wego
+          repositories: skills
+          permission-contents: write
+
       # "cli/next serves this tag" is enforced by the publisher
       # (`--require-serving next` in "Advance cli/stable"), not by a step here. The
       # publisher holds the store origin it writes to, so the gate and the write
@@ -760,19 +779,8 @@ jobs:
       # No skill steps. The SKILL.md ships inside the binary, and `update` runs
       # `skill install --owned-only` after the swap.
 
-      # Skipped when the flag is off. Without this guard the publish step ran with
-      # no token and REQUIRE_PUBLISH, and failed after `stable` had moved
-      # (wego/foundations#129, run 34610149769).
-      - name: Mint the plugin publish token
-        id: plugin-token
-        if: steps.promote.outputs.store_origin != '' && vars.SKILLS_PUBLISH_ENABLED == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          client-id: ${{ vars.SKILLS_PUBLISH_APP_CLIENT_ID }}
-          private-key: ${{ secrets.SKILLS_PUBLISH_APP_PRIVATE_KEY }}
-          owner: wego
-          repositories: skills
-          permission-contents: write
+      # The plugin token is minted before the move, in "Mint the plugin publish
+      # token" above.
 
       # The steps are main's; the tree is the tag's. A tag cut before this lane
       # existed has no publisher script. Skip, do not fail after the move.
