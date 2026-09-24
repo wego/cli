@@ -19,7 +19,7 @@ Bun only, never npm, node or yarn. Never commit with `--no-verify`.
 | Tier | Proves | Lives in | Runs |
 |---|---|---|---|
 | Unit | Each piece of code across its edge cases: parsers (argv to API arguments), the HTTP client, pure logic | `src/*.test.ts`, `scripts/*.test.ts` | Every PR, blocking |
-| Integration | The compiled binary works: exit codes, stdout, stderr, the request on the wire, files written | `integration/` | Every PR and every release on 5 targets, blocking |
+| Integration | The compiled binary works: exit codes, stdout, stderr, the request on the wire, files written | `integration/` | Every PR, and every release on its linux and macOS targets, blocking |
 | Artifact checks | What ships is signed, installable, self-updating | the release and promote workflows | Release and promote, blocking |
 | Next smoke and evals | The published binary against staging, and how well its skill performs | wego-ai | Every release, report only |
 

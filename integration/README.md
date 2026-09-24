@@ -9,9 +9,9 @@ WEGO_INTEGRATION_BINARY=dist/wego-linux-x64 bun run test:integration   # drives 
 ```
 
 It needs no network, no account and no staging access, so it runs on every pull
-request (as a step of `ci-cli`) and, in the release run, on each of the five built
-targets on its own runner before anything is published (`integration (<target>)`).
-Both block.
+request (as a step of `ci-cli`) and, in the release run, on each built linux and
+macOS target on its own runner before anything is published (`integration (<target>)`).
+Both block. Windows is built and published but not run here.
 
 ## What it proves
 

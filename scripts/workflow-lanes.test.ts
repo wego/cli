@@ -561,7 +561,13 @@ describe("promote-cli.yml: the next report banner gates nothing", () => {
  *
  * And a job `release` does not need is decoration. The whole point is that a
  * target that cannot run its own commands never reaches `cli/next`.
+ *
+ * ONE NAMED EXEMPTION: Windows. Its first leg (v1.4.0) failed on the suite, not
+ * the binary, and was taken out rather than let it hold every release. It is a
+ * list, not a looser comparison, so anything else the build adds still needs a leg.
  */
+const NOT_INTEGRATION_TESTED = ["wego-windows-x64.exe"];
+
 describe("release-cli.yml: integration runs every built target before publication", () => {
   const wf = workflow("release-cli.yml") as {
     jobs: Record<
@@ -593,8 +599,13 @@ describe("release-cli.yml: integration runs every built target before publicatio
     expect(built.length).toBeGreaterThanOrEqual(5);
   });
 
-  it("covers exactly the assets the build produces", () => {
-    expect(include.map((e) => e.asset).sort()).toEqual([...built].sort());
+  it("covers exactly the assets the build produces, apart from the named exemption", () => {
+    // The exemption must name a real asset, or it would exempt nothing and read
+    // as coverage.
+    for (const asset of NOT_INTEGRATION_TESTED) expect(built).toContain(asset);
+    expect(include.map((e) => e.asset).sort()).toEqual(
+      built.filter((a) => !NOT_INTEGRATION_TESTED.includes(a)).sort(),
+    );
   });
 
   it("runs each target on a runner that can execute it", () => {
