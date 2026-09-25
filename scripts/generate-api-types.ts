@@ -5,17 +5,15 @@ import openapiTS, { astToString } from "openapi-typescript";
  * Generate `src/api-types.d.ts` from the vendored API contract
  * (`contract/openapi.json`).
  *
- * The CLI ships separately from the API, so the two meet the only way that
- * keeps them independently deployable: a **build-time** read of a checked-in
- * file. No import crosses the boundary, nothing here ships in the binary (the
- * output is types, erased at compile time), and the CLI keeps holding its own
- * tolerant Zod schemas as the runtime parser. What the generated types buy is a
- * compiler that can compare the two.
+ * The CLI ships separately from the API, so they meet through a build-time read
+ * of a checked-in file, which keeps them independently deployable. Nothing here
+ * ships in the binary (types are erased at compile time), and the CLI keeps its
+ * own tolerant Zod schemas as the runtime parser. The generated types let the
+ * compiler compare the two.
  *
- * The output is not committed. `postinstall` runs this script, so
- * `src/api-types.d.ts` exists after `bun install` for editors, `bun run
- * typecheck` and CI; regenerating it is never something a person has to
- * remember. Refresh the source with `bun run api-contract:refresh`.
+ * The output is not committed. Both `postinstall` and `bun run typecheck` run
+ * this script, so nobody has to remember to regenerate it. Refresh the source
+ * with `bun run api-contract:refresh`.
  */
 
 const CONTRACT = new URL("../contract/openapi.json", import.meta.url);
@@ -36,9 +34,8 @@ const HEADER = `/**
 
 export async function renderApiTypes(): Promise<string> {
   const ast = await openapiTS(CONTRACT, {
-    // The CLI compares shapes, so a body that is absent on the wire and a body
-    // explicitly `null` are the same thing to it; emitting `| null` everywhere
-    // would only add noise to every comparison.
+    // The CLI compares shapes, so an absent body and an explicit `null` body are
+    // the same to it; `| null` everywhere would only add noise.
     emptyObjectsUnknown: true,
   });
   return `${HEADER}${astToString(ast)}`;

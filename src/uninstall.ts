@@ -3,76 +3,59 @@ import { EXIT, exitCodeForError } from "./error-report";
 import { programName } from "./program-name";
 import { usage, usageErrorLabel } from "./usage";
 
-// The invoked command name, so a renamed install's `--help` names itself.
+// So a renamed install's `--help` names itself.
 const PROG = programName();
 
 /**
- * `wego uninstall` — the counterpart to the `curl … | bash` installer: remove
- * everything the CLI put on the machine, in one command (clig.dev's "make
- * uninstallation easy").
+ * `wego uninstall`: the counterpart to the `curl … | bash` installer, removing
+ * everything the CLI put on the machine (clig.dev's "make uninstallation easy").
  *
  * A POSIX process can unlink its own executable while running (the kernel keeps
- * the open inode until exit), so `uninstall` self-deletes `process.execPath` the
- * same way `update` self-replaces it. Windows can't delete a running `.exe`, so
- * it does the rest and prints a one-line manual step (matching `update`/install).
- *
- * By default it also clears the stored credentials and removes the agent skill
- * this CLI installed; `--keep-credentials` / `--keep-skill` retain either.
- * Injected deps keep the flow unit-testable without touching the real fs.
+ * the open inode until exit), so this self-deletes `process.execPath` the way
+ * `update` self-replaces it. Windows cannot delete a running `.exe`, so there it
+ * does the rest and prints a manual step, as `update` and the installer do.
  */
 
-/** The from-source version stamp (matches `index.ts`'s `VERSION` fallback). */
+/** Matches `index.ts`'s `VERSION` fallback. */
 const DEV_VERSION = "0.0.0-dev";
 
 export interface UninstallDeps {
   log: (message: string) => void;
   error: (message: string) => void;
-  /** The running binary's version; `0.0.0-dev` from source. */
+  /** `0.0.0-dev` from source. */
   version: string;
-  /** True when running from source (a runtime exec-path signal, NOT the
-   *  env-stamped version which a stray `WEGO_BUILD_VERSION` can spoof). When
-   *  true there is no installed binary to remove and `execPath` is the Bun/Node
+  /** A runtime exec-path signal, not the env-stamped version, which a stray
+   *  `WEGO_BUILD_VERSION` can spoof. When true, `execPath` is the Bun/Node
    *  runtime, so the command refuses. */
   fromSource: boolean;
-  /** `process.platform`. */
   platform: NodeJS.Platform;
-  /** Absolute path of the running binary (`process.execPath`). */
   execPath: string;
-  /** Where credentials live (for the removal summary). */
   credentialsPath: string;
-  /** The user's travel preferences (issue #1386). Removed with the credentials
-   *  group — `--keep-credentials` keeps both. */
+  /** Travel preferences (issue #1386). `--keep-credentials` keeps them too. */
   settingsPath: string;
-  /** The update-notice throttle file (`version-notice.ts`). Removed unconditionally
-   *  — it is this binary's own bookkeeping, not the user's login, so
-   *  `--keep-credentials` has no say in it. */
+  /** The update-notice throttle file (`version-notice.ts`). The following paths
+   *  are this binary's own bookkeeping, so they are removed regardless of
+   *  `--keep-credentials`. */
   updateCheckPath: string;
-  /** The release-ring record this install followed (`ring-follow.ts`). Removed
-   *  unconditionally with the rest of this binary's bookkeeping: it describes an
-   *  install that no longer exists, and a reinstall writes it again. */
+  /** Describes an install that no longer exists; a reinstall writes it again. */
   installRecordPath: string;
-  /** The analytics session file. Removed unconditionally like the throttle: it
-   *  carries no opt-out, so there is nothing to preserve across a reinstall. */
+  /** Carries no opt-out, so there is nothing to preserve across a reinstall. */
   sessionPath: string;
-  /** The last-auth-failure diagnostic record (investigation #1360). Removed
-   *  unconditionally like the throttle and the session: this binary's own
-   *  bookkeeping, so `--keep-credentials` has no say in it. */
+  /** The last-auth-failure diagnostic record (investigation #1360). */
   authFailurePath: string;
-  /** The agent skill directory (for the removal summary). */
   skillPath: string;
-  /** Local telemetry state (machine id + setting). */
+  /** Machine id and setting. */
   telemetryStatePath: string;
-  /** True when the stored setting is an explicit opt-out, which is kept so a
-   *  reinstall does not silently turn telemetry back on. */
+  /** An explicit opt-out is kept so a reinstall does not silently turn telemetry
+   *  back on. */
   telemetryOptedOut: () => Promise<boolean>;
   /** Best-effort remove (force). */
   rm: (path: string) => Promise<void>;
-  /** Clear stored credentials (force-rm; no-op when already absent). */
+  /** No-op when already absent. */
   removeCredentials: () => Promise<void>;
-  /** Remove the wego-owned agent skill (reuses `skill uninstall`; a foreign or
-   *  absent skill is left/ignored). */
+  /** Reuses `skill uninstall`, so a foreign or absent skill is left alone. */
   removeSkill: () => Promise<void>;
-  /** Confirm the removal; bypassed by `-y`. */
+  /** Bypassed by `-y`. */
   confirm: (question: string) => Promise<boolean>;
 }
 
@@ -93,8 +76,6 @@ export const UNINSTALL_USAGE = usage({
   note: `A project-scope or --dir skill install is not touched. Remove it with ${PROG} skill uninstall --scope project or --dir PATH.`,
 });
 
-/** Parse `wego uninstall` argv. Valueless boolean flags only; anything else is a
- *  usage error the caller renders with exit 2. */
 export function parseUninstallArgs(args: string[]): UninstallOptions {
   const opts: UninstallOptions = {
     yes: false,
@@ -120,8 +101,6 @@ export function parseUninstallArgs(args: string[]): UninstallOptions {
   return opts;
 }
 
-/** Self-delete the running binary. POSIX unlinks its own execPath; Windows can't
- *  and returns a manual-step notice. Returns an exit code. */
 async function removeBinary(deps: UninstallDeps): Promise<number> {
   if (deps.platform === "win32") {
     deps.log(
@@ -148,14 +127,11 @@ async function removeBinary(deps: UninstallDeps): Promise<number> {
   return EXIT.OK;
 }
 
-/** Build the removal summary and ask to proceed. The summary lists exactly the
- *  paths this run will remove, so a `-y`-less caller sees them before confirming. */
+/** Lists exactly the paths this run will remove. */
 async function confirmUninstall(
   opts: UninstallOptions,
   deps: UninstallDeps,
 ): Promise<boolean> {
-  // Windows can't self-delete a running .exe, so the summary must say the binary
-  // is a manual follow-up there, not something this command removes.
   const targets = [
     deps.platform === "win32"
       ? `manually delete the wego binary at ${deps.execPath} after this command`
@@ -182,10 +158,7 @@ async function confirmUninstall(
   );
 }
 
-/** Clear the secondary footprint (credentials + skill) after the binary is gone,
- *  best-effort: each failure is logged and skipped, never failing a command whose
- *  main job (binary removal) already succeeded. */
-/** Force-remove one path, reporting a failure instead of failing the uninstall. */
+/** Reports a failure instead of failing the uninstall. */
 async function removeQuietly(
   deps: UninstallDeps,
   path: string,
@@ -200,12 +173,14 @@ async function removeQuietly(
   }
 }
 
+/** Best-effort: each failure is logged and skipped, never failing a command
+ *  whose main job (removing the binary) already succeeded. */
 async function removeFootprint(
   opts: UninstallOptions,
   deps: UninstallDeps,
 ): Promise<void> {
-  // Neither is gated by a --keep flag: both are this binary's own bookkeeping,
-  // and leaving them behind is pure litter once the binary is gone.
+  // Not gated by a --keep flag: this binary's own bookkeeping is litter once the
+  // binary is gone.
   await removeQuietly(deps, deps.updateCheckPath, "local state");
   await removeQuietly(deps, deps.installRecordPath, "the release-ring record");
   await removeQuietly(deps, deps.sessionPath, "the analytics session");
@@ -215,10 +190,9 @@ async function removeFootprint(
     "the last-auth-failure record",
   );
   if (!opts.keepCredentials) {
-    // Grouped with the credentials, and gated by the same flag: preferences are
-    // the user's own data, unlike the telemetry opt-out below, which is KEPT so a
-    // reinstall cannot silently resume sending. A stale currency has no such
-    // safety argument, so `--keep-credentials` is the only way to retain it.
+    // Preferences are the user's own data, gated with the credentials. Unlike the
+    // telemetry opt-out below, a stale preference has no safety reason to survive
+    // a reinstall, so `--keep-credentials` is the only way to retain it.
     await removeQuietly(deps, deps.settingsPath, "your travel preferences");
     try {
       await deps.removeCredentials();
@@ -241,8 +215,8 @@ async function removeFootprint(
   await clearTelemetryFootprint(deps);
 }
 
-/** Remove the local telemetry state, keeping an explicit opt-out so that
- *  reinstalling does not silently turn telemetry back on. */
+/** Keeps an explicit opt-out so reinstalling does not silently turn telemetry
+ *  back on. */
 async function clearTelemetryFootprint(deps: UninstallDeps): Promise<void> {
   try {
     if (await deps.telemetryOptedOut()) {
@@ -260,7 +234,6 @@ async function clearTelemetryFootprint(deps: UninstallDeps): Promise<void> {
   }
 }
 
-/** `wego uninstall [-y] [--keep-credentials] [--keep-skill]`. */
 export async function uninstall(
   args: string[],
   deps: UninstallDeps,
@@ -277,11 +250,9 @@ export async function uninstall(
     return EXIT.USAGE;
   }
 
-  // From source there is no installed binary to remove; deleting `bun` (which is
-  // `process.execPath` under `bun run src/index.ts`) would be wrong, so refuse
-  // cleanly. Gate on the exec-path signal first: a stray `WEGO_BUILD_VERSION` in
-  // the environment can make `version` non-dev on a source run, so version alone
-  // is not a safe source check.
+  // Under `bun run src/index.ts`, `process.execPath` is `bun` itself. Gate on the
+  // exec-path signal first: a stray `WEGO_BUILD_VERSION` can make `version`
+  // non-dev on a source run.
   if (deps.fromSource || deps.version === DEV_VERSION) {
     deps.log(
       "Running from source – nothing to uninstall (this isn't an installed binary). Remove the checkout/worktree instead.",
@@ -294,16 +265,13 @@ export async function uninstall(
     return EXIT.OK;
   }
 
-  // Remove the binary first. It is the point of the command, and a POSIX process
-  // keeps running off its already-open inode after unlinking its own execPath, so
-  // nothing here depends on the binary still being on disk. Doing it first means a
-  // non-removable binary (e.g. installed under a root-owned dir, run unprivileged)
-  // stops us BEFORE we wipe the user's credentials/skill: the worst outcome would
+  // Binary first: a POSIX process keeps running off its open inode, and a
+  // non-removable binary (say, under a root-owned dir, run unprivileged) then
+  // stops us before the credentials and skill are wiped. The worst outcome would
   // be a stranded binary with the login and agent setup already gone.
   const binaryExit = await removeBinary(deps);
   if (binaryExit !== EXIT.OK) return binaryExit;
 
-  // Binary handled: clear the secondary footprint (credentials + skill), best-effort.
   await removeFootprint(opts, deps);
   return EXIT.OK;
 }

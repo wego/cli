@@ -2,18 +2,16 @@
  * Release-tag gate for `.github/workflows/release-cli.yml` (the "Resolve version +
  * tag" step).
  *
- * A release tag is not just a label: `build-release.ts` bakes `${TAG#v}` into
- * the binary as its version, and the installed binary compares that string against
- * the channel's `VERSION` object with `parseSemver` (`src/version-notice.ts`). So a
- * tag the WORKFLOW accepts but the PARSER rejects - `v0.4.3-rc.01`, whose
- * leading-zero numeric identifier is semver-invalid - ships a binary whose
- * new-version notice can never fire for that install, silently, forever.
+ * `build-release.ts` bakes `${TAG#v}` into the binary as its version, and the
+ * installed binary compares that string against the ring's `VERSION` object with
+ * `parseSemver` (`src/version-notice.ts`). A tag the workflow accepts but the
+ * parser rejects (`v0.4.3-rc.01`: a leading zero is semver-invalid) ships a binary
+ * whose new-version notice can never fire.
  *
- * The fix is to have ONE authority. This module delegates to the very parser the
- * binary uses, so the two grammars cannot drift: the workflow's regex is a shape
- * check only, and everything about what a version MEANS is decided here.
+ * So this delegates to the parser the binary uses, and the workflow's regex is a
+ * shape check only.
  *
- * Run: `bun apps/cli/scripts/validate-release-tag.ts v1.2.3`
+ * Run: `bun scripts/validate-release-tag.ts v1.2.3`
  */
 
 import { parseSemver } from "../src/version-notice";
@@ -23,9 +21,7 @@ import { parseSemver } from "../src/version-notice";
  *  (`cli/<tag>/`) and an asset name, and `+` is not safe in either. */
 const TAG_SHAPE = /^v[0-9A-Za-z.-]+$/;
 
-/**
- * `null` when `tag` is releasable, else the reason - one line, ready for stderr.
- */
+/** `null` when `tag` is releasable, else the reason as one line for stderr. */
 export function releaseTagError(tag: string): string | null {
   if (!TAG_SHAPE.test(tag)) {
     return `Malformed tag '${tag}' - expected vX.Y.Z[-prerelease], with no build metadata.`;

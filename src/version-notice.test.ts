@@ -16,20 +16,16 @@ import {
 } from "./version-notice";
 
 /**
- * Like the background skill refresh, this is an almost-silent code path: it writes
- * to no stream and swallows every failure, so a broken guard fails open (a network
- * call after every command) or fails closed (nobody is ever told about a release)
- * with no symptom either way. `maybeNotifyNewVersion` returns its decision AND its
- * message instead of printing, so both halves can be asserted directly.
+ * This path writes to no stream and swallows every failure, so a broken guard
+ * fails open (a network call after every command) or closed (nobody is told about
+ * a release) with no symptom. `maybeNotifyNewVersion` returns its decision and
+ * message instead of printing, so both can be asserted directly.
  */
 
 const NOW = 1_800_000_000_000;
-/** The install endpoint + ring an installed binary records (foundations#74 rung 3).
- *  `stable` because that is what a plain `curl … | bash` writes. */
+/** `stable` because that is what a plain `curl … | bash` records. */
 const INSTALL_URL = "https://api.wego.com/install";
 const DEFAULT_RECORD = { ring: "stable", installUrl: INSTALL_URL };
-/** What the notice fetches for the default record: the ring-qualified `?dl=` form
- *  `wego update` uses, through the same first-party host. */
 const DEFAULT_VERSION_URL = `${INSTALL_URL}?dl=VERSION&ring=stable`;
 const CURRENT = "0.4.1";
 const LATEST = "0.4.2";
@@ -39,8 +35,8 @@ interface Harness extends VersionNoticeDeps {
   claims: () => number;
 }
 
-/** A deps bundle whose default state DOES check and DOES notify, so each test can
- *  flip exactly one field and attribute the outcome to it. */
+/** Defaults check and notify, so each test can flip one field and attribute the
+ *  outcome to it. */
 function deps(over: Partial<VersionNoticeDeps> = {}): Harness {
   const fetches: string[] = [];
   const claims = { n: 0 };
@@ -49,13 +45,10 @@ function deps(over: Partial<VersionNoticeDeps> = {}): Harness {
     fromSource: false,
     version: CURRENT,
     invokedAs: "wego",
-    // A record by DEFAULT: it is the only source a notice can resolve, so the
-    // base bundle has to carry one for the cases below to exercise the notice at
-    // all. Absence is now its own case (`skips when no ring was recorded`).
     readInstallRecord: async () => DEFAULT_RECORD,
     env: {},
     now: NOW,
-    // Stale by a day and a second ⇒ past the prod window.
+    // Just past the window.
     readState: async () => ({
       checkedAt: NOW - NOTICE_INTERVAL_MS - 1_000,
     }),
@@ -75,17 +68,14 @@ function deps(over: Partial<VersionNoticeDeps> = {}): Harness {
   });
 }
 
-/** A stored answer `age` ms old. */
-/** A throttle stamp of a given age. There is no stored answer to model: the file
- *  records WHEN we asked and nothing else. */
+/** A throttle stamp `age` ms old. */
 function stored(age: number): () => Promise<UpdateCheckState> {
   return async () => ({ checkedAt: NOW - age });
 }
 
 describe("parseSemver / isNewerVersion", () => {
-  // Every row is a real hazard, not a permutation for its own sake. The two
-  // load-bearing properties: unparseable input is never a guess, and only a
-  // STRICTLY newer remote produces a notice.
+  // Every row is a real hazard. The two properties that matter: unparseable input
+  // is never a guess, and only a strictly newer remote counts as newer.
   const table: Array<
     [current: string, remote: string, newer: boolean, why: string]
   > = [
@@ -177,8 +167,8 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("notifies on the same run that discovers the release", async () => {
-    // A notice deferred to the NEXT command would be invisible to anyone who runs
-    // the CLI once a day — which is most people.
+    // A notice deferred to the next command would never reach someone who runs
+    // the CLI once a day.
     const d = deps({ readState: async () => null });
     expect((await maybeNotifyNewVersion(d)).message).toBeTruthy();
   });
@@ -191,8 +181,6 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("skips on a self-management command, before any other guard", async () => {
-    // `update` would nag on the very run that fixed the problem: the running
-    // process's baked version is stale relative to the binary it just wrote.
     for (const command of ["update", "uninstall", "skill"]) {
       const d = deps({ command });
       expect(await maybeNotifyNewVersion(d)).toEqual({
@@ -211,9 +199,8 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("skips a dev-stamped binary even when the exec-path test passes", async () => {
-    // A locally compiled binary with a baked channel base but no RELEASE_TAG is
-    // NOT from source by exec path, and would otherwise nag `0.0.0-dev -> …`
-    // forever. `update.ts` gates on both signals for the same reason.
+    // A locally compiled binary without RELEASE_TAG is not from source by exec
+    // path, and would otherwise nag `0.0.0-dev -> …` forever.
     const d = deps({ version: "0.0.0-dev", fromSource: false });
     expect((await maybeNotifyNewVersion(d)).outcome).toBe(
       "skipped-from-source",
@@ -222,16 +209,15 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("skips when no ring was recorded, and asks nobody", async () => {
-    // foundations#74 rung 3: a missing record refuses rather than guesses. The
-    // `fetches()` assertion is the half that matters - refusing means no request
-    // is made at all, not a request to a guessed prefix.
+    // foundations#74 rung 3: refusing means no request at all, not a request to
+    // a guessed prefix.
     const d = deps({ readInstallRecord: async () => null });
     expect((await maybeNotifyNewVersion(d)).outcome).toBe("skipped-no-record");
     expect(d.fetches()).toHaveLength(0);
   });
 
   it("reads WEGO_CLI_NO_UPDATE_NOTICE liberally", async () => {
-    // Erring toward "off" respects an operator who clearly meant to disable it.
+    // Err toward "off": any value other than empty, 0 or false disables it.
     for (const raw of ["1", "yes", "on", "true", "anything", " x "]) {
       const d = deps({ env: { WEGO_CLI_NO_UPDATE_NOTICE: raw } });
       expect(await maybeNotifyNewVersion(d)).toEqual({
@@ -246,9 +232,7 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("says nothing inside the window, and asks nobody", async () => {
-    // The throttle used to govern the READ while the message came from a stored
-    // answer - "persist, then nag". The answer is gone, so a throttled run is
-    // silent: this file never says anything it has not just been told.
+    // Nothing is stored, so a throttled run has nothing it was just told.
     const d = deps({ readState: stored(60_000) });
     const r = await maybeNotifyNewVersion(d);
     expect(r.outcome).toBe("throttled");
@@ -258,8 +242,6 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("uses the one window for every install", async () => {
-    // Inside it, throttled; past it, checked. There is no second cadence to pick
-    // between any more.
     expect(
       (
         await maybeNotifyNewVersion(
@@ -286,7 +268,7 @@ describe("maybeNotifyNewVersion", () => {
 
   it("claims the window BEFORE fetching", async () => {
     // Otherwise a hanging or failing channel leaves the stamp untouched and
-    // re-triggers a full-deadline fetch on every single command.
+    // triggers a full-deadline fetch on every command.
     const order: string[] = [];
     const d = deps({
       claimWindow: async () => {
@@ -303,9 +285,7 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("does not fetch when the window cannot be claimed, and says nothing", async () => {
-    // A read-only $HOME must not turn into a network call per command. It used to
-    // still nag from a stored answer here; with nothing stored there is nothing
-    // honest to say.
+    // A read-only $HOME must not turn into a network call per command.
     const d = deps({
       claimWindow: async () => false,
       readState: stored(NOTICE_INTERVAL_MS + 1_000),
@@ -316,13 +296,7 @@ describe("maybeNotifyNewVersion", () => {
     expect(d.fetches()).toHaveLength(0);
   });
 
-  // EVERY WAY OF NOT KNOWING IS THE SAME ANSWER NOW: silence.
-  //
-  // These used to be four different behaviours, because each decided what was
-  // allowed to overwrite the stored answer - a 404 cleared it, a 5xx kept it, a
-  // garbage body must not replace it, a 403 was not proof of absence. With
-  // nothing stored there is one rule, and it is the whole point of the design:
-  // say nothing you were not just told.
+  // Every way of not knowing gets the same answer: silence.
   it("says nothing when the channel cannot be read", async () => {
     const cases: Array<[string, () => Promise<Response>]> = [
       [
@@ -364,7 +338,7 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("refuses an oversized body by declared length and by actual bytes", async () => {
-    // A deadline bounds time, not bytes — a mis-pointed base is a 95 MB object.
+    // A deadline bounds time, not bytes, and a mis-pointed base is a 95 MB object.
     const huge = "9".repeat(MAX_VERSION_BYTES + 1);
     const declared = deps({
       fetch: (async () =>
@@ -373,7 +347,7 @@ describe("maybeNotifyNewVersion", () => {
         })) as unknown as typeof fetch,
     });
     expect((await maybeNotifyNewVersion(declared)).message).toBeUndefined();
-    // Chunked responses declare no length, so the body is bounded again after read.
+    // Chunked responses declare no length, so the read itself must be bounded.
     const chunked = deps({
       fetch: (async () => {
         const res = new Response(huge);
@@ -385,10 +359,9 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("stops pulling an oversized chunked body instead of buffering it", async () => {
-    // The bound is only worth anything if it applies WHILE reading: buffering the
-    // whole 95 MB object and rejecting it afterwards still paid the memory on
-    // someone else's command. Count the chunks the stream is asked for - a reader
-    // that cancels on the cap takes a couple, `res.text()` takes all 100.
+    // The bound must apply while reading: buffering the whole object and rejecting
+    // it afterwards still pays the memory. A reader that cancels on the cap pulls
+    // a couple of chunks; `res.text()` pulls all 100.
     let pulled = 0;
     let cancelled = false;
     const chunk = new Uint8Array(MAX_VERSION_BYTES).fill(0x39); // "9"
@@ -409,7 +382,6 @@ describe("maybeNotifyNewVersion", () => {
     const r = await maybeNotifyNewVersion(d);
     expect(pulled).toBeLessThan(10);
     expect(cancelled).toBe(true);
-    // An over-limit body teaches us nothing, so nothing is said.
     expect(r.message).toBeUndefined();
   });
 
@@ -430,8 +402,6 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("trims the trailing newline the published file carries", async () => {
-    // `VERSION` ships with a trailing newline. Asserted through the message now
-    // rather than through what was written, since nothing is written.
     const d = deps({
       fetch: (async () =>
         new Response(`${LATEST}\n`)) as unknown as typeof fetch,
@@ -442,9 +412,9 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("reads a slashed record through the real parser and still asks one URL", async () => {
-    // Through `parseInstallRecord`, not a hand-built record: the parser is what
-    // canonicalizes `/install/`, so injecting a pre-shaped object here would assert
-    // a state the real path cannot produce.
+    // Through `parseInstallRecord`, not a hand-built record: the parser
+    // canonicalizes `/install/`, so a pre-shaped object would assert a state the
+    // real path cannot produce.
     const d = deps({
       readInstallRecord: async () =>
         parseInstallRecord(
@@ -463,9 +433,8 @@ describe("maybeNotifyNewVersion", () => {
   });
 
   it("tells a renamed install to run the command it actually has", async () => {
-    // `WEGO_CLI_BIN` installs the same release under another name. The release is
-    // still named `wego`, but a hint reading `wego update -y` would name a command
-    // that does not exist on that machine.
+    // `WEGO_CLI_BIN` installs the same release under another name, so
+    // `wego update -y` would name a command that does not exist on that machine.
     const d = deps({ invokedAs: "mywego" });
     expect((await maybeNotifyNewVersion(d)).message).toBe(
       `A new wego is available: ${CURRENT} -> ${LATEST}. Run \`mywego update -y\`.`,
@@ -479,14 +448,11 @@ describe("maybeNotifyNewVersion", () => {
 });
 
 /**
- * The ring the notice reads from, and the oracle it applies once it has read.
- *
- * Both halves are regressions of one shipped defect: every prod build bakes
- * `…/cli/stable`, so an EDGE install read the stable version, found a plain
- * `X.Y.Z` outranking its own `X.Y.Z-edge.<sha>`, and nagged daily to "update" to
- * a version `update` itself then refused to install. Pointing the read at the
- * recorded ring fixes half of it; comparing two `-edge.<sha>` builds by semver
- * ordering is the other half, and it is a coin flip.
+ * Regression guard: an edge install once read the stable ring's version, found a
+ * plain `X.Y.Z` outranking its own `X.Y.Z-edge.<sha>`, and nagged daily to
+ * "update" to a version `update` then refused to install. Reading the recorded
+ * ring fixes half of it; not ordering `-edge.<sha>` builds by semver (a coin
+ * flip) is the other half.
  */
 describe("channel resolution", () => {
   const RECORD = { ring: "edge", installUrl: "https://api.wego.com/install" };
@@ -499,19 +465,15 @@ describe("channel resolution", () => {
   });
 
   it("refuses without a record instead of guessing a channel", () => {
-    // foundations#74 rung 3, the stop-the-world rung: "a missing record refuses
-    // rather than guesses", and it exists to make silent channel drift
-    // impossible. A baked-URL fallback here IS that drift - a binary carrying the
-    // retired `cli/latest` would compare against a prefix nothing advances and
-    // report "up to date" for ever, silently.
+    // foundations#74 rung 3: a fallback URL could point at a retired prefix
+    // nothing advances and report "up to date" forever.
     expect(noticeChannel(null)).toBeNull();
   });
 
   it("normalizes a base that a hand-built record slipped past the parser", () => {
-    // Belt-and-braces, and named as such: `parseInstallRecord` already canonicalizes
-    // `/install/` (proved in ring-follow.test.ts), so the only way to reach this is
-    // a caller that builds an `InstallRecord` itself. It stays because the cost is a
-    // slash-strip and the failure it prevents is a doubled `//?dl=` in a URL.
+    // `parseInstallRecord` already canonicalizes `/install/`, so only a caller
+    // that builds an `InstallRecord` itself reaches this. Kept because it is
+    // cheap and prevents a doubled `//?dl=` in a URL.
     expect(
       noticeChannel({ ...RECORD, installUrl: "https://api.wego.com/install/" }),
     ).toEqual({ base: "https://api.wego.com/install", ring: "edge" });
@@ -529,8 +491,7 @@ describe("channel resolution", () => {
   });
 
   it("never reports the stable version to an edge install", async () => {
-    // The shipped defect, end to end: the record says edge, so the stable
-    // `VERSION` object is never even fetched.
+    // The record says edge, so the stable `VERSION` object is never fetched.
     const d = deps({
       version: "0.7.2-edge.aaaaaaaaa",
       readInstallRecord: async () => RECORD,
@@ -542,9 +503,8 @@ describe("channel resolution", () => {
   });
 
   it("treats an unreadable record as no record, and does not throw", async () => {
-    // The read rejecting must not escape into the caller (the notice is a
-    // best-effort side path), and must not be softened into a guess either: an
-    // EACCES record is indistinguishable from none, so it refuses like none.
+    // The rejection must not escape into the caller (the notice is best-effort),
+    // and an EACCES record refuses like a missing one rather than guessing.
     const d = deps({
       readInstallRecord: async () => {
         throw new Error("EACCES");
@@ -560,35 +520,24 @@ describe("channel resolution", () => {
 describe("shouldNotify", () => {
   it("notifies on any DIFFERENCE for plain versions, in both directions", () => {
     expect(shouldNotify("0.4.2", "0.4.1")).toBe(true);
-    // Identical is the only silent case. This is the whole predicate.
+    // Identical is the only silent case.
     expect(shouldNotify("0.4.1", "0.4.1")).toBe(false);
   });
 
-  // THE ROLLBACK CASE, and a reversal of a deliberate earlier decision. This
-  // asserted `false` with the comment "a channel rollback stays silent rather
-  // than advertising a downgrade".
-  //
-  // Silence defeats the act. A rollback exists to get people OFF a build, and on
-  // 2026-09-14 `cli/stable` was rolled back from 1.2.0 to 1.1.0 and told nobody
-  // who was not already pinned to the bridge. `update` follows bytes in both
-  // directions (`currentHash === expected`, no ordering anywhere), so the user
-  // has something to do either way; the old rule only decided not to mention it.
-  //
-  // "Advertising a downgrade" is a wording problem, and the caller already solves
-  // it by choosing `formatChannelChangedNotice` whenever `isNewerVersion` is
-  // false - see the message test below.
+  // A rollback exists to get people off a build, and `update` follows bytes in
+  // both directions, so the user has something to do either way. The wording
+  // avoids calling it new (see the message tests below).
   it("notifies on a rollback, which it used to stay silent about", () => {
     expect(shouldNotify("0.4.0", "0.4.1")).toBe(true);
     expect(shouldNotify("1.2.2", "1.2.3")).toBe(true);
   });
 
   it("notifies on a DIFFERENT prerelease in either lexical direction", () => {
-    // The coin flip this replaces: `4aeec3a2f` is the real successor of
-    // `e30454f2a` on `cli/edge`, and sorts BELOW it. Ordering by semver announces
-    // one of these two and silently drops the other.
+    // `4aeec3a2f` is the real successor of `e30454f2a` on `cli/edge` and sorts
+    // below it, so ordering by semver would drop one direction.
     const older = "0.7.2-edge.e30454f2a";
     const newer = "0.7.2-edge.4aeec3a2f";
-    expect(isNewerVersion(newer, older)).toBe(false); // the bug, pinned
+    expect(isNewerVersion(newer, older)).toBe(false);
     expect(shouldNotify(newer, older)).toBe(true);
     expect(shouldNotify(older, newer)).toBe(true);
   });
@@ -610,8 +559,8 @@ describe("shouldNotify", () => {
 describe("looksLikeVersion", () => {
   it("accepts a semver-INVALID edge sha the channel really serves", () => {
     // `0123456` is a legal short sha and an illegal semver numeric identifier
-    // (§9, no leading zeros), so `parseSemver` rejects it. Gating the channel
-    // read on strict parsing silenced the notice permanently for those builds.
+    // (§9, no leading zeros). Strict parsing would silence the notice
+    // permanently for those builds.
     expect(parseSemver("0.7.2-edge.0123456")).toBeNull();
     expect(looksLikeVersion("0.7.2-edge.0123456")).toBe(true);
     expect(shouldNotify("0.7.2-edge.0123456", "0.7.2-edge.abcdef0")).toBe(true);
@@ -644,18 +593,10 @@ describe("the message names only what is known", () => {
     );
   });
 
-  // A ROLLBACK, END TO END, AND IN THE HONEST WORDING.
-  //
-  // This is the case the notice used to drop entirely. It matters most at exactly
-  // the moment things are going wrong: the operator has moved `cli/stable` back
-  // to get people off a bad build, and the notice is the only thing that tells
-  // anyone to run the command that would take it.
-  //
-  // The wording is the other half. `formatVersionNotice` here would read "A new
-  // wego is available: 1.2.3 -> 1.2.2", which is false and would look like a bug
-  // to anyone reading it. The caller routes on `isNewerVersion`, so a downgrade
-  // gets the claim-nothing wording instead - asserted on the exact string,
-  // because that routing is the part a later refactor could silently invert.
+  // A rollback moves people off a bad build, and the notice is what tells them to
+  // run `update`. `formatVersionNotice` would read "A new wego is available:
+  // 1.2.3 -> 1.2.2", which is false. Asserted on the exact string because the
+  // routing on `isNewerVersion` is what a refactor could silently invert.
   it("announces a rollback, without calling the older release new", async () => {
     const d = deps({
       version: "1.2.3",
@@ -669,8 +610,7 @@ describe("the message names only what is known", () => {
     expect(r.message).not.toContain("A new wego is available");
   });
 
-  // The forward case is unchanged and keeps the ordering claim, which is true
-  // there. Both wordings are pinned so neither can drift onto the other's case.
+  // Both wordings are pinned so neither can drift onto the other's case.
   it("still says 'a new wego is available' when the channel moved forward", async () => {
     const d = deps({
       version: "1.2.2",

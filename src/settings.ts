@@ -3,25 +3,23 @@ import { z } from "zod";
 import { writeOwnerJson } from "./config-dir";
 
 /**
- * User-owned travel preferences (issue #1386) — `~/.config/<scope>/settings.json`.
+ * User-owned travel preferences (issue #1386), in `~/.config/<scope>/settings.json`.
  *
- * Currency, market and locale all change the numbers a traveller is shown, and
- * before this file both were decided invisibly: `--currency` was a per-request
- * flag defaulting to USD server-side, and the market lived inside
- * `credentials.json` where nothing could print it. The precedence chain is
+ * Currency, market and locale all change the numbers a traveller is shown, so
+ * they must be visible and settable. The precedence chain is
  *
  *   flag on this command  >  this file  >  account market (site only)  >  server default
  *
- * There is deliberately **no env rung**: `--currency` / `--site` / `--locale`
- * already give a per-run override, and it is visible in the command line, which
- * is where a repricing decision belongs.
+ * There is no env var on purpose: `--currency`, `--site` and `--locale` already
+ * give a per-run override, and it is visible in the command line, which is where
+ * a repricing decision belongs.
  *
  * Not stored in `credentials.json`: `logout` deletes that, and a preference must
  * survive it. Written 0600 in the 0700 dir like every other file there, not
  * because a currency is secret but because `config-dir.ts` owns that rule.
  */
 
-/** The three keys, in the order `config list` prints them. */
+/** In the order `config list` prints them. */
 export const SETTINGS_KEYS = ["currency", "site", "locale"] as const;
 
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
@@ -30,12 +28,12 @@ export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 const MAX_LOCALE_LEN = 35;
 
 /** Mirrors the API's own validation so a value this file accepts can never be
- *  rejected by the API afterwards — a local 2 beats a round-tripped 400.
+ *  rejected by the API afterwards: a local exit 2 is better than a round-tripped
+ *  400.
  *
- *  STRICT, not stripping: `{"curreny":"SAR"}` must not parse to `{}`. A plain
+ *  Strict, not stripping: `{"curreny":"SAR"}` must not parse to `{}`. A plain
  *  `z.object` drops the unknown key, the file reads as empty, and the command
- *  reprices in USD without a word — the exact silent-wrong-answer failure this
- *  file exists to remove, now caused by a typo in the file it advertises. */
+ *  silently reprices in USD. */
 const UserSettingsSchema = z.strictObject({
   currency: z
     .string()
@@ -66,8 +64,7 @@ const UserSettingsSchema = z.strictObject({
 export type UserSettings = z.infer<typeof UserSettingsSchema>;
 
 /** Thrown for a settings file that exists but cannot be used. Carries the path
- *  so the caller can name it — "works on my machine" is the failure mode a
- *  settings file invites, and an unnamed file is unfixable. */
+ *  so the caller can name it; an unnamed file is hard to fix. */
 export class SettingsFileError extends Error {
   constructor(
     message: string,
@@ -78,15 +75,15 @@ export class SettingsFileError extends Error {
   }
 }
 
-/** Zod's own wording for a rejected key is "Unrecognized key". Replace it: a
- *  misspelled key is only fixable next to the list of the real ones. */
+/** Replaces zod's "Unrecognized key": a misspelled key is only fixable next to
+ *  the list of the real ones. */
 function unknownKeysMessage(keys: readonly (string | number)[]): string {
   const named = keys.map((key) => `"${key}"`).join(", ");
   const plural = keys.length > 1 ? "s" : "";
   return `unknown setting${plural} ${named}; the settings are ${SETTINGS_KEYS.join(", ")}`;
 }
 
-/** Join the issue messages WITHOUT `formatZodError`'s field prefix: every message
+/** Join the issue messages without `formatZodError`'s field prefix: every message
  *  here already names its field ("currency must be a 3-letter…"), so prefixing
  *  would print the field twice. */
 function messages(error: z.ZodError): string {
@@ -112,10 +109,9 @@ export function parseSettingValue(key: SettingsKey, value: string): string {
  * Read the settings file. Absent ⇒ `{}` (the whole chain then falls through to
  * the account market and the server defaults).
  *
- * A file that exists but does not parse **throws**, deliberately unlike
- * `telemetry-state.ts`, which fails closed because it may hold an opt-out.
- * Here a discarded value silently reprices a result, which is exactly the
- * confident-wrong-answer bug this file exists to remove — so it fails loud.
+ * A file that exists but does not parse throws, unlike `telemetry-state.ts`,
+ * which fails closed because it may hold an opt-out. Here a discarded value
+ * would silently reprice a result.
  */
 export async function loadUserSettings(path: string): Promise<UserSettings> {
   let raw: string;
@@ -123,9 +119,9 @@ export async function loadUserSettings(path: string): Promise<UserSettings> {
     raw = await readFile(path, "utf8");
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
-    // ENOENT only. `ENOTDIR` means a component of the path is a FILE, so the
-    // preferences the user stored are unreachable — reporting that as "no
-    // preferences" would price in USD and never say why.
+    // ENOENT only. `ENOTDIR` means a component of the path is a file, so the
+    // stored preferences are unreachable; reporting that as "no preferences"
+    // would price in USD and never say why.
     if (code === "ENOENT") return {};
     throw new SettingsFileError(
       `settings.json could not be read: ${(err as Error).message}`,
@@ -155,13 +151,12 @@ export async function saveUserSettings(
   path: string,
   settings: UserSettings,
 ): Promise<void> {
-  // Staged 0600 write through the one helper that owns the mode rule.
   await writeOwnerJson(path, settings);
 }
 
 /** The query fields a command may inherit. Named per command by the caller, not
  *  inferred from the object: `places` and `info holidays` accept a `siteCode`
- *  key that must NEVER carry the user's market (place resolution is
+ *  key that must never carry the user's market (place resolution is
  *  market-neutral by design; a holidays site code is the country in the path). */
 export type PreferenceKey = "currency" | "locale";
 
@@ -171,8 +166,7 @@ interface TravelQuery {
 }
 
 /**
- * Fill the named preference fields that the caller did not pass as flags. Only
- * ever fills an ABSENT key, so a flag always wins — the top rung of the chain.
+ * Only fills an absent key, so a flag always wins.
  *
  * `site` is not handled here: it needs the account-market rung too, so it goes
  * through {@link resolveCliSite} in `commands.ts` instead.

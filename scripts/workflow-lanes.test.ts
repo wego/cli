@@ -1,25 +1,18 @@
 /**
- * THE TWO LANES THAT WRITE `cli/stable`, AND THE SEPARATION BETWEEN THEM.
+ * The two lanes that write `cli/stable`, and the separation between them.
  *
  * `promote-cli.yml` moves `stable` onto what `cli/next` serves. `rollback-cli.yml`
- * moves it onto a named earlier release. They used to be ONE workflow with a
- * boolean (`allow_not_next`) that subtracted gates, and that boolean was the
- * defect: it silently changed the meaning of twenty downstream steps, so every new
- * gate had to remember to opt rollback out. wego/cli#48 added two `cli/next`-coupled
- * gates without the guard and both hard-failed every rollback — silently, because
- * nothing exercises a rollback until an incident.
+ * moves it onto a named earlier release. A single workflow with a boolean
+ * (`allow_not_next`) that subtracted gates made every new gate remember to opt
+ * rollback out: wego/cli#48 added two `cli/next`-coupled gates without the guard,
+ * and both broke every rollback unnoticed, because nothing exercises a rollback
+ * until an incident. Separate files mean promote has no mode to forget and
+ * rollback has nothing to couple to; these assertions keep it that way.
  *
- * Splitting the files fixes that by CONSTRUCTION rather than by convention: promote
- * has no mode left to forget, and rollback has nothing to couple to. These two
- * assertions are what keep it that way, and they are deliberately structural rather
- * than stylistic — each one names a thing that, if it reappeared, would reintroduce
- * exactly the failure the split removed.
- *
- * SCOPED TO THE PARSED WORKFLOW, NOT THE FILE TEXT. `Bun.YAML.parse` drops
- * comments, which is the point: both files EXPLAIN this history in their headers,
- * and prose naming `cli/next` or `allow_not_next` is documentation, not coupling.
- * What must not reappear is an executable reference — a `run` body, an `if`, a
- * `with` — so the parsed object is the right surface to assert against.
+ * Asserted against the parsed workflow, not the file text: `Bun.YAML.parse` drops
+ * comments, and prose naming `cli/next` or `allow_not_next` is documentation, not
+ * coupling. What must not appear is an executable reference (a `run` body, an
+ * `if`, a `with`).
  */
 import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
@@ -31,11 +24,8 @@ const workflow = (file: string): unknown =>
 const executableText = (wf: unknown): string => JSON.stringify(wf);
 
 describe("rollback-cli.yml: never couples to cli/next", () => {
-  // The rollback lane promotes a tag that `cli/next` does not serve — that is its
-  // entire reason to exist. A gate here that reads `ring=next` or compares against
-  // `cli/next` can only ever refuse, because the ring is by definition serving
-  // something else. Both gates wego/cli#48 added to the promote lane had this
-  // shape, and both blocked every rollback.
+  // The rollback lane promotes a tag that `cli/next` does not serve, so a gate
+  // here that reads `ring=next` or compares against `cli/next` can only refuse.
   it("has no executable reference to the next ring", () => {
     const text = executableText(workflow("rollback-cli.yml"));
     const hits = [
@@ -44,10 +34,9 @@ describe("rollback-cli.yml: never couples to cli/next", () => {
     expect(hits).toEqual([]);
   });
 
-  // A rollback reads nothing from the tag's tree — it publishes no plugin — so it
-  // checks out `main` and runs TODAY'S scripts. `ref: <the tag>` would silently
-  // run whatever `upgrade-path.sh` and the publisher looked like at a tag cut
-  // months ago, against today's store and today's interfaces.
+  // A rollback reads nothing from the tag's tree (it publishes no plugin), so it
+  // checks out `main` and runs today's scripts. `ref: <the tag>` would run
+  // scripts from a tag cut months ago against today's store and interfaces.
   it("checks out main, not the tag being rolled back to", () => {
     const wf = workflow("rollback-cli.yml") as {
       jobs: Record<
@@ -66,11 +55,9 @@ describe("rollback-cli.yml: never couples to cli/next", () => {
 });
 
 describe("promote-cli.yml: has no rollback mode", () => {
-  // THE DEFECT ITSELF. `allow_not_next` was a human-typed boolean that subtracted
-  // gates from the forward path, so correctness depended on every future gate's
-  // author reconstructing an invariant documented per-step in prose and nowhere as
-  // a whole. Re-introducing it — as an input, an `if`, or an env var — brings back
-  // the exact shape that let #48 break rollback silently.
+  // A boolean that subtracts gates from the forward path makes correctness depend
+  // on every future gate's author remembering it. That shape let #48 break
+  // rollback.
   it("declares no allow_not_next input", () => {
     const wf = workflow("promote-cli.yml") as {
       on?: { workflow_dispatch?: { inputs?: Record<string, unknown> } };
@@ -79,19 +66,16 @@ describe("promote-cli.yml: has no rollback mode", () => {
     expect(inputs).not.toContain("allow_not_next");
   });
 
-  // The input being gone is not enough on its own: a leftover `!inputs.allow_not_next`
-  // in an `if` evaluates to TRUE for a missing input, so the guard silently inverts
-  // rather than erroring, and a gate that was meant to be conditional becomes
-  // permanently on — or off, depending which way it was written.
+  // A leftover `!inputs.allow_not_next` in an `if` evaluates to true for a
+  // missing input, so the guard silently inverts rather than erroring.
   it("has no executable reference to the removed input", () => {
     const text = executableText(workflow("promote-cli.yml"));
     expect(text).not.toContain("allow_not_next");
   });
 
-  // A promote only ever advances `stable` onto what `next` serves, and the
-  // publisher is where that is enforced — it holds the origin it is about to
-  // write, so the gate and the write are the same store by construction. Dropping
-  // the flag is how the old rollback mode worked; nothing should drop it now.
+  // A promote only advances `stable` onto what `next` serves, and the publisher
+  // enforces that because it holds the origin it is about to write, so the gate
+  // and the write are the same store.
   it("always passes --require-serving next to the publisher", () => {
     const wf = workflow("promote-cli.yml") as {
       jobs: Record<string, { steps?: { name?: string; run?: string }[] }>;
@@ -102,11 +86,10 @@ describe("promote-cli.yml: has no rollback mode", () => {
     expect(move?.run).toContain("--require-serving next");
   });
 
-  // The token used to be minted after the move, so a key GitHub refused
-  // left `stable` moved with the plugin unpublished, and the fix was a rollback.
-  // Minted before the move, the same bad key fails the promote with `stable`
-  // untouched. The mint must also not wait on the move's output, or it cannot
-  // run first.
+  // Minted after the move, a key GitHub refused would leave `stable` moved with
+  // the plugin unpublished. Minted before, it fails the promote with `stable`
+  // untouched. The mint must not wait on the move's output, or it cannot run
+  // first.
   it("mints the plugin token before cli/stable moves", () => {
     const wf = workflow("promote-cli.yml") as {
       jobs: Record<
@@ -126,10 +109,9 @@ describe("promote-cli.yml: has no rollback mode", () => {
 });
 
 describe("the two lanes serialise against each other", () => {
-  // Concurrency groups are scoped to the REPOSITORY, not the workflow, so the
-  // shared group string is what stops a rollback racing a promote for the same
-  // pointer. Rename it in one file and the two lanes can write `cli/stable`
-  // simultaneously — a promote's manifest copy interleaved with a rollback's.
+  // Concurrency groups are scoped to the repository, not the workflow, so the
+  // shared group string is what stops a rollback racing a promote. Rename it in
+  // one file and the two lanes can write `cli/stable` simultaneously.
   it("both write cli/stable under the same concurrency group", () => {
     for (const file of ["promote-cli.yml", "rollback-cli.yml"]) {
       const wf = workflow(file) as {
@@ -149,7 +131,7 @@ interface Job {
 }
 
 /**
- * The step/job keys that can change WHETHER or HOW the gate runs, as opposed to
+ * The step/job keys that can change whether or how the gate runs, as opposed to
  * what it checks. Asserted absent on the approve job and every one of its steps.
  */
 const OVERRIDES: string[] = [
@@ -183,9 +165,8 @@ const reachesApprove = (start: string, jobs: Record<string, Job>): boolean =>
   ancestryOf(start, jobs).includes("approve");
 
 /**
- * The status functions that let a job run even though a dependency FAILED.
- *
- * This is the whole reason a `needs:` edge is not by itself proof of a gate. An
+ * The status functions that let a job run even though a dependency failed, which
+ * is why a `needs:` edge is not by itself proof of a gate. An
  * `if:` with no status function implicitly carries `success()`, so an ordinary
  * condition (`inputs.plan_only != 'true'`) still waits for every dependency to
  * succeed and is harmless here. `always()`, `cancelled()` and `failure()` are the
@@ -199,11 +180,10 @@ const normaliseHandle = (handle: string): string =>
   handle.replace(/^@/, "").toLowerCase();
 
 /**
- * Every distinct owner named by a CODEOWNERS RULE.
+ * Every distinct owner named by a CODEOWNERS rule.
  *
- * Comment lines are dropped rather than scanned, and that is the whole subtlety:
- * this file is mostly prose explaining why each path is owned, and that prose is
- * free to name a handle. Only a rule confers ownership, so only a rule counts.
+ * Comments are dropped: the file is mostly prose explaining why each path is
+ * owned, and that prose may name a handle. Only a rule confers ownership.
  */
 const codeownersOwners = (): Set<string> =>
   new Set(
@@ -221,39 +201,32 @@ const missingFrom = (a: Set<string>, b: Set<string>): string[] =>
   [...a].filter((handle) => !b.has(handle)).sort();
 
 /**
- * THE INVARIANT THIS REPOSITORY LEARNED THE HARD WAY.
+ * `github.actor` is the user who triggered the initial run, and it does not change
+ * on a re-run. `github.triggering_actor` is whoever started this run. Re-running a
+ * run needs only write access, a far larger set than the promoter allow-list, so
+ * an `approve` job reading `github.actor` alone passes a replay on the original
+ * promoter's name, with that run's original `inputs.tag`. Replaying a rollback
+ * puts `cli/stable` back on an old tag; replaying a promote is a downgrade once
+ * `stable` has moved past it.
  *
- * `github.actor` is the user who triggered the INITIAL run, and it does NOT change
- * on a re-run. `github.triggering_actor` is whoever started THIS run. Re-running an
- * existing run needs only write access — a far larger set than the promoter
- * allow-list — so an `approve` job reading `github.actor` alone passes a replay on
- * the ORIGINAL promoter's name, with that run's original `inputs.tag`. Replaying a
- * rollback puts `cli/stable` back on an old tag; replaying a promote is a downgrade
- * the moment `stable` has advanced past it. Neither needs a stolen account.
- *
- * So: a lane that can reach the store with a manual trigger must gate on BOTH.
- * A lane with no manual trigger is out of scope by construction — the only way to
- * start it is the event itself, and re-running it re-runs that event's own commit.
- * That is why `edge-cli.yml` answers this by having no `workflow_dispatch` at all
- * rather than by growing a gate it could not usefully hold (its `publish` job is
- * the one holding the token, and it must run unattended on every merge).
+ * So a lane that can reach the store with a manual trigger must gate on both. A
+ * lane with no manual trigger is out of scope: re-running it re-runs that event's
+ * own commit. That is why `edge-cli.yml` has no `workflow_dispatch` at all rather
+ * than a gate (its `publish` job holds the token and must run unattended on every
+ * merge).
  */
 describe("every store-writing lane with a manual trigger gates on both actors", () => {
-  // BOTH EXTENSIONS. GitHub Actions recognises `.yml` and `.yaml` alike, so an
-  // `.yml`-only filter would drop a token-bearing `.yaml` lane out of this scan
-  // silently — the suite would go green having asserted nothing about it. Matches
-  // the idiom `workflow-contexts.test.ts` already uses.
+  // GitHub Actions recognises `.yml` and `.yaml` alike, so an `.yml`-only filter
+  // would silently skip a token-bearing `.yaml` lane.
   //
   // Sorted: `readdirSync` returns filesystem order, so the exact-set assertion
-  // below would otherwise pass or fail depending on the machine.
+  // below would otherwise depend on the machine.
   const workflowFiles = readdirSync(".github/workflows")
     .filter((f) => /\.ya?ml$/.test(f))
     .sort();
 
-  // Scoped to `jobs`, not the whole file: several workflows DISCUSS the token in
-  // their headers precisely to explain that they do not hold it, and comments are
-  // documentation, not reach. `release-badge.yml` is the live example — it is
-  // dispatchable and names the token only to say it has none.
+  // Scoped to `jobs`, not the whole file: some workflows name the token in their
+  // headers only to say they do not hold it (e.g. `release-badge.yml`).
   const holdsStoreToken = (wf: { jobs?: unknown }): boolean =>
     JSON.stringify(wf.jobs ?? {}).includes("BLOB_READ_WRITE_TOKEN");
 
@@ -285,18 +258,13 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
       ).toBeDefined();
       const steps = approve?.steps ?? [];
 
-      // A GATE THAT CAN BE SWITCHED OFF IS NOT A GATE. Everything below reads the
-      // gate's CONTENT; none of it would notice the gate being neutered from the
-      // outside. `continue-on-error: true` is the sharp one — GitHub treats a
-      // failed-but-continued job as satisfied for `needs:`, so the actor check
-      // could exit 1 on an outsider and the privileged job would still run, with
-      // every assertion here still green. `if:` can make the gate conditional on
-      // whatever the author picks (including the actor it is supposed to judge);
-      // `shell:` can replace the interpreter whose `set -euo pipefail` and `exit 1`
-      // the checks below assume; `working-directory:` moves where it all runs.
-      //
-      // None has a legitimate use on this job, so the invariant is that they are
-      // absent — on the job and on each of its steps.
+      // Everything below reads the gate's content; none of it would notice the
+      // gate being switched off from outside. `continue-on-error: true` is the
+      // sharp one: GitHub treats a failed-but-continued job as satisfied for
+      // `needs:`, so the privileged job would still run after the actor check
+      // exits 1. `if:` can make the gate conditional on anything; `shell:` can
+      // replace the interpreter the checks below assume; `working-directory:`
+      // moves where it runs. None has a legitimate use on this job.
       for (const override of OVERRIDES) {
         expect(
           (approve as Record<string, unknown> | undefined)?.[override],
@@ -310,22 +278,14 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
         }
       }
 
-      // TWO HALVES, AND THEY PROVE DIFFERENT THINGS.
+      // Two halves. The `env:` mapping proves the gate reads the right GitHub
+      // contexts, which running the script cannot show because the runner
+      // supplies those values.
       //
-      // The `env:` mapping proves the gate reads the right GitHub CONTEXTS - the
-      // only place a context can enter the shell, and something running the script
-      // can never show, because the runner supplies those values.
-      //
-      // Then the script is EXECUTED with controlled actors, which proves it
-      // actually refuses. That half replaced a static reading of the shell, and the
-      // reason is worth keeping: every attempt to decide "does this branch refuse?"
-      // by looking at the text was defeated by text that merely LOOKED like a
-      // refusal - first the gate's own comments (which must name both contexts in
-      // order to explain them), then an `exit 1` belonging to the other actor's
-      // branch, then `echo "exit 1"`, then an `exit 1` inside a heredoc. Each fix
-      // was a better approximation of a shell lexer, and the next variation always
-      // existed. Running the thing has no such class of evasion: text that only
-      // looks like a refusal does not change the exit status.
+      // Then the script is executed with controlled actors, which proves it
+      // refuses. Reading the shell text statically cannot: comments naming the
+      // contexts, an `exit 1` in the other branch, `echo "exit 1"` or an
+      // `exit 1` in a heredoc all look like a refusal without being one.
       const bound = new Map<string, string>();
       for (const step of steps) {
         for (const [name, value] of Object.entries(step.env ?? {})) {
@@ -340,9 +300,8 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
       const actorVar = varFor("github.actor");
       const triggeringVar = varFor("github.triggering_actor");
 
-      // `github.actor` alone is the bug; `github.triggering_actor` alone would drop
-      // the guarantee about who chose the tag in the first place. Both, or neither
-      // property holds.
+      // `github.actor` alone is the replay bug; `github.triggering_actor` alone
+      // would drop the guarantee about who chose the tag.
       expect(
         actorVar,
         `${file}: approve binds no env var to github.actor`,
@@ -358,28 +317,21 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
         `${file}: approve binds no PROMOTERS allow-list`,
       ).not.toBe("");
 
-      // THE SAME THREE HANDLES LIVE IN FOUR PLACES, AND ONE OF THEM IS THIS LANE.
+      // The same handles live in four places: `.github/CODEOWNERS`, this
+      // `PROMOTERS` string, the other lane's copy, and the `cli-release-signers`
+      // GitHub team. A handle dropped from CODEOWNERS but left here can still move
+      // `cli/stable` without having to review the file that says who may; one
+      // added here but not there gains the ring without that review. Neither
+      // shows up in a run.
       //
-      // `.github/CODEOWNERS`, this `PROMOTERS` string, the rollback lane's copy of
-      // it, and the `cli-release-signers` GitHub team. Adding or removing a signer
-      // is four edits in two systems, and nothing makes them happen together. The
-      // failure that costs something is the SILENT half: a handle dropped from
-      // CODEOWNERS but left here can still move `cli/stable` while no longer being
-      // required to review the file that says who may, and a handle added here but
-      // not there gains the ring without the review that was supposed to grant it.
-      // Neither shows up in a run - the gate passes, the review passes, and the two
-      // lists have simply stopped describing the same people.
-      //
-      // Sets, not strings: `PROMOTERS` is one space-separated line and CODEOWNERS
-      // repeats the handles across nineteen rules, so order and spacing are not the
-      // property. The remote team is out of scope here - it cannot be read without
-      // the network, and a periodic out-of-band sweep is what reconciles it.
+      // Compared as sets: `PROMOTERS` is one space-separated line and CODEOWNERS
+      // repeats handles across many rules. The GitHub team is out of scope: it
+      // cannot be read without the network.
       const promoters = new Set(promoterList.split(/\s+/).map(normaliseHandle));
       const owners = codeownersOwners();
 
-      // A set comparison against an empty set passes for the wrong reason: a
-      // CODEOWNERS that has been renamed, emptied, or reshaped past this parser
-      // would read as "no owners" and take the assertion below with it.
+      // A CODEOWNERS renamed, emptied, or reshaped past this parser would read as
+      // "no owners" and make the comparison below meaningless.
       expect(
         owners.size,
         `${file}: parsed no owners out of .github/CODEOWNERS, so the comparison below would assert nothing`,
@@ -405,9 +357,8 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
       const script = gateStep?.run ?? "";
 
       // The gate must take its actors through `env:`, never by interpolating a
-      // `${{ }}` expression into the shell. That is what makes the values data
-      // rather than code, and it is also what makes this script safe to execute
-      // here: there is nothing left for the runner to substitute.
+      // `${{ }}` expression into the shell. That makes the values data rather
+      // than code, and makes this script safe to execute here.
       expect(
         script.includes("${{"),
         `${file}: approve's gate interpolates a \${{ }} expression into the shell instead of binding it through env:`,
@@ -421,18 +372,10 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
         for (const [k, v] of bound) env[k] = v;
         env[actorVar as string] = actor;
         env[triggeringVar as string] = triggering;
-        // `-e`, BECAUSE THAT IS WHAT THE RUNNER DOES. GitHub Actions executes a
-        // `run:` body as `bash -e {0}` unless the step sets `shell:` - and the
-        // OVERRIDES check above asserts this step does not. Both gates currently
-        // set `set -euo pipefail` themselves, so this changes nothing today; it
-        // keeps the harness faithful for a gate that validly leans on the
-        // runner-supplied `-e` instead.
-        //
-        // Without it such a gate would run to completion here and exit 0 where the
-        // runner would abort nonzero - so the failure would be this suite going
-        // RED against a gate that is correct in production, not a regression
-        // slipping through. A false alarm still costs the right thing eventually:
-        // it pressures whoever meets it into weakening the assertion.
+        // `-e` because GitHub Actions runs a `run:` body as `bash -e {0}` unless
+        // the step sets `shell:` (which OVERRIDES forbids). It keeps the harness
+        // faithful for a gate that relies on the runner's `-e` rather than its
+        // own `set -e`.
         return (
           Bun.spawnSync(["bash", "-e", "-c", script], {
             env,
@@ -453,15 +396,14 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
         `${file}: the gate refuses '${promoter}', who is on its own allow-list`,
       ).toBe(0);
 
-      // THE ORIGINAL DISPATCHER IS NOT A PROMOTER.
+      // The original dispatcher is not a promoter.
       expect(
         runGate(outsider, promoter),
         `${file}: the gate admits a run dispatched by '${outsider}'`,
       ).not.toBe(0);
 
-      // THE RE-RUNNER IS NOT A PROMOTER - the vector this whole suite exists for.
-      // `github.actor` still names the original promoter on a re-run, so a gate
-      // reading it alone passes this case, and passing it is the bug.
+      // The re-runner is not a promoter. `github.actor` still names the original
+      // promoter on a re-run, so a gate reading it alone passes this case.
       expect(
         runGate(promoter, outsider),
         `${file}: the gate admits a re-run started by '${outsider}' because the original dispatcher was a promoter`,
@@ -472,16 +414,10 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
         `${file}: the gate admits a run with no promoter involved at all`,
       ).not.toBe(0);
 
-      // A GATE NOTHING DEPENDS ON IS DECORATION. Everything above establishes that
-      // `approve` refuses the wrong actor; none of it establishes that the job
-      // holding the token cannot start without it. So walk the dependency graph:
-      // every token-bearing job must have `approve` as an ancestor.
-      //
-      // TRANSITIVELY, not just directly. The property that matters is "approve is
-      // an ancestor", and demanding the literal `needs: approve` on the
-      // token-bearing job asserts a stricter proxy — it would fail a perfectly
-      // sound `approve -> validate -> promote` chain and push a future author to
-      // weaken the test rather than keep the chain.
+      // `approve` refusing the wrong actor is worthless unless the job holding
+      // the token cannot start without it: every token-bearing job must have
+      // `approve` as an ancestor. Transitively, so a sound
+      // `approve -> validate -> promote` chain passes.
       for (const [name, job] of Object.entries(wf.jobs ?? {})) {
         if (name === "approve") continue;
         if (!JSON.stringify(job).includes("BLOB_READ_WRITE_TOKEN")) continue;
@@ -491,11 +427,10 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
           `${file}: job '${name}' reaches the store without approve anywhere in its needs chain`,
         ).toBe(true);
 
-        // AN EDGE IS NOT A GATE ON ITS OWN. `needs: approve` only blocks the job
-        // while the job waits for approve to SUCCEED, and a status function in
-        // `if:` removes exactly that. `if: ${{ always() }}` on this job, or on any
-        // job between it and approve, runs the privileged step after the gate has
-        // already refused - with the ancestry assertion above still green.
+        // `needs: approve` only blocks the job while it waits for approve to
+        // succeed, and a status function in `if:` removes that. `always()` on
+        // this job, or any job between it and approve, runs the privileged step
+        // after the gate refused.
         for (const link of [name, ...ancestryOf(name, jobs)]) {
           const condition = (jobs[link] as Record<string, unknown> | undefined)
             ?.if;
@@ -511,12 +446,12 @@ describe("every store-writing lane with a manual trigger gates on both actors", 
 });
 
 /**
- * THE PROMOTE BANNER IS A READING, NOT A GATE.
+ * The promote banner is a reading, not a gate.
  *
  * `next-report` at the top of `promote-cli.yml` shows wego-ai's verdict for the
  * tag. It is deliberately outside the gate chain: a promote is a human decision,
- * and the banner exists so the verdict was in front of that human, not to make
- * the decision for them. Two ways it could quietly become a gate:
+ * and the banner puts the verdict in front of that human. Two ways it could
+ * quietly become a gate:
  *
  *   - a job `needs:` it, directly or through another job, so a red or slow
  *     banner holds `approve` or `promote` back;
@@ -573,20 +508,18 @@ describe("promote-cli.yml: the next report banner gates nothing", () => {
 });
 
 /**
- * THE INTEGRATION MATRIX COVERS WHAT THE RELEASE BUILDS, AND HOLDS PUBLICATION.
+ * The integration matrix covers what the release builds, and holds publication.
  *
  * `integration` runs the compiled binary against a fake API on each target's own
- * runner. Its matrix is a literal and `scripts/build-release.ts`'s target list is
- * another, and nothing makes them move together: a sixth target added to the
- * build would ship with no job ever having executed it, green. So the set is
- * derived from the build script, not restated here.
+ * runner. Its matrix and `scripts/build-release.ts`'s target list are separate
+ * literals, so a target added to the build could ship without ever being
+ * executed. The set is derived from the build script, not restated here, and
+ * `release` must need the job so a target that cannot run never reaches
+ * `cli/next`.
  *
- * And a job `release` does not need is decoration. The whole point is that a
- * target that cannot run its own commands never reaches `cli/next`.
- *
- * ONE NAMED EXEMPTION: Windows. Its first leg (v1.4.0) failed on the suite, not
- * the binary, and was taken out rather than let it hold every release. It is a
- * list, not a looser comparison, so anything else the build adds still needs a leg.
+ * One named exemption: Windows. Its first leg (v1.4.0) failed on the suite, not
+ * the binary, and was taken out rather than hold every release. It is a list, not
+ * a looser comparison, so anything else the build adds still needs a leg.
  */
 const NOT_INTEGRATION_TESTED = ["wego-windows-x64.exe"];
 
@@ -671,14 +604,13 @@ describe("release-cli.yml: integration runs every built target before publicatio
 });
 
 /**
- * PROMOTE GATES ON THE PUBLISHING JOBS, NOT ON THE REPORTS.
+ * Promote gates on the publishing jobs, not on the reports.
  *
  * `promote-cli.yml` reads the release run job by job and leaves out two jobs by
- * their display names, because `notify-verify` goes red on a receiver outage and
+ * display name, because `notify-verify` goes red on a receiver outage and
  * `next-report` keeps the run in progress for up to 45 min. The names are strings
  * in a script, so a rename in `release-cli.yml` would silently gate on the reports
- * again (the old failure) or, worse, find no publishing job and refuse every
- * promote. Both directions are pinned here.
+ * or find no publishing job and refuse every promote.
  */
 describe("promote-cli.yml: the release gate names real jobs", () => {
   const release = workflow("release-cli.yml") as {

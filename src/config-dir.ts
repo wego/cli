@@ -2,18 +2,16 @@ import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /**
- * Create an owner-only config directory, tightening it only when THIS call created
- * it — never chmod a caller-provided existing parent (e.g. `/tmp` or a repo
- * checkout), which would lock other users out of a shared directory.
+ * Create an owner-only config directory, tightening it only when this call
+ * created it. Never chmod a caller-provided existing parent (e.g. `/tmp` or a
+ * repo checkout), which would lock other users out of a shared directory.
  *
- * Extracted because more than one thing now writes under `~/.config/<scope>/`:
- * credentials (`storage.ts`) and the update-notice throttle
- * (`index.ts`'s `buildVersionNoticeDeps`). `mode` on `mkdir` applies on *creation*
- * only, so whichever of them runs FIRST on a fresh machine decides the directory's
- * permissions — and the later `login` sees an existing dir and correctly does not
- * re-chmod it. With the rule in one place, "tokens live 0600 in a 0700 directory"
- * cannot be quietly downgraded to 0755 by whichever command a user happened to run
- * first.
+ * Several things write under `~/.config/<scope>/` (credentials, the
+ * update-notice throttle, settings, telemetry state). `mode` on `mkdir` applies
+ * on creation only, so whichever runs first on a fresh machine decides the
+ * directory's permissions, and a later `login` sees an existing dir and does not
+ * re-chmod it. With the rule in one place, "tokens live 0600 in a 0700
+ * directory" cannot be downgraded to 0755 by whichever command ran first.
  */
 export async function ensureOwnerDir(dir: string): Promise<void> {
   // mkdir(recursive) returns the first directory it created, or undefined if the

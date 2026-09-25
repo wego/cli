@@ -1,15 +1,13 @@
 /**
- * The plugin publisher, driven against a REAL git repository over `file://`
- * (foundations#101 rung 4).
+ * The plugin publisher, driven against a real git repository over `file://`
+ * (foundations#101).
  *
- * A bare repo on disk rather than a mock, because the four cases below are all
- * about what git actually does - what a clone of an empty repo contains, what
- * `ls-files` reports, whether a second run produces a commit. Every one of those
- * is worthless against a stub that answers whatever the test wants, and the
- * failure this lane exists to prevent (a publish that silently writes nothing,
- * or that clobbers a file it did not write) lives precisely in that gap.
+ * A bare repo rather than a mock, because these cases are about what git
+ * actually does (what a clone of an empty repo contains, what `ls-files`
+ * reports, whether a second run commits), and a stub would answer whatever the
+ * test wants.
  *
- * `file://` keeps it hermetic: no network, no deploy key, no `wego/skills`.
+ * `file://` keeps it hermetic: no network, no credential, no `wego/skills`.
  */
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -37,8 +35,7 @@ const PLAN = pluginPublishPlan(["wego"]);
 
 afterEach(cleanupWorkspaces);
 
-/** A bare repo plus a `file://` URL for it. Empty unless `seed` writes into the
- *  work tree it is handed. */
+/** Empty unless `seed` writes into the work tree it is handed. */
 function bareRepo(seed?: (checkout: string) => void): {
   url: string;
   root: string;
@@ -100,7 +97,6 @@ function bareRepo(seed?: (checkout: string) => void): {
   };
 }
 
-/** Run the real publisher against `url`, with the token gate satisfied. */
 function publish(url: string): { code: number; out: string; err: string } {
   const r = spawnSync(
     process.execPath,
@@ -111,8 +107,7 @@ function publish(url: string): { code: number; out: string; err: string } {
       env: {
         ...process.env,
         SKILLS_PLUGIN_REPO: url,
-        // `file://` needs no credential; the gate only asks that a key is set,
-        // so this stands in for one without ever being used as one.
+        // `file://` needs no credential; the gate only checks that one is set.
         SKILLS_PUBLISH_TOKEN: "file-transport-needs-no-key",
         REQUIRE_PUBLISH: "true",
       },
@@ -130,7 +125,6 @@ describe("publish-plugin against a file:// bare repo", () => {
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     expect(remote.tracked()).toEqual(EXPECTED);
-    // The bytes are the source's, not a rendering of them.
     expect(remote.read("plugin.json")).toBe(
       readFileSync(join(cliRoot, "plugin/plugin.json"), "utf8"),
     );
@@ -147,9 +141,8 @@ describe("publish-plugin against a file:// bare repo", () => {
     const second = publish(remote.url);
     expect(second.code).toBe(0);
     expect(second.out).toContain("already up to date");
-    // The property rung 5(d) checks against the real remote, checked here first:
-    // an unchanged source must not produce a commit, or every promote would add
-    // an empty one and the repo's history would stop meaning anything.
+    // An unchanged source must not produce a commit, or every promote would add
+    // an empty one to the repo's history.
     expect(remote.headCount()).toBe(after);
     expect(remote.tracked()).toEqual(EXPECTED);
   });
@@ -168,7 +161,6 @@ describe("publish-plugin against a file:// bare repo", () => {
 
     const r = publish(remote.url);
     expect(r.code).toBe(0);
-    // A tracked file we DO write is not an offender - correcting it is the job.
     expect(remote.read("skills/wego/SKILL.md")).toBe(
       readFileSync(join(cliRoot, "skills/wego/SKILL.md"), "utf8"),
     );
@@ -188,13 +180,11 @@ describe("publish-plugin against a file:// bare repo", () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain("REFUSED");
     expect(r.err).toContain("hand-written-note.md");
-    // It names the way out rather than only the problem.
     expect(r.err).toContain("git rm");
     // The pasteable clone must name its destination directory. Without it the
     // directory is the repo URL's basename, so the `cd skills` that follows
     // only works while SKILLS_PLUGIN_REPO happens to end in `skills.git`.
     expect(r.err).toContain(`git clone '${remote.url}' skills && cd skills`);
-    // Fail-closed means the remote is untouched, not partially written.
     expect(remote.headCount()).toBe(before);
     expect(remote.tracked()).toEqual(["hand-written-note.md"]);
   });
@@ -202,11 +192,10 @@ describe("publish-plugin against a file:// bare repo", () => {
 
 describe("a clone that holds something we did not write", () => {
   it("case 5 - a SYMLINK at an expected path is refused, not followed", () => {
-    // `git ls-files` lists a tracked symlink by its pathname exactly like a
-    // file, so the pathname predicate alone cannot see it. Verified that the
-    // copy which follows replaces the link rather than writing through it - but
-    // that is a property of the copy call, not of this lane, and "we only ever
-    // write regular files" is what the fail-closed check actually means.
+    // `git ls-files` lists a symlink like a file, so the pathname predicate
+    // alone cannot see it. The copy currently replaces the link rather than
+    // writing through it, but that is a property of the copy call, so the mode
+    // is checked explicitly.
     const remote = bareRepo((checkout) => {
       mkdirSync(join(checkout, "skills/wego"), { recursive: true });
       symlinkSync("/etc/hosts", join(checkout, "skills/wego/SKILL.md"));
@@ -221,9 +210,8 @@ describe("a clone that holds something we did not write", () => {
   });
 
   it("escapes an embedded single quote in the suggested command", () => {
-    // POSIX has no escape INSIDE single quotes, so the quoting has to close
-    // the string, add an escaped quote and reopen. A path holding a quote is
-    // the only case that distinguishes correct quoting from naive wrapping.
+    // A path holding a quote is the only case that distinguishes correct POSIX
+    // quoting from naive wrapping.
     const remote = bareRepo((checkout) => {
       writeFileSync(join(checkout, "it's-a-stray.md"), "stray\\n");
     });
@@ -246,8 +234,8 @@ describe("a clone that holds something we did not write", () => {
 
 describe("the temp clone is always cleaned up", () => {
   // `process.exit()` does not unwind, so an exit inside the work block would
-  // skip the `finally` that removes the clone - on the refusal path and on the
-  // no-op path, which is the common outcome of a healthy repeat promote.
+  // skip the `finally` that removes the clone. The no-op path is the common
+  // outcome of a repeat promote.
   const strays = () =>
     readdirSync(tmpdir()).filter((n) => n.startsWith("wego-plugin-publish-"));
 
@@ -270,10 +258,9 @@ describe("the temp clone is always cleaned up", () => {
 });
 
 describe("the paths that need no git", () => {
-  // `--print-plan` and the graceful skip are both documented as needing no
-  // remote and no key, and neither runs a git command. Resolving the git binary
-  // at module load quietly broke that: both started exiting 1 on a host without
-  // git. A staged PATH holding only `bun` is the only way to catch it.
+  // `--print-plan` and the graceful skip need no remote, no credential and no
+  // git. Resolving the git binary at module load would make both exit 1 on a
+  // host without git; a staged PATH holding only `bun` catches that.
   const bunOnlyPath = (): string => {
     const stage = mkdtempSync(join(tmpdir(), "wego-plugin-nogit-"));
     workspaces.push(stage);
@@ -346,7 +333,6 @@ describe("the token gate", () => {
     );
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("SKILLS_PUBLISH_TOKEN is unset");
-    // A skip is a skip: it must not have written to the remote on the way past.
     expect(remote.tracked()).toEqual([]);
   });
 });
@@ -358,9 +344,7 @@ describe("unexpectedPluginFiles", () => {
   });
 
   it("reports only the paths the plan does not write", () => {
-    // `LICENSE` was the stray file here until the plan started writing it. A
-    // published path is exactly the wrong example for this test, so the strays
-    // are two paths nothing publishes: one at the root, one under `skills/`.
+    // Strays are paths nothing publishes: one at the root, one under `skills/`.
     expect(
       unexpectedPluginFiles(
         [...EXPECTED, "CONTRIBUTING.md", "skills/other/SKILL.md"],
@@ -381,8 +365,8 @@ describe("pluginPublishPlan", () => {
   });
 
   it("draws every source from the plugin dir or a skill dir, never the eval corpus", () => {
-    // #98 names this failure by name: the publish must not sweep up the eval
-    // fixtures, the persona app, or the staging overlay.
+    // The publish must not sweep up eval fixtures, the persona app, or the
+    // staging overlay (#98).
     for (const { from } of PLAN) {
       expect(from).toMatch(/^(plugin\/|skills\/)/);
     }

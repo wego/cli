@@ -2,33 +2,19 @@
  * Composite actions reach only for contexts they can see.
  *
  * An action has no `needs`, `matrix` or `secrets`; those must arrive as inputs.
- * An action that references one anyway compiles, runs, and reads the EMPTY
- * STRING - which in an `if:` makes the condition permanently false, so the step
- * it guards silently stops running. The lane stays green and the coverage is
- * simply gone, because a skipped step looks the same as a step that had nothing
- * to do.
+ * An action that references one anyway runs and reads the empty string, which in
+ * an `if:` makes the condition permanently false, so the step it guards silently
+ * stops running and the lane stays green.
  *
- * WHY THIS FILE IS THE SIZE IT IS. It used to carry two more suites, asserting
- * that every `needs.<job>.outputs.<name>` named an output the producing job
- * declares, and that the consuming job declared a `needs:` edge to it. `ci-cli`
- * now runs actionlint, which decides both by resolving each expression against
- * the contexts GitHub really supplies - a strictly better answer, typed and
- * located, and it catches a great deal those two regexes never looked at. So
- * they went.
+ * Workflows are checked by actionlint in `ci-cli`, but actionlint (1.7.12, as
+ * pinned) never sees composite actions:
  *
- * What did NOT go is this suite, and the reason is not a preference. actionlint
- * never sees these files, for two independent reasons - measured, not assumed,
- * against the 1.7.12 binary `ci-cli` pins:
+ *   - Its default discovery walks `.github/workflows/` only, and `ci-cli`
+ *     invokes it with no path arguments.
+ *   - Handed an `action.yml` explicitly, it reads it as a workflow and stops on
+ *     `"jobs" section is missing in workflow`.
  *
- *   - Its default discovery walks `.github/workflows/` only. `ci-cli` invokes it
- *     with no path arguments, so `.github/actions/*'/'action.yml` is never opened
- *     at all. This is the one that actually applies in CI.
- *   - Handed such a file explicitly, it reads it as a WORKFLOW and stops on
- *     `"jobs" section is missing in workflow`. So pointing CI at them would not
- *     help either.
- *
- * The files below are therefore exactly the ones nothing else checks, which is
- * why this survives actionlint's arrival.
+ * So this suite covers exactly the files nothing else checks.
  */
 import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
@@ -41,8 +27,7 @@ describe("composite actions: reach only for contexts they can see", () => {
     .filter((d) => d.isDirectory())
     .map((d) => join(ACTIONS, d.name, "action.yml"));
 
-  // A suite that matched no files would pass having asserted nothing, which is
-  // the one way this check can regress without turning red.
+  // A suite that matched no files would pass having asserted nothing.
   it("finds composite actions to check", () => {
     expect(actionFiles.length).toBeGreaterThan(0);
   });

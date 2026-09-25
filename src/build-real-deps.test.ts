@@ -6,24 +6,22 @@ import { EXIT } from "./error-report";
 import { buildRealDeps } from "./index";
 
 /**
- * Wiring guard for the two commands whose real deps are assembled from the
- * INSTALL SCOPE: `update` and `uninstall`.
+ * Wiring guard for `update` and `uninstall`, whose real deps are assembled from
+ * the install scope.
  *
  * `update.test.ts` and `uninstall.test.ts` cover the decisions against injected
- * deps; this covers the other half, the half those files cannot see - that
- * `buildRealDeps()` can actually assemble them. Both closures derive several
- * per-install paths inline (`defaultUpdateCheckPath`, `defaultSessionPath`,
- * `defaultInstallRecordPath`), so a path helper that threw, or one left on an old
- * scope key, would surface only when a user ran the command - and `update` is the
- * one command that cannot be rehearsed after release.
+ * deps; this proves `buildRealDeps()` can actually assemble them. Both closures
+ * derive several per-install paths inline (`defaultUpdateCheckPath`,
+ * `defaultSessionPath`, `defaultInstallRecordPath`), so a path helper that threw
+ * would surface only when a user ran the command, and `update` cannot be
+ * rehearsed after release.
  *
- * Reaching the from-source refusal is what proves it: the guard sits AFTER the
- * whole dependency object has been evaluated, so an assembly fault cannot reach
- * that message. It is also side-effect free by construction (no fetch, no
- * rename, nothing removed), which is what makes driving the real wiring safe
- * here at all.
+ * Reaching the from-source refusal proves it: the guard runs after the whole
+ * dependency object has been evaluated, so an assembly fault cannot reach that
+ * message. It is also side-effect free (no fetch, no rename, nothing removed),
+ * which is what makes driving the real wiring safe here.
  *
- * Runs against a FIXTURE `XDG_CONFIG_HOME`, never the developer's real one.
+ * Runs against a fixture `XDG_CONFIG_HOME`, never the developer's real one.
  */
 
 let home: string;
@@ -69,15 +67,13 @@ describe("buildRealDeps (real wiring)", () => {
   });
 
   it("removes nothing while assembling `uninstall`, which is why this is safe", async () => {
-    // Seed the file the command would delete. Asserting it is ABSENT would pass
-    // on an empty fixture too, so the sentinel is what makes the assertion
-    // load-bearing: a regression that moved the source guard BELOW the
-    // deletions fails here rather than on a developer's machine.
+    // Seed the file the command would delete, so a regression that moved the
+    // source guard below the deletions fails here rather than on a developer's
+    // machine.
     const credentials = join(home, "wego", "credentials.json");
     await mkdir(dirname(credentials), { recursive: true });
     await writeFile(credentials, "sentinel");
     await buildRealDeps().uninstall(["-y"]);
-    // The refusal returns before any `rm`, so the fixture root is untouched.
     expect(await Bun.file(credentials).text()).toBe("sentinel");
   });
 });

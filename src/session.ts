@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { z } from "zod";
 import { ensureOwnerDir, writeOwnerJson } from "./config-dir";
 
-/** `~/.config/<scope>/session.json` — the id that groups one working stretch. */
+/** `~/.config/<scope>/session.json`: the id that groups one working stretch. */
 
 export const SESSION_INACTIVITY_MS = 30 * 60 * 1000;
 export const SESSION_MAX_LIFETIME_MS = 24 * 60 * 60 * 1000;

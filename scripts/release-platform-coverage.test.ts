@@ -1,44 +1,34 @@
 /**
- * PLATFORM COVERAGE: linux-x64 and darwin-arm64 make the SAME four claims, asserted.
+ * Platform coverage: linux-x64 and darwin-arm64 make the same claims.
  *
- * The lane gates two platforms, and until recently it tested one. Three failures
- * hide in the gap, and every one of them leaves a green release:
+ * Three failures can each leave a release green:
  *
- *  1. TIMING, every platform. Until `--force-replace`, no release executed its own
- *     `downloadAndReplace`: SMOKE 3 runs the PREDECESSOR's copy, SMOKE 4 returns on
- *     the up-to-date branch above it. The shipping build's replace half first ran a
- *     release later, after publication.
- *  2. PLATFORM, macOS only. The replace code is compiled per target and one line -
- *     `if (os === "darwin") await deps.clearQuarantine(tmp)` - is unreachable from
- *     any Linux runner, at any release. That is the wego/cli#25 shape: every check
- *     passes and none of them runs the thing that breaks.
- *  3. HALF A COLUMN. The macOS job initially made only the replace claim. A darwin
- *     version-parse bug that left an up-to-date binary believing it was behind -
- *     re-downloading itself on every invocation - passes a forced replace and is
- *     caught only by the unforced comparison, which darwin did not run.
+ *  1. Timing, every platform. Without `--force-replace` no release executes its
+ *     own `downloadAndReplace`: SMOKE 3 runs the predecessor's copy, and SMOKE 4
+ *     returns on the up-to-date branch before it. The shipping build's replace
+ *     code would first run a release later, after publication.
+ *  2. Platform, macOS only. The replace code is compiled per target, and
+ *     `if (os === "darwin") await deps.clearQuarantine(tmp)` is unreachable from
+ *     any Linux runner. That is the wego/cli#25 shape: every check passes and
+ *     none runs the thing that breaks.
+ *  3. Half the claims. A darwin version-parse bug that makes an up-to-date binary
+ *     think it is behind passes a forced replace, and is caught only by the
+ *     unforced comparison.
  *
- * All three are closed by flags, steps and a job, which makes them exactly the kind
- * of thing a later edit removes without meaning to:
+ * Each is closed by a flag, step or job that a later edit could remove:
  *
- *   - the macOS job dropped ("the release takes 20 minutes and macOS runners bill
- *     at 10x") -> failure 2 is back, and every release still green.
- *   - `--force-replace` dropped from either leg, or swapped for the sibling step's
- *     `--expect-unchanged` ("the ring already serves these bytes, why force?") ->
- *     the step runs, costs the minutes, and returns on the up-to-date branch
- *     without reaching the replace. Green, and proving nothing.
- *   - a darwin leg deleted as "redundant with the linux one" -> failure 3, on
- *     whichever claim went.
- *   - the darwin arriving leg UNGATED from the linux one -> on a first release, or
+ *   - the macOS job dropped (it is slow and expensive): failure 2 returns.
+ *   - `--force-replace` dropped from either leg, or swapped for
+ *     `--expect-unchanged`: the step returns on the up-to-date branch without
+ *     reaching the replace.
+ *   - a darwin leg deleted as redundant with linux: failure 3.
+ *   - the darwin arriving leg ungated from the linux one: on a first release, or
  *     a ring not serving a complete set, linux skips SMOKE 3 and darwin invents a
  *     predecessor. The two must skip together.
- *   - the macOS asset pointed back at a linux binary -> the job cannot even execute
- *     it, which at least fails loudly; asserted anyway, because the failure would
- *     read as a runner problem rather than as a coverage one.
+ *   - the macOS asset pointed at a linux binary: it fails loudly, but reads as a
+ *     runner problem rather than a coverage one.
  *
- * ASSERTED BY PROPERTY, NOT BY NAME: nothing here pins the string "replace-macos".
- * The claim is "this lane makes each of the arriving, up-to-date and replace claims
- * on both a Linux and a macOS runner, each against its own asset" - rename or
- * restructure freely.
+ * Asserted by property, not by job name, so jobs can be renamed or restructured.
  */
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -65,11 +55,8 @@ interface Workflow {
 }
 
 const LANE = "release-cli.yml";
-/** The one definition both platform legs call. Before it existed, every gate
- *  below was written twice — inline for linux-x64 and copied into the macOS job —
- *  and this file's whole job was to notice when the two copies drifted. They can
- *  no longer drift, so the assertions now follow the claims into the action and
- *  ask the same questions of the resolved leg. */
+/** The one definition both platform legs call. The assertions follow the
+ *  claims into the action and ask the same questions of each resolved leg. */
 const ACTION = ".github/actions/verify-replace/action.yml";
 const ACTION_REF = "./.github/actions/verify-replace";
 /** The pre-publication half. Everything that gates the store lives here. */
@@ -79,7 +66,7 @@ const BUILD_REF = "./.github/actions/verify-build";
 const INSTALL = "scripts/install-smoke.sh";
 /** The up-to-date / replace gate. Drives `wego update` from a built asset. */
 const GATE = "scripts/assert-self-update.ts";
-/** The arriving gate. Drives a PUBLISHED PREDECESSOR's own `wego update`. */
+/** The arriving gate. Drives a published predecessor's own `wego update`. */
 const ARRIVE = "scripts/update-smoke.sh";
 
 const wf = Bun.YAML.parse(
@@ -99,8 +86,8 @@ const actionFor = (uses?: string): Action | undefined =>
   uses === ACTION_REF ? action : uses === BUILD_REF ? buildAction : undefined;
 
 /** Substitute a calling step's `with:` (falling back to the action's declared
- *  defaults) into an action step's text, so a resolved leg reads exactly as the
- *  inline copy it replaced — `wego-darwin-arm64`, not `${{ inputs.asset }}`. */
+ *  defaults) into an action step's text, so a resolved leg reads
+ *  `wego-darwin-arm64`, not `${{ inputs.asset }}`. */
 function resolveInputs(text: string, withs: Record<string, unknown>): string {
   return text.replace(/\$\{\{\s*inputs\.([a-z-]+)\s*\}\}/g, (_m, key: string) =>
     String(withs[key] ?? action.inputs?.[key]?.default ?? ""),
@@ -116,7 +103,7 @@ interface Leg {
 
 /**
  * Every step that runs one of the two gates, flattened across jobs and kept as
- * INDIVIDUAL steps. Per-step is load-bearing: `--force-replace` and
+ * individual steps. Per-step matters: `--force-replace` and
  * `--expect-unchanged` are mutually exclusive within one invocation but both are
  * wanted in one job, so a job-wide string search cannot tell "two correct steps"
  * from "one contradictory one".
@@ -124,9 +111,8 @@ interface Leg {
 function legs(tool: string): Leg[] {
   return Object.entries(wf.jobs).flatMap(([job, j]) =>
     (j.steps ?? []).flatMap((s) => {
-      // A step that delegates to the action stands for the action's own steps,
-      // attributed to the job that called it — which is what keeps "does the
-      // darwin leg prove SMOKE 5" a question about the lane and not about a file.
+      // A step that delegates to an action stands for the action's own steps,
+      // attributed to the job that called it.
       const act = actionFor(s.uses);
       const steps: Step[] = act ? (act.runs.steps ?? []) : [s];
       const withs = (s.with ?? {}) as Record<string, unknown>;
@@ -177,19 +163,18 @@ describe(`${LANE}: linux-x64 and darwin-arm64 make the same claims`, () => {
       const arriving = legs(ARRIVE).filter(onPlatform);
       expect(arriving).not.toEqual([]);
       expect(arriving.some((l) => asset.test(l.body))).toBe(true);
-      // Without --require-replace a rerun past the advance captures THIS release as
-      // its own predecessor, swaps nothing, and passes having measured nothing.
-      // EVERY leg, not just one: with `some`, dropping the flag from one platform
-      // leaves the other one holding the assertion up for both.
+      // Without --require-replace a rerun past the advance captures this release as
+      // its own predecessor, swaps nothing, and passes. Checked on every leg: with
+      // `some`, dropping the flag from one platform would go unnoticed.
       for (const leg of arriving) {
         expect(leg.body).toContain("--require-replace");
       }
     });
 
     it("proves a machine can LEAVE it (SMOKE 4)", () => {
-      // Only an unforced run proves `update`'s OWN comparison concluded "already
-      // current" against the ring. A forced run skips that by construction, so
-      // SMOKE 5 cannot stand in for this.
+      // Only an unforced run proves `update`'s own comparison concluded "already
+      // current" against the ring. A forced run skips that, so SMOKE 5 cannot
+      // stand in for this.
       const leaving = legs(GATE).filter(
         (l) => onPlatform(l) && l.body.includes("--expect-unchanged"),
       );
@@ -198,8 +183,8 @@ describe(`${LANE}: linux-x64 and darwin-arm64 make the same claims`, () => {
     });
 
     it("executes the replace code THIS BUILD ships (SMOKE 5)", () => {
-      // Closes the timing gap: without this the release ships replace code whose
-      // first execution is a consumer's machine, or the NEXT release's SMOKE 3.
+      // Without this the release ships replace code whose first execution is a
+      // consumer's machine, or the next release's SMOKE 3.
       const replacing = legs(GATE).filter(
         (l) => onPlatform(l) && l.body.includes("--force-replace"),
       );
@@ -209,8 +194,8 @@ describe(`${LANE}: linux-x64 and darwin-arm64 make the same claims`, () => {
   });
 
   it("never asks one invocation for both mutually exclusive claims", () => {
-    // The script errors on this pairing. Asserted here so the LANE is caught asking
-    // for it, rather than a release burning the minutes to reach the error.
+    // The script errors on this pairing. Asserted here so the lane is caught asking
+    // for it before a release spends the minutes to reach the error.
     for (const leg of legs(GATE)) {
       const both =
         leg.body.includes("--force-replace") &&
@@ -220,9 +205,9 @@ describe(`${LANE}: linux-x64 and darwin-arm64 make the same claims`, () => {
   });
 
   it("skips the arriving legs together, never one without the other", () => {
-    // Both read the SAME capture. First release, or a ring not serving a complete
-    // set, and neither has a predecessor - so a darwin leg still running there
-    // would be testing something it invented.
+    // Both read the same capture. On a first release, or a ring not serving a
+    // complete set, neither has a predecessor, so a darwin leg still running
+    // there would be testing something it invented.
     const arriving = legs(ARRIVE);
     expect(arriving.length).toBeGreaterThanOrEqual(2);
     for (const leg of arriving) {
@@ -231,9 +216,8 @@ describe(`${LANE}: linux-x64 and darwin-arm64 make the same claims`, () => {
   });
 
   it("captures the predecessor BEFORE the ring advances", () => {
-    // The window is the whole reason the darwin predecessor travels as an artifact:
-    // `cli/next` stops serving it the instant the pointer moves, and the macOS job
-    // does not start until long after that.
+    // This is why the darwin predecessor travels as an artifact: `cli/next` stops
+    // serving it once the pointer moves, and the macOS job starts long after.
     const steps = Object.values(wf.jobs).flatMap((j) => j.steps ?? []);
     const capture = steps.findIndex((s) =>
       /Capture the predecessor/i.test(s.name ?? ""),
@@ -247,8 +231,8 @@ describe(`${LANE}: linux-x64 and darwin-arm64 make the same claims`, () => {
   });
 
   it("hands the darwin predecessor over under a name both sides agree on", () => {
-    // A rename on one side alone fails loudly at download time rather than silently,
-    // but it fails DURING a release. Cheaper to catch here.
+    // A rename on one side alone fails at download time, but during a release.
+    // Cheaper to catch here.
     const artifactName = (pred: (u: string) => boolean) =>
       Object.values(wf.jobs)
         .flatMap((j) => j.steps ?? [])
@@ -308,16 +292,16 @@ describe(`${ACTION}: one definition, so the legs cannot drift`, () => {
   it("executes the install contract on both platforms (SMOKE 6)", () => {
     // The installer's own `uname` mapping picks the asset, so darwin and linux
     // take different paths through the script it serves. Running it on one leg
-    // would leave the other's install path as untested as it was before.
+    // would leave the other's install path untested.
     expect(legs(INSTALL).length).toBe(2);
     expect(legs(INSTALL).some(onLinux)).toBe(true);
     expect(legs(INSTALL).some(onMac)).toBe(true);
   });
 
   it("skips only the arriving gate when there is no predecessor", () => {
-    // SMOKE 3 needs an older build to update FROM; 4, 5 and 6 do not. Gating the
+    // SMOKE 3 needs an older build to update from; 4, 5 and 6 do not. Gating the
     // whole action on the predecessor would silently drop three proofs on a first
-    // release, which is exactly when a lane most wants them.
+    // release.
     const gated = (action.runs.steps ?? []).filter((s) =>
       (s.if ?? "").includes("prev-usable"),
     );
@@ -338,8 +322,8 @@ describe(`${LANE}: nothing publishes until BOTH platforms can leave`, () => {
     return n === undefined ? [] : Array.isArray(n) ? n : [n];
   };
   /** Jobs that run the leave proof: `upgrade-path.sh … stable`, one hop. The proof
-   *  lives in a composite action now, so a job "runs" it by calling one — scanning
-   *  job steps alone would find nothing and pass the emptiness through. */
+   *  lives in a composite action, so a job runs it by calling one; scanning job
+   *  steps alone would find nothing and pass. */
   const runsLeave = (st: Step): boolean => {
     const bodies = (actionFor(st.uses)?.runs.steps ?? [st]).map(
       (x) => x.run ?? "",
@@ -363,23 +347,23 @@ describe(`${LANE}: nothing publishes until BOTH platforms can leave`, () => {
   });
 
   it("holds publication until the macOS leg has proved it", () => {
-    // The whole point. This proof used to run in `replace-macos`, downstream of
-    // `release` — so a Mac that could not replace itself was discovered with
-    // `cli/next` already serving the build, and `cli/next` has no backward path.
+    // In a job downstream of `release`, a Mac that could not replace itself would
+    // be discovered with `cli/next` already serving the build, and `cli/next` has
+    // no backward path.
     expect(needsOf("release")).toContain("leave-macos");
   });
 
   it("keeps that job UPSTREAM of publication, not merely beside it", () => {
-    // A `needs: release` here would restore the old ordering while leaving every
-    // other assertion in this file green.
+    // A `needs: release` here would move the proof after publication while
+    // leaving every other assertion in this file green.
     const upstream = needsOf("leave-macos");
     expect(upstream).not.toContain("release");
     expect(upstream).toEqual(expect.arrayContaining(["prepare", "build"]));
   });
 
   it("runs no leave proof downstream of publication", () => {
-    // Where the proof RUNS decides what a failure costs. One that runs after the
-    // ring moved can only report damage; one that runs before can prevent it.
+    // A proof that runs after the ring moved can only report damage; one that
+    // runs before can prevent it.
     for (const job of leaveJobs) {
       expect(needsOf(job)).not.toContain("release");
     }
@@ -387,22 +371,19 @@ describe(`${LANE}: nothing publishes until BOTH platforms can leave`, () => {
 });
 
 /**
- * PARITY, enforced rather than periodically re-derived.
+ * Parity: every check the lane runs on one platform must run on the other, at
+ * the same stage. A check before publication prevents a bad build reaching
+ * anyone; the same check after the ring advanced can only report the damage,
+ * because `cli/next` has no backward path.
  *
- * Every check the lane runs on one platform must run on the other, AT THE SAME
- * STAGE — where a check runs decides what its failure costs. A leave proof that
- * runs before publication prevents a bad build reaching anyone; the same proof
- * after the ring advanced can only report the damage, because `cli/next` has no
- * backward path.
+ * A check is identified by what a step invokes, not its name: the legs name the
+ * same check differently ("Smoke test built binaries" vs "...(darwin-arm64)").
+ * Name rules come first, because several steps mention `cli-v1.1.0` or
+ * `SHA256SUMS.txt` in their error messages and a content rule alone mis-bins
+ * them.
  *
- * Identity is what a step INVOKES, not what it is called: the legs name the same
- * check differently ("Smoke test built binaries" vs "…(darwin-arm64)"), so a
- * name-keyed comparison reports every check as a gap. Name rules come FIRST,
- * because several steps mention `cli-v1.1.0` or `SHA256SUMS.txt` in their error
- * prose and a content rule alone mis-bins them.
- *
- * ADDING A CHECK? Add it here too. An entry missing from this list is simply not
- * compared, which is the one way parity can regress without turning this red.
+ * Adding a check? Add it here too. An entry missing from this list is not
+ * compared, so parity could regress without this turning red.
  */
 const PARITY_CHECKS: [string, (body: string, name: string) => boolean][] = [
   [
@@ -465,9 +446,9 @@ function classify(): Map<string, Hit[]> {
       const act = actionFor(st.uses);
       const inner: Step[] = act ? (act.runs.steps ?? []) : [st];
       const withs = (st.with ?? {}) as Record<string, unknown>;
-      // A delegated step runs where its CALL SITE runs — not where the action is
-      // defined. Both actions are called from both platforms; what separates
-      // pre-publication from post-advance is the position of the `uses:` step.
+      // A delegated step's stage is that of its call site. Both actions are
+      // called from both platforms; what separates pre-publication from
+      // post-advance is the position of the `uses:` step.
       const stage: Hit["stage"] =
         needs.includes("release") || (pubIdx >= 0 && idx > pubIdx)
           ? "post-advance"
@@ -496,25 +477,12 @@ function classify(): Map<string, Hit[]> {
 describe(`${LANE}: linux-x64 and darwin-arm64 run the same checks, at the same stage`, () => {
   const found = classify();
 
-  // THE CASE BELOW WAS ONCE DELETED AS REDUNDANT. It is not, and the argument
-  // that removed it is worth keeping as a warning.
-  //
-  // That argument ran: every check the list names lives inside one of the two
-  // composite actions and nowhere in the workflow ("leaves no check-bearing step
-  // body in the workflow itself"), and each action is called from a Linux leg and
-  // a macOS leg ("calls each action from both platforms") - so presence on both
-  // platforms follows, and asserting it per check restates the structure.
-  //
-  // It covers a check that vanishes from ONE leg. It says nothing about a check
-  // that vanishes from BOTH at once, and that is the likelier edit: a step
-  // deleted from the shared action during a refactor. Then `hits` is empty, and
-  // every one of the three assertions above is vacuously satisfied - `offenders`
-  // collects nothing because nothing matches, the action is still called from
-  // both runners because the CALL survived, and the stage comparison below reads
-  // `false === false` and passes. The proof would evaporate in silence, which is
-  // the exact failure this whole file exists to prevent.
-  //
-  // So presence is asserted, not inferred.
+  // Not redundant with "leaves no check-bearing step body in the workflow
+  // itself" plus "calls each action from both platforms". Those catch a check
+  // vanishing from one leg, but not a step deleted from the shared action, which
+  // removes it from both: then `hits` is empty, `offenders` is empty, the action
+  // is still called from both runners, and the stage comparison reads
+  // `false === false`. So presence is asserted, not inferred.
   for (const [check] of PARITY_CHECKS) {
     it(`runs on both platforms: ${check}`, () => {
       const hits = found.get(check) ?? [];
@@ -525,12 +493,10 @@ describe(`${LANE}: linux-x64 and darwin-arm64 run the same checks, at the same s
     });
 
     it(`gates publication on both platforms, or on neither: ${check}`, () => {
-      // Stage is not cosmetic. Pre-publication a failure PREVENTS a bad build from
-      // reaching anyone; post-advance it can only describe one, because the ring it
-      // already moved has no backward path. So the property is not "same stage" —
-      // a check may legitimately run in several jobs, and macOS verifies the
-      // manifest in BOTH of its jobs because each downloads its own artifacts.
-      // What must match is whether the check stands between a bad build and users.
+      // Not "same stage": a check may legitimately run in several jobs, and macOS
+      // verifies the manifest in both of its jobs because each downloads its own
+      // artifacts. What must match is whether the check stands between a bad
+      // build and users.
       const hits = found.get(check) ?? [];
       const gates = (plat: Hit["plat"]) =>
         hits.some((h) => h.plat === plat && h.stage === "pre-publish");
@@ -541,10 +507,9 @@ describe(`${LANE}: linux-x64 and darwin-arm64 run the same checks, at the same s
 
 describe(`${LANE}: no check is written twice`, () => {
   it("leaves no check-bearing step body in the workflow itself", () => {
-    // Drift is only possible where a check exists in two places. After both
-    // actions, every check the parity list names is defined once and called
-    // twice — so this asserts the ABSENCE of the thing that could drift, rather
-    // than that two copies currently happen to agree.
+    // Drift is only possible where a check exists in two places. Every check
+    // the parity list names is defined once in an action and called twice, so
+    // this asserts there is no second copy rather than that two copies agree.
     const offenders: string[] = [];
     for (const [job, j] of Object.entries(wf.jobs)) {
       for (const st of j.steps ?? []) {
@@ -573,16 +538,14 @@ describe(`${LANE}: no check is written twice`, () => {
 
 describe("composite actions: one interpreter, on every runner", () => {
   it("declares `shell: bash` on every step", () => {
-    // A composite step MUST name its shell — there is no default to inherit. The
-    // obvious-looking choice, `sh`, is wrong twice over: these steps previously ran
-    // under the workflow default, which is `bash -e {0}`, so `sh` changes the
-    // interpreter rather than preserving it; and `/bin/sh` is dash on ubuntu and
-    // bash-in-POSIX-mode on macOS, which would reintroduce a per-platform
-    // difference into the change that exists to remove them.
+    // A composite step must name its shell; there is no default to inherit. Not
+    // `sh`: the step bodies are written for bash (the workflow default,
+    // `bash -e {0}`), and `/bin/sh` is dash on ubuntu but bash in POSIX mode on
+    // macOS, a per-platform difference.
     //
-    // The scripts these steps INVOKE keep their own `#!/bin/sh` and are called as
-    // `sh scripts/…`. That is deliberate and platform-identical, because the
-    // interpreter is named explicitly rather than inherited from the runner image.
+    // The scripts these steps invoke keep their own `#!/bin/sh` and are called as
+    // `sh scripts/...`. That is deliberate: the interpreter is named explicitly,
+    // so it is the same on both platforms.
     const offenders: string[] = [];
     for (const [file, act] of [
       [ACTION, action],
@@ -607,11 +570,9 @@ describe(`${LANE}: the platforms agree on WHEN a check runs, not only that it do
     /store_origin\s*!=\s*''/.test(cond) ? "guarded-on-published" : "unguarded";
 
   it("guards each action the same way on both platforms", () => {
-    // Parity of presence and stage is worth little if the CONDITIONS differ: a
-    // check that silently skips on one platform is not a check on that platform.
-    // This was genuinely unequal before — linux guarded its post-advance smokes on
-    // `store_origin != ''` and macOS ran them unconditionally, so a run that
-    // published nothing skipped them on one leg and failed them on the other.
+    // A check that silently skips on one platform is not a check on that
+    // platform. If only one leg guarded on `store_origin != ''`, a run that
+    // published nothing would skip on one leg and fail on the other.
     for (const ref of [ACTION_REF, BUILD_REF]) {
       const byPlat = new Map<string, string[]>();
       for (const j of Object.values(wf.jobs)) {
@@ -634,8 +595,8 @@ describe(`${LANE}: the platforms agree on WHEN a check runs, not only that it do
 
   it("lets neither call site override the URL or the ring", () => {
     // Both are defaulted inside the action: the production install endpoint and
-    // `next`. A caller that overrode either would move what the gate measures
-    // without moving the gate — the same rule the smokes' install URL is held to.
+    // `next`. A caller that overrode either would change what the gate measures
+    // without changing the gate, the same rule the smokes' install URL is held to.
     for (const j of Object.values(wf.jobs)) {
       for (const st of j.steps ?? []) {
         if (!actionFor(st.uses)) continue;

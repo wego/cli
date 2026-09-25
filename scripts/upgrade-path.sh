@@ -1,46 +1,40 @@
 #!/bin/sh
-# An UPGRADE PATH, driven for real, hop by hop, to the version a ring serves.
+# An upgrade path, driven for real, hop by hop, to the version a ring serves.
 #
 #   upgrade-path.sh <start-binary-path-or-url> <ring> <expected-final-version>
 #                   [--via <v1,v2,…>] [--max-hops <n>] [--install-url <url>]
 #
-# `update-smoke.sh` answers "can the PREVIOUS release reach this one" — one hop,
-# on a temp copy it then throws away. That is the right question for a release
-# lane and the wrong one for an install base, because the install base is not one
-# hop behind. A 1.0.x machine cannot reach the current release at all in one hop:
-# `apps/api`'s legacy bridge pin (wego/foundations#132) serves any `?dl=` request
-# for ring `stable` whose user agent starts with `Bun/` from the FROZEN
-# `cli/cli-v1.1.0/` prefix instead of the live pointer, so that machine lands on
-# 1.1.0 and only the NEXT `update` carries it the rest of the way. Two hops, and
-# the intermediate one is a different repository's signature to verify.
+# `update-smoke.sh` checks that the previous release can reach this one in one
+# hop. The install base is not all one hop behind: `apps/api`'s legacy bridge pin
+# (wego/foundations#132) serves any `?dl=` request for ring `stable` whose user
+# agent starts with `Bun/` from the frozen `cli/cli-v1.1.0/` prefix, so a 1.0.x
+# machine lands on 1.1.0 and only the next `update` carries it the rest of the way.
+# Two hops, and the intermediate one is a different repository's signature.
 #
 # So this script keeps the binary it just became and runs it again, until it
-# reports the expected version or the hop budget runs out. What it asserts:
+# reports the expected version or the hop budget runs out. It asserts:
 #
 #   converges   the chain reaches <expected-final-version> within --max-hops
-#   advances    every hop changes the bytes AND the version — an `update` that
-#               exits 0 without moving is a failure, not a pass
-#   terminates  no version is visited twice. THE failure mode this exists for:
-#               wego/cli#25's agent-less build updated to 1.1.0, which read the
-#               live pointer, which served the agent-less build, forever. Every
-#               individual hop succeeded. Only the SEQUENCE is wrong, so only a
-#               driver that keeps the sequence can see it.
-#   routes      --via pins the waypoints, so 1.0.1's journey THROUGH the frozen
-#               bridge is asserted rather than incidental. A pin that silently
-#               stopped matching would still converge — slower, over a route
-#               nobody designed — and pass without --via.
+#   advances    every hop changes the bytes and the version; an `update` that
+#               exits 0 without moving is a failure
+#   terminates  no version is visited twice. wego/cli#25's agent-less build
+#               updated to 1.1.0, which read the live pointer, which served the
+#               agent-less build, forever. Every hop succeeded; only the sequence
+#               was wrong, so only a driver that keeps the sequence can see it.
+#   routes      --via pins the waypoints, so 1.0.1's route through the frozen
+#               bridge is asserted. A pin that stopped matching would still
+#               converge by another route and pass without --via.
 #   settles     the arrived binary reports itself up to date against the same ring
 #
-# Nothing is mocked. Real HTTPS to the real deploy, the real `?dl=`/`&sig=1`
-# routing, the real sigstore verification against each binary's OWN baked trust
-# set, the real gz-first download, the real atomic self-replace. The ONLY thing
-# arranged is the install record (see below), because this places a binary rather
-# than installing one.
+# Nothing is mocked: real HTTPS to the real deploy, real `?dl=`/`&sig=1` routing,
+# real sigstore verification against each binary's own baked trust set, the real
+# download and atomic self-replace. The only thing arranged is the install record,
+# because this places a binary rather than installing one.
 #
-# <start-binary> must match THIS host's platform. POSIX self-replace only, so
-# Linux/macOS: a running .exe cannot be swapped in place on Windows.
+# <start-binary> must match this host's platform. POSIX only (Linux/macOS): a
+# running .exe cannot be swapped in place on Windows.
 #
-# Examples — the two paths wego/cli cares about, as CI runs them:
+# Examples, the two paths CI runs:
 #
 #   BASE=https://<store>/cli
 #   # relay → the bytes `stable` is about to serve (the pre-promote gate)
@@ -48,12 +42,9 @@
 #   # pre-relay → stable, via the frozen bridge (the install-base gate)
 #   sh scripts/upgrade-path.sh "$BASE/cli-v1.0.1/wego-linux-x64" stable 1.2.6 --via 1.1.0
 #
-# NO SKIPs. `update-smoke.sh` exits 0 for a predecessor that predates `update` or
-# bakes no channel, because it is handed whatever the previous release happened to
-# be. Here the predecessors are NAMED, and they are named precisely because they
-# can self-update; a start binary that cannot is a broken argument, not a case to
-# tolerate. A skip here would report green having proved nothing about the path it
-# was asked about.
+# No SKIPs. `update-smoke.sh` skips a predecessor that cannot self-update because
+# it is handed whatever the previous release was. Here the start binary is named
+# because it can self-update, so one that cannot is a broken argument.
 set -eu
 
 VIA=""
@@ -99,26 +90,21 @@ esac
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# Every file any binary in the chain writes — the arranged install record, the
-# update-notice throttle, a session — lands here and dies with the run. So a pass
-# can never be owed to state left behind by an earlier run or by the operator's
-# real ~/.config, and the run cannot disturb either.
+# Every file any binary in the chain writes (the install record, the update-notice
+# throttle, a session) lands here and is removed with the run, so a pass never
+# depends on leftover state and the operator's real ~/.config is untouched.
 XDG_CONFIG_HOME="$tmp/config"
 HOME="$tmp/home"
 export XDG_CONFIG_HOME HOME
 mkdir -p "$HOME"
-# Telemetry off: this is a robot walking a version history, and the events would
-# describe upgrades no person performed.
+# Telemetry off: the events would describe upgrades no person performed.
 WEGO_CLI_TELEMETRY=0
 export WEGO_CLI_TELEMETRY
 
-# The copy is named `wego`, and the NAME is load-bearing for the builds this chain
-# STARTS from. The config scope is the constant `wego` (`src/config.ts`
-# `CONFIG_SCOPE`), but every build up to 1.2.7 scoped by the name it was invoked
-# as, so a copy called `start-binary` would look for its ring record in
-# `$XDG_CONFIG_HOME/start-binary/` and never see the one arranged below. `wego` is
-# what both rules resolve to, which is what lets one chain span the change. Same
-# reason as `update-smoke.sh`, pinned there by a unit test and here by
+# The copy must be named `wego`. The config scope is the constant `wego`
+# (`src/config.ts` `CONFIG_SCOPE`), but builds up to 1.2.7 scope by the name they
+# were invoked as, so a copy called `start-binary` would look for its ring record
+# in `$XDG_CONFIG_HOME/start-binary/` and miss the one arranged below. Pinned by
 # `upgrade-path.test.ts`.
 mkdir -p "$tmp/bin"
 BIN="$tmp/bin/wego"
@@ -136,10 +122,10 @@ case "$SRC" in
 esac
 chmod +x "$BIN"
 
-# Portable AND fail-closed, same shape as `update-smoke.sh`: branch on the tool
-# rather than `sha256sum … || shasum …` (whose exit status would be awk's, always
-# 0), and capture WITHOUT a pipe so a hasher failure is this function's status and
-# not a silently empty digest a caller could read as "unchanged".
+# Portable and fail-closed, as in `update-smoke.sh`: branch on the tool rather
+# than `sha256sum ... || shasum ...`, and capture without a pipe so a hasher
+# failure is this function's status, not an empty digest a caller could read as
+# "unchanged".
 sha() {
   if command -v sha256sum >/dev/null 2>&1; then
     result=$(sha256sum "$1") || return 1
@@ -149,10 +135,9 @@ sha() {
   printf '%s\n' "${result%% *}"
 }
 
-# WHERE this install came from. `--install-url` wins; otherwise it is read out of
-# the start binary's OWN refusal, which prints the reinstall hint it was built
-# with. Reading it keeps the script host-agnostic — nothing here hardcodes a
-# deploy — and makes the binary state its own origin rather than being told one.
+# Where this install came from: `--install-url`, or else the reinstall hint the
+# start binary prints in its own refusal. Reading the hint keeps the script
+# host-agnostic.
 if [ -n "$INSTALL_URL" ]; then
   install_url="$INSTALL_URL"
 else
@@ -169,12 +154,10 @@ else
   }
 fi
 
-# The record the INSTALLER would have written (foundations#74 rung 3). `update`
-# follows it and refuses to guess when it is absent, so a script that PLACES a
-# binary has to arrange it. One record for the whole chain: every binary in it
-# reads the same `wego` scope, so the ring survives each self-replace — which is
-# also true of a real machine, and is the reason a 1.0.x install keeps walking
-# forward after the bridge hands it 1.1.0.
+# The record the installer would have written. `update` refuses when it is absent,
+# so a script that places a binary has to arrange it. One record serves the whole
+# chain: every binary reads the same `wego` scope, so the ring survives each
+# self-replace, as it does on a real machine after the bridge hands it 1.1.0.
 mkdir -p "$XDG_CONFIG_HOME/wego"
 printf '{\n  "ring": "%s",\n  "installUrl": "%s"\n}\n' "$RING" "$install_url" \
   > "$XDG_CONFIG_HOME/wego/install.json"
@@ -182,18 +165,17 @@ echo "ring=$RING installUrl=$install_url expected=$EXPECTED max-hops=$MAX_HOPS"
 
 start_ver=$("$BIN" version) || { echo "FAIL: could not read the start binary's version" >&2; exit 1; }
 [ "$start_ver" != "$EXPECTED" ] || {
-  # Not a pass. The caller asked whether a path WORKS, and a start binary that is
-  # already the destination walks no path — the same greenwash `update-smoke.sh`
-  # refuses under --require-replace, and for the same reason: on a rerun the
-  # pointer may simply have moved to meet it.
+  # Not a pass: a start binary already at the destination walks no path. As with
+  # `update-smoke.sh --require-replace`, on a rerun the pointer may have moved to
+  # meet it.
   echo "FAIL: the start binary is already $EXPECTED, so no upgrade path was exercised." >&2
   exit 1
 }
 echo "start: $start_ver"
 
-# `route` accumulates the versions visited AFTER the start, space-separated, and is
-# both the --via assertion's subject and the loop detector's memory. `seen` carries
-# the start too, because a chain that returns to where it began is the flip-flop.
+# `route` holds the versions visited after the start, for the --via check. `seen`
+# also holds the start, so a chain that returns to where it began is caught as a
+# loop.
 route=""
 seen=" $start_ver "
 cur="$start_ver"
@@ -221,26 +203,23 @@ while [ "$cur" != "$EXPECTED" ]; do
   after=$("$BIN" version) || { echo "FAIL: hop $hop — could not read the version after update" >&2; exit 1; }
   after_hash=$(sha "$BIN") || { echo "FAIL: hop $hop — could not hash the updated binary" >&2; exit 1; }
 
-  # An `update` that exits 0 and moves nothing is the failure that looks most like
-  # success. It means the ring is serving this binary its own bytes while the chain
-  # is still short of the destination — a pointer that never advanced, or a route
-  # that quietly sent this hop somewhere it had already been.
+  # An `update` that exits 0 and moves nothing means the ring is serving this
+  # binary its own bytes while the chain is short of the destination: a pointer
+  # that never advanced, or a route that sent this hop back to itself.
   if [ "$after" = "$cur" ] && [ "$after_hash" = "$before_hash" ]; then
     echo "FAIL: hop $hop reported success from $cur but replaced nothing, and $cur is not the expected $EXPECTED. Ring $RING is serving this binary back to itself." >&2
     exit 1
   fi
-  # Bytes moved but the version did not, or vice versa: either way the two
-  # disagree about what just happened, and one of them is lying.
+  # Bytes moved but the version did not, or vice versa.
   if [ "$after" = "$cur" ] || [ "$after_hash" = "$before_hash" ]; then
     if [ "$after_hash" = "$before_hash" ]; then moved=unchanged; else moved=changed; fi
     echo "FAIL: hop $hop left the version and the bytes disagreeing (version $cur → $after, bytes $moved)." >&2
     exit 1
   fi
 
-  # THE TERMINATION CHECK. A revisited version means the chain is a cycle: every
-  # hop will keep succeeding and the machine will keep swapping forever. Catch it
-  # at the first repeat rather than letting the hop budget expire, so the error can
-  # name the loop instead of reporting a vague "did not converge".
+  # A revisited version means the chain is a cycle that would swap forever. Catch
+  # it at the first repeat, rather than when the hop budget expires, so the error
+  # names the loop instead of "did not converge".
   case "$seen" in
     *" $after "*)
       echo "FAIL: hop $hop returned to $after, which this chain already visited (route:$route $after). That is a self-update LOOP — each hop succeeds and the install never settles." >&2
@@ -256,9 +235,9 @@ done
 
 echo "converged: $start_ver$route ($hop hop(s))"
 
-# --via pins the ROUTE, not just the destination. Without it a chain that reached
-# the right version by a route nobody designed — the legacy bridge pin stopped
-# matching, say, so a 1.0.x install went somewhere else first — passes silently.
+# --via pins the route, not just the destination. Without it a chain that reached
+# the right version another way (say the legacy bridge pin stopped matching)
+# passes silently.
 if [ -n "$VIA" ]; then
   want_route=$(printf '%s' "$VIA" | tr ',' ' ' | tr -s ' ')
   want_route="$want_route $EXPECTED"
@@ -270,9 +249,9 @@ if [ -n "$VIA" ]; then
   echo "route matches --via: $got_route"
 fi
 
-# The arrived binary must agree it is current against the SAME ring. Require a
-# clean exit — `|| true` here would let a genuinely failed --check through on any
-# run whose output happened to contain the phrase.
+# The arrived binary must agree it is current against the same ring. Require a
+# clean exit: `|| true` would let a failed --check through whenever its output
+# contained the phrase.
 set +e
 check=$("$BIN" update --check 2>&1)
 check_code=$?

@@ -29,7 +29,7 @@ import { helpText } from "./index";
 
 // Drift guard: every flag and enum value a leaf usage names is in SKILL.md; root names every group, each group every leaf.
 
-// Every exported usage constant, keyed by name so a failure names the source.
+// Keyed by name so a failure names the source.
 const USAGE_CONSTANTS: Record<string, string> = {
   LOGIN_USAGE,
   FLIGHTS_USAGE,
@@ -60,9 +60,8 @@ const SKILL_MD = readFileSync(
 );
 const ROOT_HELP = helpText("wego");
 
-/** The distinct `--flag` tokens appearing in a usage string, skipping the
- *  `--departure-*` doc shorthand (a wildcard standing for the real
- *  `--departure-blocks`/`--departure-range`, not a literal flag). */
+/** Skips the `--departure-*` shorthand, which stands for the real
+ *  `--departure-blocks`/`--departure-range` and is not a literal flag. */
 function flagsIn(text: string): string[] {
   const out = new Set<string>();
   for (const m of text.matchAll(/--[a-z][a-z0-9-]*/g)) {
@@ -72,13 +71,11 @@ function flagsIn(text: string): string[] {
   return [...out];
 }
 
-/** Whole-token membership so `--page` is NOT satisfied by `--page-size`: the
- *  flag must not be immediately followed by another flag-name character. */
+/** Whole-token match, so `--page` is not satisfied by `--page-size`. */
 function hasFlag(haystack: string, flag: string): boolean {
   return new RegExp(`${flag}(?![a-z0-9-])`).test(haystack);
 }
 
-/** Collect `"--flag (CONSTANT_NAME)"` for every usage flag missing from `target`. */
 function missingFrom(target: string): string[] {
   const missing: string[] = [];
   for (const [name, usage] of Object.entries(USAGE_CONSTANTS)) {
@@ -128,7 +125,6 @@ function documentsValue(target: string, flag: string, value: string): boolean {
     );
 }
 
-/** Collect `"--flag=value (CONSTANT_NAME)"` for every enum value missing from `target`. */
 function missingValuesFrom(target: string): string[] {
   const missing: string[] = [];
   for (const [name, usage] of Object.entries(USAGE_CONSTANTS)) {
@@ -143,7 +139,6 @@ function missingValuesFrom(target: string): string[] {
 
 describe("skill-sync: usage flags ↔ SKILL.md ↔ root help", () => {
   it("every --flag documented in a *_USAGE constant appears in SKILL.md", () => {
-    // A non-empty result lists exactly which flag(s) drifted out of the skill.
     expect(missingFrom(SKILL_MD)).toEqual([]);
   });
 
@@ -175,11 +170,9 @@ describe("skill-sync: usage flags ↔ SKILL.md ↔ root help", () => {
         "share",
       ]),
     );
-    // `info target` is the one leaf deliberately absent from its group index: it
-    // reports which backend the binary resolved, which is a diagnostic about an
-    // axis no public user can move. The command still runs and still has its own
-    // `--help`; it is unlisted, not removed. Asserted NOT to be here so that
-    // re-adding the row is a deliberate act rather than a silent one.
+    // `info target` is deliberately unlisted (it still runs): it reports which
+    // backend the binary resolved, an axis no public user can move. Asserted
+    // absent so re-adding the row is a deliberate act.
     expect(rowsOf(INFO_USAGE)).toEqual(
       expect.arrayContaining([
         "holidays",

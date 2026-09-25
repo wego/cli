@@ -9,8 +9,6 @@ import { ensureOwnerDir } from "./config-dir";
  * are never logged.
  */
 
-/** Persisted credentials. The type is inferred from the schema so the on-disk
- *  shape and the TypeScript type can't drift. */
 const StoredCredentialsSchema = z.object({
   accessToken: z.string().min(1),
   refreshToken: z.string().optional(),
@@ -29,9 +27,8 @@ export async function saveCredentials(
   path: string,
   creds: StoredCredentials,
 ): Promise<void> {
-  // Shared with the update-notice throttle, which writes into the same
-  // `~/.config/<scope>/` dir and could otherwise create it first at a looser
-  // mode — see `config-dir.ts`.
+  // Other writers share the `~/.config/<scope>/` dir and could otherwise create
+  // it first at a looser mode; see `config-dir.ts`.
   await ensureOwnerDir(dirname(path));
   await writeFile(path, `${JSON.stringify(creds, null, 2)}\n`, { mode: 0o600 });
   // `mode` on mkdir/writeFile only applies on *creation*. The token file is

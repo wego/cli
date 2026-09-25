@@ -8,7 +8,6 @@ import {
 
 const ORIGIN = "https://store.public.blob.vercel-storage.com";
 
-/** A `put` stub recording its calls, answering with the store URL it would mint. */
 function fakePut(behavior?: (pathname: string) => Error | undefined) {
   const calls: { pathname: string; options: Record<string, unknown> }[] = [];
   const put = (async (

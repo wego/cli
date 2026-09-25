@@ -6,10 +6,10 @@ import {
   waitChannelConsistent,
 } from "./blob-consistency";
 
-// A deterministic 64-hex digest of "<name>#<version>" so tests can express "this
-// URL serves version N" without real bytes — real hex so `parseSums` accepts it,
-// and version-sensitive so a stale binary reads as a genuine mismatch. The fake
-// `hash` dep recovers the served version and mirrors this.
+// A deterministic 64-hex digest of "<name>#<version>" so tests can say "this URL
+// serves version N" without real bytes. Real hex so `parseSums` accepts it, and
+// version-sensitive so a stale binary is a genuine mismatch. The fake `hash` dep
+// mirrors this.
 const fakeHash = (name: string, version: string) => {
   let acc = 0;
   const s = `${name}#${version}`;
@@ -17,7 +17,7 @@ const fakeHash = (name: string, version: string) => {
   return acc.toString(16).padStart(8, "0").repeat(8).slice(0, 64);
 };
 
-/** Build a manifest body (GNU `sha256sum` shape) for a set of assets at a version. */
+/** GNU `sha256sum` shape. */
 function manifestBody(names: string[], version: string): string {
   return `${names.map((n) => `${fakeHash(n, version)}  ${n}`).join("\n")}\n`;
 }
@@ -110,9 +110,8 @@ function deps(fetchImpl: (url: string) => Promise<Response>): ConsistencyDeps {
   };
 }
 
-/** A fake fetch whose manifest always serves the target version, but whose binary
- *  fetches THROW (like a timeout / network stall) for the first `throwFirst`
- *  binary requests, then serve the target version. */
+/** The manifest always serves `version`; the first `throwFirst` binary fetches
+ *  throw a TimeoutError, then binaries serve `version`. */
 function fakeThrowingBinaries(
   binNames: string[],
   version: string,
@@ -134,10 +133,8 @@ function fakeThrowingBinaries(
   });
 }
 
-/** A 200 Response whose BODY read rejects — models an abort/network drop that
- *  fires *during* body transfer (the signal that aborts a 60–95MB download after
- *  headers arrive). The earlier code read the body outside the try/catch, so this
- *  threw uncaught out of the barrier. */
+/** A 200 Response whose body read rejects: an abort that fires during body
+ *  transfer, after headers arrive (as the deadline can on a 60-95 MB download). */
 function bodyFailingResponse(): Response {
   const abort = () => {
     const err = new Error("The operation was aborted.");
@@ -168,7 +165,6 @@ describe("waitChannelConsistent", () => {
     await expect(
       waitChannelConsistent("https://blob/cli/staging", expected, deps(fetch)),
     ).resolves.toBeUndefined();
-    // Each binary fetched exactly once on the single passing attempt.
     expect(state.binaryFetches).toBe(bins.length);
   });
 
@@ -181,7 +177,6 @@ describe("waitChannelConsistent", () => {
     await expect(
       waitChannelConsistent("https://blob/cli/staging", expected, deps(fetch)),
     ).resolves.toBeUndefined();
-    // No binary was fetched while the manifest was stale.
     expect(state.manifestFetches).toBe(2);
   });
 
@@ -189,7 +184,7 @@ describe("waitChannelConsistent", () => {
     const { fetch } = fakeChannel({
       binNames: bins,
       script: [
-        // Manifest already v2, but the darwin binary still serves v1 (the bug).
+        // Manifest already v2, but the darwin binary still serves v1.
         { manifest: "v2", binaries: { "wego-darwin-arm64": "v1" } },
         // Next poll: it caught up.
         { manifest: "v2" },
@@ -204,9 +199,9 @@ describe("waitChannelConsistent", () => {
     const { fetch, state } = fakeChannel({
       binNames: bins,
       script: [
-        // Poll 1: linux ok (v2), staging stale (v1).
+        // Poll 1: linux ok (v2), darwin stale (v1).
         { manifest: "v2", binaries: { "wego-darwin-arm64": "v1" } },
-        // Poll 2: staging catches up; linux must NOT be re-downloaded.
+        // Poll 2: darwin catches up; linux must not be re-downloaded.
         { manifest: "v2", binaries: { "wego-linux-x64": "v2" } },
       ],
     });
@@ -255,9 +250,9 @@ describe("waitChannelConsistent", () => {
     ).rejects.toThrow(/did not converge/);
   });
 
-  // Blocker regression (review by openclaw-anya-wego): a body-read failure that
-  // fires AFTER headers arrive (e.g. the deadline aborting a large asset stream)
-  // must be a retryable per-poll issue, not an uncaught throw out of the barrier.
+  // A body-read failure after headers arrive (e.g. the deadline aborting a
+  // large asset stream) must be a retryable per-poll issue, not an uncaught
+  // throw out of the barrier.
   test("an asset body-read abort mid-transfer is retryable, then converges", async () => {
     let binCalls = 0;
     const fetch = mock(async (url: string) => {
@@ -282,7 +277,7 @@ describe("waitChannelConsistent", () => {
       }
       return bodyFailingResponse(); // every binary body-read aborts, every poll
     });
-    // The point: it rejects with /did not converge/, NOT the raw AbortError.
+    // Must reject with the budget message, not the raw AbortError.
     await expect(
       waitChannelConsistent("https://blob/cli/staging", expected, deps(fetch)),
     ).rejects.toThrow(/did not converge/);
@@ -290,9 +285,9 @@ describe("waitChannelConsistent", () => {
 
   test("skipAssets certifies a channel whose skipped body is not served yet", async () => {
     // The publisher's first barrier: the manifest already lists VERSION, but
-    // VERSION is copied only AFTER this barrier passes. Trimming it out of the
+    // VERSION is copied only after this barrier passes. Trimming it from the
     // expected map instead would make `sameSums` a permanent size mismatch, so
-    // the promote could never converge - the map stays whole, the body is skipped.
+    // the map stays whole and only the body is skipped.
     const withVersion = [...bins, "VERSION"];
     const full = parseSums(manifestBody(withVersion, "v2"));
     const { fetch, state } = fakeChannel({
@@ -306,7 +301,6 @@ describe("waitChannelConsistent", () => {
         skipAssets: new Set(["VERSION"]),
       }),
     ).resolves.toBeUndefined();
-    // Only the deliverables were read - the skipped body was never fetched.
     expect(state.binaryFetches).toBe(bins.length);
   });
 

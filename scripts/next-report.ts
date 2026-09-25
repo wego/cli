@@ -5,30 +5,28 @@
  *   bun run scripts/next-report.ts            # release-cli.yml, after notify-verify
  *   bun run scripts/next-report.ts --banner   # promote-cli.yml, one look, one line
  *
- * WHAT IS BEING READ. Once `cli/next` moves, `notify-verify` asks a receiver in
- * wego-ai to smoke the new build against staging, then evaluate its skill.
- * wego-ai writes each answer back as a check run on this repository, at the
- * tag's commit, as its GitHub App (id 4987365): `cli-next-smoke` in minutes,
- * `cli-next-evals` in up to hours. Each check's `output.text` carries ONE fenced
- * ```json block, in `cli-next-smoke/v1` or `cli-next-evals/v1`; the payloads in
- * `scripts/next-report/payloads/` are the shared fixtures for that interface and
- * are byte-identical to the ones wego-ai tests its writer against.
+ * Once `cli/next` moves, `notify-verify` asks a receiver in wego-ai to smoke the
+ * new build against staging, then evaluate its skill. wego-ai writes each answer
+ * back as a check run on this repository, at the tag's commit, as its GitHub App
+ * (id 4987365): `cli-next-smoke` in minutes, `cli-next-evals` in up to hours.
+ * Each check's `output.text` carries one fenced ```json block, in
+ * `cli-next-smoke/v1` or `cli-next-evals/v1`. The payloads in
+ * `scripts/next-report/payloads/` are the shared fixtures for that interface,
+ * byte-identical to the ones wego-ai tests its writer against.
  *
- * ONLY THAT APP'S CHECK COUNTS. Any App with `checks: write` on this repository
- * can create a check run with either name, and a report that said "ready"
- * would be read by a person deciding whether to move `cli/stable`. So the name is
- * a filter and the App id is the proof: a check from any other App is ignored as
- * if it did not exist.
+ * Only that App's check counts. Any App with `checks: write` here can create a
+ * check run with either name, and a "ready" report is read by a person deciding
+ * whether to move `cli/stable`. So the name is a filter and the App id is the
+ * proof; a check from any other App is ignored.
  *
- * IT NEVER FAILS A RUN. The report is advice for a human, and both lanes that run
- * this have already done their real work (the release published, the promote
- * gates run on their own). Every state, including "could not read anything",
- * becomes a line in the step summary and exit 0. The workflow steps wrap this
- * script again so that a crash is a summary line too.
+ * It never fails a run. The report is advice, and both lanes that run this have
+ * already done their real work. Every state, including "could not read
+ * anything", becomes a step summary line and exit 0. The workflow steps also
+ * wrap this script so a crash is a summary line too.
  *
- * Everything that decides what the reader sees is a pure function below; `run`
- * wires them to `fetch` and a clock, both injectable, and the `import.meta.main`
- * block is only process I/O.
+ * Everything that decides what the reader sees is a pure function; `run` wires
+ * them to an injectable `fetch` and clock, and the `import.meta.main` block is
+ * only process I/O.
  */
 
 /** The check run's name, fixed by the cross-repository interface. */
@@ -192,9 +190,8 @@ function cell(text: string): string {
 /**
  * The report inside a check run's `output.text`, or the reason there is none.
  *
- * Exactly one ```json fence. Zero means the writer did not attach one; two means
- * this reader would be guessing which is the report, and a guess is exactly what
- * a person deciding a promote should not be shown.
+ * Exactly one ```json fence. With two, this reader would have to guess which is
+ * the report, and a person deciding a promote should not be shown a guess.
  */
 export function parseReport(
   text: string | null | undefined,
@@ -342,9 +339,8 @@ export function renderCompleted(
   const parsed = parseReport(check.output?.text);
   let reason = "error" in parsed ? parsed.error : undefined;
   if ("report" in parsed && parsed.report.sha !== sha) {
-    // A report about another commit is not a report about this one, however
-    // well-formed. The check run sits on `sha`, so this is the writer
-    // disagreeing with itself, and the reader should not pick a side.
+    // The check run sits on `sha`, so a report naming another commit means the
+    // writer disagrees with itself, and the reader should not pick a side.
     reason = `the report is for commit ${parsed.report.sha}, not ${sha}`;
   }
   if (reason !== undefined || !("report" in parsed)) {
@@ -470,7 +466,6 @@ export function evalsLine(
   };
 }
 
-/** Append the evals line (and its annotation) to an outcome. */
 function withEvals(
   outcome: Outcome,
   evals: { line: string; annotation?: string },
@@ -510,8 +505,8 @@ function minutes(ms: number): string {
   return `${Math.round(ms / 6_000) / 10} min`;
 }
 
-/** What one look found, as the job log shows it while the wait goes on: the
- *  step summary only says anything once the wait is over. */
+/** Progress for the job log during the wait; the step summary is written only
+ *  once the wait is over. */
 export function pollLine(
   found: Lookup,
   elapsedMs: number,
@@ -703,8 +698,8 @@ function github(env: Env, fetcher: Fetch) {
     "User-Agent": "wego-cli-next-report",
     "X-GitHub-Api-Version": "2022-11-28",
   };
-  // A hung connection would otherwise hold one look past every deadline the
-  // wait keeps; timed out, it is one more failed look.
+  // Without a timeout a hung connection would hold one look past every
+  // deadline; with it, it is one more failed look.
   const get = async (path: string): Promise<unknown> => {
     const res = await fetcher(`${base}${path}`, {
       headers,

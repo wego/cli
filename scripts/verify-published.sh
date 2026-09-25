@@ -5,34 +5,28 @@
 #
 #   verify-published.sh <base-url> <expected-version> <all|native>
 #
-#   all     checksum EVERY asset listed in SHA256SUMS.txt. Use before advancing a
-#           ring (cli/next in the release lane, cli/stable in the promote lane;
-#           `cli/latest` was retired with the flavor axis, #74 rung 7):
-#           `bun build --compile` is non-reproducible, so a partial
-#           --freeze upload that is re-run keeps the first build's SHA256SUMS.txt
-#           while rebuilding the missing assets' bytes — checking only the one
+#   all     checksum every asset listed in SHA256SUMS.txt. Use before advancing a
+#           ring (cli/next in the release lane, cli/stable in the promote lane):
+#           `bun build --compile` is not reproducible, so a partial --freeze
+#           upload that is re-run keeps the first build's SHA256SUMS.txt while
+#           rebuilding the missing assets' bytes, and checking only the
 #           runner-native binary would miss a mismatch on any other asset.
 #   native  checksum + run only the `*-linux-x64` assets. Use for a ring pointer
 #           (cli/next or cli/stable), each a byte-identical server-side copy of the
 #           already fully-verified cli/<tag>.
 #
-# WHICH native asset: derived from the manifest under verification, never
-# hardcoded. This mattered acutely when two flavors published two different native
-# names and a hardcoded one made the guard asymmetric; the flavor axis is gone
-# (#74 rung 7) and every ring now serves the one `wego-*` family, but the
-# derivation stays, because the property it buys is not about flavors: every
+# The native assets are derived from the manifest, never hardcoded: every
 # `*-linux-x64` line in SHA256SUMS.txt is verified and run, and a manifest listing
-# none is an error. Whatever a set claims, all of it must check out, and a set
-# claiming no runnable native at all is not a release.
+# none is an error.
 #
-# Each native binary is ALWAYS checksum-verified before it is run (verify-then-
-# execute), so a missing sums line, a checksum mismatch, or a version mismatch all
-# exit 1. Retries downloads for Blob read-after-write consistency.
+# Each native binary is checksum-verified before it is run, so a missing sums
+# line, a checksum mismatch, or a version mismatch all exit 1. Retries downloads
+# for Blob read-after-write consistency.
 set -eu
 
 BASE="$1"
 EXPECTED="$2"
-MODE="$3" # all | native — required; both call sites pass it explicitly
+MODE="$3" # all | native: required; both call sites pass it explicitly
 
 case "$MODE" in
   all | native) ;;
@@ -45,11 +39,11 @@ esac
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-fetch() { # url dest — retry for eventual consistency
+fetch() { # url dest: retry for eventual consistency
   i=1
   while [ "$i" -le 5 ]; do
-    # Bounded so a stalled connection/transfer can't hang the release job for
-    # hours: fail this attempt and fall through to the retry instead.
+    # Bounded so a stalled transfer fails this attempt and retries instead of
+    # hanging the release job.
     if curl -fsSL --connect-timeout 15 --max-time 600 "$1" -o "$2"; then return 0; fi
     echo "retry $i for $1 (Blob eventual consistency)..." >&2
     i=$((i + 1))
@@ -59,7 +53,7 @@ fetch() { # url dest — retry for eventual consistency
   return 1
 }
 
-verify_one() { # name — checksum one published asset against SHA256SUMS.txt
+verify_one() { # name: checksum one published asset against SHA256SUMS.txt
   name="$1"
   # Reject a path-y asset name from a tampered sums file (defense-in-depth;
   # `sha256sum *` never emits path separators, so a real release never trips this).
@@ -101,9 +95,8 @@ natives=$(awk '$2 ~ /-linux-x64$/ {print $2}' "$tmp/SHA256SUMS.txt")
 }
 
 for NATIVE in $natives; do
-  # Always checksum-verify the native binary before running it — idempotent, so in
-  # `all` mode this re-checks the (already-verified) native asset, and an asset that
-  # is absent from the manifest can never be fetched-and-run unverified.
+  # Checksum before running, even in `all` mode where it was already checked, so
+  # an asset absent from the manifest can never be run unverified.
   verify_one "$NATIVE"
   chmod +x "$tmp/$NATIVE"
   got=$("$tmp/$NATIVE" version)
@@ -112,15 +105,10 @@ for NATIVE in $natives; do
     exit 1
   }
 
-  # Prove the gzipped archive round-trips to the raw binary — the exact operation
-  # `GET /install` and `wego update` now perform (issue #1235): decompress
-  # <native>.gz and assert it hashes to the raw binary's OWN SHA256SUMS line. This
-  # keeps the gz consumers from rotting the way the unconsumed archives could have.
-  # `verify_one` already proved the archive matches its own line (its checksum), and
-  # in `all` mode every asset — the .gz included — was checksummed above; this adds
-  # the archive->binary equality that neither check covers. Guarded on the .gz being
-  # listed: a channel frozen from a pre-#1235 tag carries none, exactly the absent
-  # case the consumers fall back on, so its absence is a skip, never a failure.
+  # Prove the gzipped archive decompresses to the raw binary, as `GET /install`
+  # and `wego update` do: `verify_one` checks the archive against its own line,
+  # and this adds the archive-to-binary equality. A ring frozen from an older tag
+  # carries no .gz, which the consumers fall back on, so absence is a skip.
   gz_native="$NATIVE.gz"
   gz_raw_exp=$(awk -v f="$NATIVE" '$2==f {print $1}' "$tmp/SHA256SUMS.txt")
   if awk -v f="$gz_native" '$2==f {found=1} END{exit !found}' "$tmp/SHA256SUMS.txt"; then

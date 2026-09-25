@@ -3,7 +3,6 @@ import { join } from "node:path";
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** Strip one layer of matching surrounding single/double quotes, if present. */
 function unquote(value: string): string {
   const quoted =
     value.length >= 2 &&
@@ -12,11 +11,6 @@ function unquote(value: string): string {
   return quoted ? value.slice(1, -1) : value;
 }
 
-/**
- * Parse a single line into a `[key, value]` pair, or `null` when the line is a
- * comment, blank, or malformed. Handles an optional leading `export ` and
- * unquotes the value.
- */
 function parseLine(raw: string): [string, string] | null {
   const line = raw.trim();
   if (line === "" || line.startsWith("#")) return null;
@@ -31,11 +25,10 @@ function parseLine(raw: string): [string, string] | null {
 /**
  * Minimal `.env`-format parser: `KEY=VALUE` per line, `#` comment lines and
  * blanks skipped, an optional leading `export `, and surrounding single/double
- * quotes stripped from the value. Deliberately does NOT expand `$VAR` (Bun's
- * autoloader does) — the CLI's own vars don't need it, and anything that would
- * rely on expansion is better set as a real shell env var, which always wins
- * (see `loadSourceEnvLocal`). Kept tiny and pure so it is unit-testable without
- * touching the filesystem or `process.env`.
+ * quotes stripped from the value. Does not expand `$VAR` (Bun's autoloader
+ * does): the CLI's own vars don't need it, and anything that would rely on
+ * expansion is better set as a real shell env var, which always wins (see
+ * `loadSourceEnvLocal`).
  */
 export function parseDotenv(text: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -47,24 +40,19 @@ export function parseDotenv(text: string): Record<string, string> {
 }
 
 /**
- * Load `apps/cli/.env.local` into `process.env` for a FROM-SOURCE run, so the
- * live-source `wego` is fully configured from **any** cwd and **any** shell —
- * interactive or not — without depending on direnv's `dotenv` or Bun's
- * cwd-relative autoload. That removes the whole "env not loaded" class of
- * first-run failure (`WEGO_CLI_CLIENT_ID` unset ⇒ `wego login` fails fast) when
- * an agent or script shells out non-interactively.
+ * Load the repo's `.env.local` into `process.env` for a from-source run, so the
+ * source `wego` is configured from any cwd and any shell, interactive or not,
+ * without depending on direnv or Bun's cwd-relative autoload. An agent or
+ * script shelling out non-interactively would otherwise hit "env not loaded"
+ * failures such as `WEGO_CLI_CLIENT_ID` unset.
  *
- * The file is resolved relative to THIS module (`import.meta.dir` =
- * `apps/cli/src`, so `../.env.local` = `apps/cli/.env.local`), never relative to
- * cwd — so it always finds the CLI's own config regardless of where `wego` was
- * invoked. A **compiled binary** has no such sibling on the real filesystem
- * (`import.meta.dir` points into the embedded fs), so this is a safe no-op there
- * and the baked config stands untouched.
+ * The file is resolved relative to this module (`src/../.env.local`), never
+ * relative to cwd. A compiled binary has no such sibling on the real filesystem
+ * (`import.meta.dir` points into the embedded fs), so this is a no-op there and
+ * the baked config stands.
  *
- * Precedence is preserved: a key already present in `env` is **never**
- * overwritten, so a real shell env var (or a value direnv already exported)
- * still wins over the file — matching the config layer's "real env > .env file"
- * rule. Returns which keys it actually applied (for logging/tests).
+ * A key already present in `env` is never overwritten, so a real shell env var
+ * (or a value direnv already exported) still wins over the file.
  */
 export function loadSourceEnvLocal(
   envLocalPath: string = join(import.meta.dir, "..", ".env.local"),

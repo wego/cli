@@ -14,8 +14,8 @@ describe("programName", () => {
   });
 
   it("strips a trailing .exe on Windows (source falls back, renamed keeps its name)", () => {
-    // Forward slashes so node's posix `basename` splits on the test runner; the
-    // point is the `.exe` strip (separator handling is node:path's per-OS job).
+    // Forward slashes so posix `basename` splits them on the test runner; this
+    // tests the `.exe` strip, not separator handling.
     expect(programName("C:/Program Files/bun/bun.exe")).toBe("wego");
     expect(programName("C:/tools/node.exe")).toBe("wego");
     expect(programName("C:/Users/x/bin/wegostaging.exe")).toBe("wegostaging");

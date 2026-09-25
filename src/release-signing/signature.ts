@@ -11,97 +11,83 @@ import {
 } from "./x509";
 
 /**
- * Verify a **Sigstore** bundle over a release manifest (foundations#74 rung 9).
+ * Verify a Sigstore bundle over a release manifest (foundations#74 rung 9).
  *
  * `wego update` replaces the running binary whenever the ring's `SHA256SUMS.txt`
- * disagrees with the installed hash, so that manifest is the whole policy. Fetching
- * it over TLS proves only that the store served it — and the threat this rung
- * answers is precisely someone who can WRITE that store, who would replace the
- * binary and the manifest together and pass every check beneath them.
+ * disagrees with the installed hash, so that manifest is the whole policy. TLS
+ * proves only that the store served it, and the threat here is someone who can
+ * write that store, who would replace the binary and the manifest together.
  *
- * So the manifest carries a signed build record, and this module decides whether to
- * believe it. What "believe" means here, exactly:
+ * So the manifest carries a signed build record, accepted only when:
  *
- * 1. the record's leaf certificate was issued by a **pinned** Fulcio root (not just
- *    by some CA a system trust store happens to hold);
- * 2. that certificate names, in its SAN, the **one workflow** allowed to publish
- *    this ring, and records **GitHub Actions** as the OIDC provider that asserted
- *    it;
+ * 1. its leaf certificate was issued by a pinned Fulcio root (not just any CA a
+ *    system trust store holds);
+ * 2. that certificate's SAN names a workflow allowed to publish this ring, and it
+ *    records GitHub Actions as the OIDC provider that asserted it;
  * 3. the signature verifies over the manifest's exact bytes with that
- *    certificate's key, and the digest the record claims matches the bytes we hold;
+ *    certificate's key, and any digest the record claims matches those bytes;
  * 4. the signing happened while that certificate was valid.
  *
- * Together those say: these bytes were signed by a run of our release workflow on
- * main. Store write access buys nothing, because Fulcio will not issue a
- * certificate for that identity to anyone else.
+ * Together: these bytes were signed by a run of our release workflow. Store write
+ * access buys nothing, because Fulcio will not issue a certificate for that
+ * identity to anyone else.
  *
- * **What this does NOT check, and why that is stated rather than hidden.** The
- * bundle's transparency-log entry is read for its `integratedTime` only; the
- * Signed Entry Timestamp is not verified against Rekor's public key. Doing so adds
- * public detectability — a record that never reached the log, or was back-dated,
- * would be caught — which is worth having, and is tracked as follow-on work rather
- * than claimed here. It does not weaken the four properties above, which are what
- * the rung's rule rests on: an attacker who cannot obtain a Fulcio certificate for
- * our workflow identity cannot produce a bundle this function accepts, log entry or
- * no log entry.
+ * Not checked: the transparency-log entry is read for its `integratedTime` only;
+ * the Signed Entry Timestamp is not verified against Rekor's public key. That
+ * would add public detectability (a record that never reached the log, or was
+ * back-dated, would be caught) and is tracked as follow-on work. It does not
+ * weaken the four properties above: without a Fulcio certificate for our workflow
+ * identity, an attacker cannot produce a bundle this accepts.
  *
- * **Fail-closed everywhere.** Every failure — a malformed bundle, an unreadable
- * certificate, an unexpected algorithm, a mismatched digest — returns a refusal with
- * a reason. There is no path that returns `ok` on a doubt, and no caller-supplied
- * switch that turns verification off.
+ * Fail-closed: every failure returns a refusal with a reason. No path returns
+ * `ok` on a doubt, and no caller-supplied switch turns verification off.
  */
 
 /**
- * WHY a record was refused, in the three classes a CONSUMER has to act on
- * differently. The `reason` string carries the detail; this says what to do
- * about it.
+ * Why a record was refused, in the three classes a consumer acts on differently.
+ * `reason` carries the detail.
  *
- *  - `identity` — the record is genuine and well-formed, and signed by someone
- *    this consumer does not accept. Permanent: waiting never helps, and only a
- *    build carrying a different trust set can take it. This is the class that
- *    stranded every 1.2.0 and 1.2.1 install (wego/cli#29).
- *  - `inconsistent` — the record and the manifest do not agree, or the record
- *    could not be read at all. **A ring mid-promote produces exactly this**: the
- *    publisher copies the record and the manifest as two adjacent writes, so a
- *    reader between them sees one new and one old, and a cache can straddle the
- *    pair for up to its TTL. Self-resolving.
- *  - `invalid` — the record is not a Fulcio record at all: no pinned root, a
- *    chain that does not reach one, or a log time outside the leaf's validity.
- *    Permanent, and reinstalling changes nothing.
+ *  - `identity`: genuine and well-formed, but signed by an identity this consumer
+ *    does not accept. Permanent; only a build with a different trust set can take
+ *    it. Every 1.2.0 and 1.2.1 install was stranded here (wego/cli#29).
+ *  - `inconsistent`: the record and manifest disagree, or the record could not be
+ *    read. A ring mid-promote produces this: the publisher writes the record and
+ *    the manifest separately, so a reader between them, or a cache straddling
+ *    them for up to its TTL, sees one new and one old. Self-resolving.
+ *  - `invalid`: not a Fulcio record at all (no pinned root, a chain that does not
+ *    reach one, or a log time outside the leaf's validity). Permanent, and
+ *    reinstalling does not help.
  *
- * WHEN IN DOUBT, `inconsistent`. The install is refused in every class, so the
- * only cost of over-classifying as self-resolving is a wasted retry, while the
- * cost of over-classifying as permanent is a wrapper that stops retrying
- * something that would have cleared on its own.
+ * When in doubt, `inconsistent`. Every class refuses the install, so wrongly
+ * calling something self-resolving costs a wasted retry, while wrongly calling it
+ * permanent makes a wrapper stop retrying something that would have cleared.
  */
 export type VerifyFailure = "identity" | "inconsistent" | "invalid";
 
-/** A refusal carries the reason, ready for stderr, and the class of failure it
- *  belongs to; success carries the identity it verified, so the caller can log
- *  WHICH workflow's record it accepted. */
+/** `reason` is ready for stderr. Success carries the matched identity so the
+ *  caller can log which workflow's record it accepted. */
 export type VerifyResult =
   | { ok: true; identity: string; issuer: string }
   | { ok: false; kind: VerifyFailure; reason: string };
 
 export interface VerifyInput {
-  /** The bundle, already `JSON.parse`d. Any shape is tolerated as INPUT; only the
-   *  expected shape is accepted as valid. */
+  /** Already `JSON.parse`d. Any shape is tolerated as input; only the expected
+   *  shape is accepted. */
   bundle: unknown;
   /** The manifest's exact bytes, as fetched. */
   payload: Uint8Array<ArrayBuffer>;
-  /** The identities the leaf's SAN may carry — `identitiesForRing`. Any one of
-   *  them is enough; an empty list accepts nothing. */
+  /** From `identitiesForRing`. Any one is enough; an empty list accepts nothing. */
   identity: readonly IdentityRule[];
   /** The OIDC issuer the leaf must record. */
   issuer: string;
-  /** The trusted roots, PEM. Injected rather than imported so tests pin their own
-   *  root and a future trust-root rotation is a data change. */
+  /** PEM. Injected rather than imported so tests pin their own root and a
+   *  trust-root rotation is a data change. */
   rootsPem: string;
-  /** Now, injectable so a test is not a clock race. */
+  /** Injectable so a test is not a clock race. */
   now?: Date;
 }
 
-/** The curve width for a signature algorithm OID, or null when unsupported. */
+/** Null when the algorithm is unsupported. */
 function curveFor(
   oid: string,
 ): { size: number; hash: string; curve: string } | null {
@@ -114,14 +100,13 @@ function curveFor(
   return null;
 }
 
-/** Base64 → bytes, throwing on anything that is not base64. */
 function fromBase64(value: string): Uint8Array<ArrayBuffer> {
-  // `atob` is lenient about some malformed input; reject upfront so a bundle field
-  // that is not base64 is a refusal rather than silently truncated bytes.
-  // Protobuf's JSON mapping accepts BOTH alphabets for a `bytes` field, so a
-  // conformant bundle may use `-_`. cosign writes the standard alphabet today;
-  // refusing the other one would be this verifier inventing a rule the format
-  // does not have, and the failure would look like a forged record.
+  // `atob` is lenient about some malformed input; reject upfront so a field that
+  // is not base64 is a refusal rather than silently truncated bytes.
+  // Protobuf's JSON mapping accepts both alphabets for a `bytes` field, so a
+  // conformant bundle may use `-_` even though cosign writes the standard one.
+  // Refusing it would invent a rule the format does not have, and the failure
+  // would look like a forged record.
   const normalized = value
     .replaceAll(/\s+/g, "")
     .replaceAll("-", "+")
@@ -132,10 +117,9 @@ function fromBase64(value: string): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(atob(normalized), (ch) => ch.codePointAt(0) ?? 0);
 }
 
-/** The pieces this verifier needs out of a bundle, or a throw. */
 interface BundleParts {
   certDer: Uint8Array<ArrayBuffer>;
-  /** Any intermediates the bundle shipped, leaf-first order not assumed. */
+  /** Order among them is not assumed. */
   intermediates: Uint8Array<ArrayBuffer>[];
   signature: Uint8Array<ArrayBuffer>;
   /** The sha256 the record claims for the payload, when it carries one. */
@@ -150,9 +134,8 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-/** The leaf certificate and any intermediates a bundle carries, accepting the
- *  `certificate` (v0.3) and `x509CertificateChain` (v0.1/0.2) materials cosign has
- *  emitted. Anything else throws. */
+/** Accepts the `certificate` (v0.3) and `x509CertificateChain` (v0.1/0.2)
+ *  materials cosign has emitted. Anything else throws. */
 function parseCertificates(material: Record<string, unknown>): {
   certDer: Uint8Array<ArrayBuffer>;
   intermediates: Uint8Array<ArrayBuffer>[];
@@ -182,7 +165,6 @@ function parseCertificates(material: Record<string, unknown>): {
   return { certDer: ders[0], intermediates: ders.slice(1) };
 }
 
-/** The signature and the digest a bundle claims for what it signed. */
 function parseMessage(root: Record<string, unknown>): {
   signature: Uint8Array<ArrayBuffer>;
   claimedDigest: Uint8Array<ArrayBuffer> | null;
@@ -209,8 +191,7 @@ function parseMessage(root: Record<string, unknown>): {
   return { signature, claimedDigest: fromBase64(digest.digest) };
 }
 
-/** When the transparency log recorded this entry, or null when it says nothing.
- *  Read for its time only — see the module header on what is and is not checked. */
+/** Read for its time only; see the module header on what is not checked. */
 function parseIntegratedTime(material: Record<string, unknown>): Date | null {
   const entries = material.tlogEntries;
   if (!Array.isArray(entries) || entries.length === 0) return null;
@@ -221,7 +202,6 @@ function parseIntegratedTime(material: Record<string, unknown>): Date | null {
   return new Date(seconds * 1000);
 }
 
-/** Pull everything this verifier needs out of a bundle, or throw. */
 function parseBundle(bundle: unknown): BundleParts {
   const root = asRecord(bundle);
   const material = asRecord(root.verificationMaterial);
@@ -236,9 +216,8 @@ function parseBundle(bundle: unknown): BundleParts {
   };
 }
 
-/** One attempt: verify `cert`'s signature with `issuer`'s key read on `curve`.
- *  False on any failure, including a key that will not import on that curve — the
- *  caller simply tries the next one. */
+/** False on any failure, including a key that will not import on that curve, so
+ *  the caller can try the next one. */
 async function verifiedOnCurve(
   cert: Certificate,
   issuer: Certificate,
@@ -266,12 +245,10 @@ async function verifiedOnCurve(
 }
 
 /**
- * Verify `cert`'s own signature with `issuer`'s public key.
- *
  * The curve is tried rather than declared: a certificate names the algorithm it
- * was SIGNED with, not the curve of the key that signed it, and Sigstore's chain
- * mixes P-256 and P-384. Trying both is sound because a wrong curve cannot make a
- * bad signature verify — it can only fail.
+ * was signed with, not the curve of the signing key, and Sigstore's chain mixes
+ * P-256 and P-384. Trying both is sound because a wrong curve can only fail, never
+ * make a bad signature verify.
  */
 async function signedBy(
   cert: Certificate,
@@ -285,16 +262,6 @@ async function signedBy(
   return false;
 }
 
-/**
- * Walk from `leaf` to one of `roots`, through at most one supplied intermediate.
- * Returns the reason it could not, or null on success.
- *
- * A short, explicit walk rather than a general path builder: Fulcio issues
- * leaf → intermediate → root, and accepting arbitrary depth on a security path buys
- * nothing but ways to be surprised. Matching is by exact issuer/subject bytes and
- * then by signature — the name match only narrows the candidates, it never
- * substitutes for the cryptography.
- */
 async function issuedByAny(
   cert: Certificate,
   issuers: Certificate[],
@@ -307,6 +274,13 @@ async function issuedByAny(
   return false;
 }
 
+/**
+ * Walks from `leaf` to one of `roots` through at most one supplied intermediate.
+ * Returns the reason it could not, or null on success.
+ *
+ * Not a general path builder: Fulcio issues leaf, intermediate, root, and
+ * accepting arbitrary depth on a security path only adds ways to be surprised.
+ */
 async function chainToRoot(
   leaf: Certificate,
   intermediates: Certificate[],
@@ -328,8 +302,8 @@ async function chainToRoot(
   return "the record's certificate does not chain to a pinned Sigstore root";
 }
 
-/** Constant-time-ish byte comparison. Digest equality is not a secret, but a
- *  length-then-loop compare is the habit worth keeping on this path. */
+/** Constant-time-ish. Digest equality is not a secret, but the habit is worth
+ *  keeping on this path. */
 function sameBytes(
   a: Uint8Array<ArrayBuffer>,
   b: Uint8Array<ArrayBuffer>,
@@ -340,8 +314,6 @@ function sameBytes(
   return diff === 0;
 }
 
-/** WHO signed it. Checked before any cryptography: a record for the wrong identity
- *  is refused whatever it verifies against, and saying so names the mismatch. */
 /** The SAN this record carries, when one of `rules` accepts it exactly. */
 function matchedIdentity(
   leaf: Certificate,
@@ -356,7 +328,7 @@ function matchedIdentity(
   return null;
 }
 
-/** How the allowed identities read in a refusal, so it names what was expected. */
+/** So a refusal names what was expected. */
 function describeRules(rules: readonly IdentityRule[]): string {
   if (rules.length === 0) return "no accepted identity";
   return rules
@@ -364,6 +336,9 @@ function describeRules(rules: readonly IdentityRule[]): string {
     .join(" or ");
 }
 
+/** Who signed it. Checked before any cryptography: a record for the wrong
+ *  identity is refused whatever it verifies against, and the refusal names the
+ *  mismatch. */
 function identityRefusal(
   leaf: Certificate,
   identity: readonly IdentityRule[],
@@ -384,11 +359,10 @@ function identityRefusal(
 }
 
 /**
- * WHEN it was signed. A Fulcio certificate lives about ten minutes, so it has long
- * expired by the time anyone installs — which is why the check is against the
- * transparency log's integrated time rather than against `now`. With no logged time
- * there is nothing to place the signature inside the certificate's lifetime, so the
- * record is refused rather than accepted on an unverifiable date.
+ * When it was signed. A Fulcio certificate lives about ten minutes and has long
+ * expired by the time anyone installs, so the check uses the transparency log's
+ * integrated time rather than `now`. With no logged time nothing places the
+ * signature inside the certificate's lifetime, so the record is refused.
  */
 function timeRefusal(
   leaf: Certificate,
@@ -401,16 +375,15 @@ function timeRefusal(
   if (integratedTime < leaf.notBefore || integratedTime > leaf.notAfter) {
     return "the signed build record was logged outside its certificate's validity";
   }
-  // A record logged in the future is a clock lie somewhere; refuse it rather than
-  // reason about which side is wrong. Generous skew, because the runner's clock and
-  // this machine's need not agree closely.
+  // A record logged in the future means a wrong clock somewhere; refuse rather
+  // than guess which. Generous skew, because the runner's clock and this
+  // machine's need not agree closely.
   if (integratedTime.getTime() > now.getTime() + 24 * 60 * 60 * 1000) {
     return "the signed build record is dated in the future";
   }
   return null;
 }
 
-/** Verify the blob signature over `payload` with the leaf's key. */
 async function payloadSigned(
   leaf: Certificate,
   signature: Uint8Array<ArrayBuffer>,
@@ -443,7 +416,6 @@ async function payloadSigned(
   return false;
 }
 
-/** Everything a bundle contributes, once it has been read without throwing. */
 interface ParsedRecord {
   parts: BundleParts;
   leaf: Certificate;
@@ -451,7 +423,6 @@ interface ParsedRecord {
   roots: Certificate[];
 }
 
-/** Read the bundle and the pinned roots, or the refusal for why we could not. */
 function readRecord(
   input: VerifyInput,
 ):
@@ -471,9 +442,9 @@ function readRecord(
   } catch (err) {
     return {
       ok: false,
-      // Not `invalid`: a bundle we cannot parse is usually a truncated or
-      // straddled read rather than a forged record, and the asymmetry above says
-      // to prefer the self-resolving class when the two are indistinguishable.
+      // Not `invalid`: an unparseable bundle is usually a truncated or straddled
+      // read rather than a forgery, and `VerifyFailure` prefers the
+      // self-resolving class when the two are indistinguishable.
       kind: "inconsistent",
       reason: `unreadable signed build record: ${
         err instanceof Error ? err.message : String(err)
@@ -483,8 +454,8 @@ function readRecord(
 }
 
 /**
- * Verify a signed build record over a manifest. Never throws: every failure,
- * including a malformed bundle, comes back as `{ ok: false, reason }`.
+ * Never throws: every failure, including a malformed bundle, comes back as
+ * `{ ok: false, reason }`.
  */
 export async function verifySignedManifest(
   input: VerifyInput,
@@ -505,16 +476,16 @@ export async function verifySignedManifest(
   if (identityFailure)
     return { ok: false, kind: "identity", reason: identityFailure };
 
-  // WHETHER FULCIO ISSUED IT. Without this the identity above is just a string the
-  // signer chose for itself.
+  // Whether Fulcio issued it. Without this the identity above is just a string
+  // the signer chose for itself.
   const chainFailure = await chainToRoot(leaf, intermediates, roots);
   if (chainFailure) return { ok: false, kind: "invalid", reason: chainFailure };
 
   const timeFailure = timeRefusal(leaf, parts.integratedTime, now);
   if (timeFailure) return { ok: false, kind: "invalid", reason: timeFailure };
 
-  // WHAT it covers. The digest claim and the signature are both checked against the
-  // bytes we actually hold, so a record for a DIFFERENT manifest cannot be replayed
+  // What it covers. The digest claim and the signature are both checked against
+  // the bytes we hold, so a record for a different manifest cannot be replayed
   // over this one.
   const actual = new Uint8Array(
     await crypto.subtle.digest("SHA-256", input.payload),
@@ -534,8 +505,8 @@ export async function verifySignedManifest(
     };
   }
 
-  // The SAN that actually matched, not the rule that accepted it: on the tag path
-  // the rule is a pattern, and a caller logging the rule would record no version.
+  // The SAN that matched, not the rule: on the tag path the rule is a pattern, and
+  // logging it would record no version.
   return {
     ok: true,
     identity: matchedIdentity(leaf, input.identity) ?? "",

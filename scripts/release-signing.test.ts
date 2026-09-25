@@ -17,7 +17,7 @@ import {
 } from "./release-signing";
 import { prefixForRing, RINGS } from "./ring-rules";
 
-// The mutations this suite kills (foundations#74 rung 9):
+// The mutations this suite kills:
 //   - the record prefix moved inside the download prefix -> "outside" fails.
 //   - manifestCoversAll made vacuous on an empty manifest -> "lists nothing" fails.
 //   - an unlisted object allowed through -> "refuses an object no record covers".
@@ -32,8 +32,8 @@ describe("the signed record's name", () => {
 });
 
 describe("where a record is stored", () => {
-  // The whole rung: a record that shares a prefix with the downloads falls to the
-  // same store write it is supposed to detect.
+  // A record that shares a prefix with the downloads falls to the same store
+  // write it is supposed to detect.
   it("is outside every ring's download prefix", () => {
     for (const ring of RINGS) {
       const download = prefixForRing(ring);
@@ -88,8 +88,8 @@ describe("manifestCoversAll", () => {
     ).toBeNull();
   });
 
-  // The manifest cannot list its own hash, and the record lives on another prefix
-  // entirely — neither is evidence of an unsigned file.
+  // The manifest cannot list its own hash, and the record lives on another
+  // prefix, so neither is evidence of an unsigned file.
   it("does not require the manifest or the record to list themselves", () => {
     expect(
       manifestCoversAll(sums, [
@@ -111,8 +111,7 @@ describe("manifestCoversAll", () => {
     expect(reason).toContain("not listed in the signed SHA256SUMS.txt");
   });
 
-  // Vacuous truth is the failure mode worth naming: an empty manifest "covers"
-  // nothing, so a bug that emptied it would otherwise wave every object through.
+  // Otherwise a bug that emptied the manifest would wave every object through.
   it("refuses a manifest that lists nothing at all", () => {
     expect(manifestCoversAll("", ["wego-darwin-arm64"])).toContain(
       "lists no files",
@@ -136,9 +135,8 @@ describe("the pinned signing identity", () => {
   // the ring everyone installs from.
   it("cannot pass as the edge lane's, or the other way round", () => {
     expect(EDGE_SIGNING_IDENTITY).not.toBe(SIGNING_IDENTITY);
-    // One edge identity PER REPOSITORY: each edge lane triggers only on main, so
-    // neither has a second entry to allow for. Both are trusted while the
-    // migration is in flight; 3c drops the wego-ai one.
+    // One edge identity per repository: each edge lane triggers only on main.
+    // Both are trusted during the migration; 3c drops the wego-ai one.
     expect(identitiesForRing("edge")).toEqual([
       EDGE_SIGNING_IDENTITY,
       CLI_EDGE_SIGNING_IDENTITY,
@@ -146,8 +144,7 @@ describe("the pinned signing identity", () => {
     expect(identitiesForRing("edge")).not.toContain(SIGNING_IDENTITY);
     expect(identitiesForRing("edge")).not.toContain(CLI_RELEASE_TAG_IDENTITY);
     // The release rings accept wego-ai's release workflow on main AND on a `v*`
-    // tag, its two documented entries, plus wego/cli's tag rule — never an edge
-    // lane's.
+    // tag, plus wego/cli's tag rule, and never an edge lane's.
     expect(identitiesForRing("next")).toContain(SIGNING_IDENTITY);
     expect(identitiesForRing("next")).toContain(CLI_RELEASE_TAG_IDENTITY);
     expect(identitiesForRing("next")).not.toContain(EDGE_SIGNING_IDENTITY);
@@ -158,8 +155,8 @@ describe("the pinned signing identity", () => {
   });
 
   // The two rules harvested by `scripts/extract-identities.ts` from the records
-  // the lanes published. Pinned here so a hand-edit of `identity.ts`
-  // that widens either one reds, rather than silently enlarging the trust set.
+  // the lanes published. Pinned so a hand-edit of `identity.ts` that widens
+  // either one fails, rather than silently enlarging the trust set.
   it("pins the wego/cli identities the extraction script harvested", () => {
     expect(CLI_EDGE_SIGNING_IDENTITY).toBe(
       "https://github.com/wego/cli/.github/workflows/edge-cli.yml@refs/heads/main",
@@ -170,14 +167,14 @@ describe("the pinned signing identity", () => {
     expect(CLI_RELEASE_TAG_IDENTITY.test(tagSan("v1.0.2"))).toBe(true);
     expect(CLI_RELEASE_TAG_IDENTITY.test(tagSan("v10.20.30"))).toBe(true);
 
-    // Anchored: a SAN that merely CONTAINS a good one must not match.
+    // Anchored: a SAN that merely contains a good one must not match.
     expect(
       CLI_RELEASE_TAG_IDENTITY.test(`${tagSan("v1.0.2")}.evil.example`),
     ).toBe(false);
     expect(
       CLI_RELEASE_TAG_IDENTITY.test(`https://evil.example/${tagSan("v1.0.2")}`),
     ).toBe(false);
-    // Only a PLAIN version: the -rc.N line is gone (#74 rung 7).
+    // Only a plain version: there are no -rc.N releases.
     expect(CLI_RELEASE_TAG_IDENTITY.test(tagSan("v1.0.2-rc.1"))).toBe(false);
     // Never the other repository, the other workflow, or a branch ref.
     expect(
@@ -198,13 +195,12 @@ describe("the pinned signing identity", () => {
   });
 });
 
-// The refusal an operator actually reads. A parse failure is a SIGNER fault, but the
-// bare verdict names the ring, which sends them to the publisher instead - how
-// `v0.7.0` (run 32977203696) and edge run 32930712877 were both misdiagnosed.
+// A parse failure is a signer fault, but the bare verdict names the ring, which
+// sends an operator to the publisher instead.
 //
-// Mutations this kills: dropping the hint entirely; attaching it to every reason so
-// it stops meaning anything; matching on cosign's exact wording, which a reworded
-// parser message would slip past.
+// Mutations this kills: dropping the hint entirely; attaching it to every reason;
+// matching on cosign's exact wording, which a reworded parser message would slip
+// past.
 describe("signedRecordRefusal", () => {
   const path = "cli/v0.7.0/SHA256SUMS.txt";
 
@@ -224,7 +220,6 @@ describe("signedRecordRefusal", () => {
   ])("names the legacy-bundle cause for an unreadable record: %s", (reason) => {
     const out = signedRecordRefusal(path, "next", reason);
     expect(out).toContain("--new-bundle-format");
-    // Says which END of the lane to look at, which is the whole point.
     expect(out).toContain("signer fault");
   });
 
@@ -235,28 +230,22 @@ describe("signedRecordRefusal", () => {
   ])("stays quiet when the record parsed and failed verification: %s", (reason) => {
     const out = signedRecordRefusal(path, "stable", reason);
     expect(out).not.toContain("--new-bundle-format");
-    // A hint on every refusal is a hint on none.
     expect(out).toBe(`${path} is not vouched for on ring stable: ${reason}`);
   });
 });
 
-// THE CONFLICT THAT BURNED v0.7.1 (run 33036257401).
-//
-// `manifestCoversAll` requires every object under the tag's DOWNLOAD prefix to be
+// `manifestCoversAll` requires every object under the tag's download prefix to be
 // listed in the signed manifest. The commit-binding sidecar cannot be: the
-// publisher writes it after the manifest was hashed and signed. Both rules are
-// right; nothing ran them together until a real release published 13 objects,
-// verified all of them, and then refused its own pointer move.
-//
-// The sidecar now lives on the RECORD prefix, so coverage never sees it. These
-// cases pin that, and would fail if it were moved back beside the downloads.
+// publisher writes it after the manifest was hashed and signed. So the sidecar
+// lives on the record prefix, where coverage never sees it (v0.7.1, run
+// 33036257401, refused its own pointer move when it did not).
 describe("commitSidecarPath", () => {
   const tag = "v0.7.1";
 
   it("puts the sidecar on the record prefix, not the download prefix", () => {
     const path = commitSidecarPath(tag);
     expect(path).toBe(`${sigPrefixForTag(tag)}/COMMIT`);
-    // The load-bearing half: outside `cli/<tag>/`, which is what coverage scans.
+    // Outside `cli/<tag>/`, which is what coverage scans.
     expect(path.startsWith(`cli/${tag}/`)).toBe(false);
   });
 
@@ -264,7 +253,6 @@ describe("commitSidecarPath", () => {
     expect(commitSidecarPath(tag)).not.toBe(`cli/${tag}/COMMIT`);
   });
 
-  // The regression itself, stated as the two sets coverage compares.
   it("coverage passes for the deliverables and fails if the sidecar rejoins them", () => {
     const manifest = [
       `${"a".repeat(64)}  wego-linux-x64`,
@@ -272,7 +260,6 @@ describe("commitSidecarPath", () => {
     ].join("\n");
     const deliverables = ["wego-linux-x64", "VERSION", MANIFEST_ASSET];
     expect(manifestCoversAll(manifest, deliverables)).toBeNull();
-    // Exactly what v0.7.1 hit: an unlisted COMMIT under the tag prefix.
     const withSidecar = [...deliverables, "COMMIT"];
     expect(manifestCoversAll(manifest, withSidecar)).toContain("COMMIT");
   });

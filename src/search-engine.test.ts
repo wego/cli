@@ -16,17 +16,9 @@ import {
 } from "./search-engine";
 import { FLIGHTS, HOTELS } from "./verticals";
 
-/**
- * Unit tests for the shared async-search engine (issue #1084). The two former
- * per-vertical settle helpers collapsed into one generic `settle<S>`, so these
- * pin the convergence rules directly (no HTTP, no CLI) and prove `runSearch` /
- * `runResults` orchestrate create → settle → stamp uniformly.
- */
-
 const noSleep = () => Promise.resolve();
 
-/** A settle over a scripted sequence of snapshots (the last repeats), counting
- *  reads — the same shape both former helpers were tested through. */
+/** A scripted sequence of snapshots (the last repeats) that counts reads. */
 function sequence<S>(snapshots: S[]): {
   read: () => Promise<S>;
   reads: () => number;
@@ -46,7 +38,7 @@ type CountSnap = {
   count?: number;
   items?: boolean;
   complete?: boolean;
-  /** Items in the raw snapshot, before filter/sort/page — what a real vertical
+  /** Items in the raw snapshot, before filter/sort/page, which a real vertical
    *  reads from a pre-filter metadata count. */
   snapshotItems?: boolean;
 };
@@ -58,7 +50,7 @@ const COUNT_SIGNALS: SettleSignals<CountSnap> = {
 };
 
 /** Signals for a vertical that distinguishes the raw snapshot from the filtered
- *  page — the real flights shape once `snapshotTripCount` is present. */
+ *  page, as flights does when `snapshotTripCount` is present. */
 const CANDIDATE_SIGNALS: SettleSignals<CountSnap> = {
   ...COUNT_SIGNALS,
   hasSnapshotItems: (s) => s.snapshotItems === true,
@@ -75,7 +67,7 @@ describe("settle", () => {
     const seq = sequence<CountSnap>([{ complete: true }]);
     const out = await settle(seq.read, COUNT_SIGNALS, FAST_BUDGET, noSleep);
     expect(out.state).toBe("converged");
-    expect(seq.reads()).toBe(1); // stopped on the first read
+    expect(seq.reads()).toBe(1);
   });
 
   it("converges when a non-zero count holds equal across two reads", async () => {
@@ -105,7 +97,7 @@ describe("settle", () => {
 
   it("a stable non-zero count over an empty page rides to budget_exhausted", async () => {
     // Real shape: a one-fare snapshot at offset=1 returns count:1 with fares:[].
-    const seq = sequence<CountSnap>([{ count: 1 }]); // stable, non-zero, no items
+    const seq = sequence<CountSnap>([{ count: 1 }]);
     const out = await settle(seq.read, COUNT_SIGNALS, FAST_BUDGET, noSleep);
     expect(out.state).toBe("budget_exhausted");
     expect(seq.reads()).toBe(1 + FAST_BUDGET.maxRereads);
@@ -180,10 +172,8 @@ describe("settle", () => {
   });
 
   it("backs off on the documented rising delay, capped at maxDelayMs", async () => {
-    // Every other test injects a no-op sleep, so the actual `(n+1)·base` capped
-    // schedule was never asserted (a constant/uncapped/off-by-one regression
-    // would pass them all). Capture the real ms sequence on a never-converging
-    // count over the DEFAULT budget (12 re-reads, 300ms→3s).
+    // Every other test injects a no-op sleep, so only this one catches a
+    // constant, uncapped or off-by-one delay schedule.
     const waits: number[] = [];
     const recordSleep = (ms: number) => {
       waits.push(ms);
@@ -198,11 +188,9 @@ describe("settle", () => {
       recordSleep,
     );
     expect(out.state).toBe("budget_exhausted");
-    // One sleep before each re-read → exactly maxRereads sleeps.
     expect(waits.length).toBe(DEFAULT_SETTLE_BUDGET.maxRereads);
-    // Rising (reread+1)·300 for the first reads…
     expect(waits.slice(0, 4)).toEqual([300, 600, 900, 1200]);
-    // …then clamped at 3000ms once (reread+1)·300 ≥ 3000 (reread 9 = the 10th).
+    // (reread+1)·300 reaches 3000 at reread 9.
     expect(waits[9]).toBe(3000);
     expect(waits[10]).toBe(3000);
     expect(waits[11]).toBe(3000);
@@ -217,7 +205,7 @@ describe("settle", () => {
     ]);
     const out = await settle(seq.read, COUNT_SIGNALS, FAST_BUDGET, noSleep);
     expect(out.state).toBe("converged");
-    expect(out.snapshot.count).toBe(9); // waited out the growth after the flag
+    expect(out.snapshot.count).toBe(9);
     expect(seq.reads()).toBe(3);
   });
 });
@@ -258,18 +246,14 @@ describe("vertical signals (the flights↔hotels difference)", () => {
       metadata: meta(snapshotTripCount),
       results: [],
     });
-    // Snapshot full, page empty → the filters excluded everything.
     expect(FLIGHTS.searchNote(snap(4364), "S1")).toMatch(
       /none match these filters/,
     );
-    // Snapshot empty too → genuinely nothing yet, keep polling.
     expect(FLIGHTS.searchNote(snap(0), "S1")).toMatch(/have settled yet/);
   });
 
   it("FLIGHTS omits the completion capability (no way to ask 'is it complete?')", () => {
-    // The accessor is simply absent — the difference is unrepresentable.
     expect(FLIGHTS.signals.isComplete).toBeUndefined();
-    // It rides `snapshotFareCount`, undefined when the API omits it.
     const meta = {
       page: 1,
       pageSize: 10,
@@ -318,9 +302,6 @@ function fakeEngine(): { eng: Engine<FakeDeps>; deps: FakeDeps } {
   return {
     deps,
     eng: {
-      // Minimal fake config. `as unknown as` rather than `as any`: the newcode
-      // biome config does not enable noExplicitAny, so an ignore for it there
-      // reads as an unused suppression and fails the pre-push gate.
       config: { apiBaseUrl: "http://x" } as unknown as CliConfig,
       deps,
       withAccessToken: async (call) => ({
@@ -331,7 +312,6 @@ function fakeEngine(): { eng: Engine<FakeDeps>; deps: FakeDeps } {
   };
 }
 
-/** A minimal vertical over a scripted read sequence. */
 function fakeVertical(
   snapshots: FakeSnap[],
 ): SearchVertical<FakeSnap, undefined, undefined, FakeDeps> {
@@ -378,8 +358,8 @@ describe("runSearch", () => {
       echoed: boolean;
     };
     expect(printed.settled).toBe("converged");
-    expect(printed.echoed).toBe(true); // create's `extra` merged into the payload
-    expect(deps.err).toHaveLength(0); // non-empty page → no note
+    expect(printed.echoed).toBe(true);
+    expect(deps.err).toHaveLength(0);
   });
 
   it("emits the vertical's empty-page note when the settled page is empty", async () => {
@@ -410,7 +390,7 @@ describe("runResults", () => {
       },
     };
     await runResults(vertical, "sid", undefined, false, FAST_BUDGET, eng);
-    expect(reads).toBe(1); // no settle loop
+    expect(reads).toBe(1);
     expect((JSON.parse(deps.out[0]) as { settled: string }).settled).toBe(
       "unsettled",
     );
@@ -457,9 +437,6 @@ describe("runResults", () => {
   it("propagates the exit code when the authed read fails", async () => {
     const { deps } = fakeEngine();
     const eng: Engine<FakeDeps> = {
-      // Minimal fake config. `as unknown as` rather than `as any`: the newcode
-      // biome config does not enable noExplicitAny, so an ignore for it there
-      // reads as an unused suppression and fails the pre-push gate.
       config: { apiBaseUrl: "http://x" } as unknown as CliConfig,
       deps,
       withAccessToken: async () => ({ ok: false, code: 4 }),
@@ -473,7 +450,7 @@ describe("runResults", () => {
       eng,
     );
     expect(code).toBe(4);
-    expect(deps.out).toHaveLength(0); // nothing printed on failure
+    expect(deps.out).toHaveLength(0);
   });
 });
 
@@ -493,9 +470,6 @@ describe("HOTELS.create", () => {
         }),
     } as unknown as HotelsDeps;
     const eng: Engine<HotelsDeps> = {
-      // Minimal fake config. `as unknown as` rather than `as any`: the newcode
-      // biome config does not enable noExplicitAny, so an ignore for it there
-      // reads as an unused suppression and fails the pre-push gate.
       config: { apiBaseUrl: "http://x" } as unknown as CliConfig,
       deps,
       withAccessToken: async (call) => ({
@@ -512,8 +486,7 @@ describe("HOTELS.create", () => {
     if (created.ok) {
       expect(created.value.searchId).toBe("h1");
       expect(created.value.extra).toEqual({
-        // No flag and no stored currency, so the API's USD default decides
-        // (issue #1400) — the site pair keeps its own four-rung source.
+        // No flag and no stored currency, so the API's USD default decides.
         currencyCodeSource: "default",
         occupancy: { adults: 2, childrenAges: [11], rooms: 1 },
         siteCode: "AE",

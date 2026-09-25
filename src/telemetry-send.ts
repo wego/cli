@@ -16,7 +16,7 @@ function captureUrl(host: string): string {
 }
 
 /** Parsed, not cast: the payload arrives on the child's stdin, or in argv on
- *  the inline path — either way it is untrusted input crossing a boundary. */
+ *  the inline path; either way it is untrusted input crossing a boundary. */
 const SenderPayloadSchema = z.object({
   event: z.literal(TELEMETRY_EVENT),
   distinct_id: z.string().min(1),
@@ -56,7 +56,7 @@ export interface TelemetrySenderDeps {
   host?: string;
   fetch: typeof fetch;
   timeoutMs?: number;
-  /** Reads the payload when argv carries none — the detached child's stdin. */
+  /** Reads the payload when argv carries none (the detached child's stdin). */
   readStdin?: () => Promise<string>;
   /** The child re-derives identity from its own credentials and state file, so a
    *  hand-run `wego send-telemetry '<payload>'` cannot attribute events to

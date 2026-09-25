@@ -2,19 +2,18 @@
  * The pinned Sigstore (Fulcio) trust anchors (foundations#74 rung 9).
  *
  * `signature.ts` accepts a signed build record only if its leaf certificate chains
- * to one of these. Pinned in the binary rather than fetched, and rather than
- * deferred to a system trust store: the whole point of the check is that it does not
- * depend on anything an attacker who can write the release store could also reach.
+ * to one of these. Pinned in the binary rather than fetched or deferred to a system
+ * trust store, so the check depends on nothing an attacker who can write the
+ * release store could also reach.
  *
- * Both of Fulcio's public-good certificates are here — the self-signed `sigstore`
- * root and the `sigstore-intermediate` that actually issues leaves. Pinning the
- * intermediate as well as the root is deliberately the tighter choice: a leaf is
- * accepted only under the intermediate we have seen, not under any future one the
- * root might sign.
+ * Both of Fulcio's public-good certificates are here: the self-signed `sigstore`
+ * root and the `sigstore-intermediate` that issues leaves. Pinning the
+ * intermediate too is the tighter choice: a leaf is accepted only under the
+ * intermediate we have seen, not under any future one the root might sign.
  *
- * Fetched from `https://fulcio.sigstore.dev/api/v1/rootCert`. Rotating these is a
- * data change to this file, reviewed like any other — which is why the verifier
- * takes them as an argument rather than importing them itself.
+ * Fetched from `https://fulcio.sigstore.dev/api/v1/rootCert`. Rotating them is a
+ * reviewed data change to this file, which is why the verifier takes them as an
+ * argument rather than importing them.
  */
 export const FULCIO_ROOTS_PEM = `-----BEGIN CERTIFICATE-----
 MIICGjCCAaGgAwIBAgIUALnViVfnU0brJasmRkHrn/UnfaQwCgYIKoZIzj0EAwMw

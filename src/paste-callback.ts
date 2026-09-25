@@ -1,6 +1,6 @@
 /**
  * Manual (paste-the-redirect-URL) completion of the loopback login, for when
- * the browser and the CLI are on different machines — the SSH case.
+ * the browser and the CLI are on different machines (the SSH case).
  *
  * The loopback listener binds `127.0.0.1` on the machine that runs `wego`. Over
  * SSH the user opens the authorize URL on their laptop, so the AS redirects
@@ -20,7 +20,6 @@ export interface PastedCallbackWaiter {
   /** False when stdin is not a TTY: nobody can paste, so the promise never
    *  settles and the caller must not prompt or extend its deadline for it. */
   armed: boolean;
-  /** Resolves with the authorization `code` from a pasted callback URL. */
   promise: Promise<string>;
   /** Detach the stdin listeners so the process can exit (loopback won). */
   cancel(): void;
@@ -42,7 +41,7 @@ function cleanPastedUrl(line: string): string {
 
 /**
  * Read pasted callback URLs from stdin until one carries our `state`. Lines
- * that aren't for us (blank, junk, wrong `state`) get a hint and another try —
+ * that aren't for us (blank, junk, wrong `state`) get a hint and another try;
  * only a state-matching line settles the login, exactly like the loopback.
  * Returns a never-settling waiter when stdin is not a TTY: an agent shelling
  * out has nobody to paste, so the loopback stays the only path.
@@ -105,8 +104,8 @@ export function waitForPastedCallback(
       }
       // Only the unterminated remainder is capped. A callback URL is a few
       // hundred bytes, so anything past the cap with no newline is not a paste
-      // we can use (a stray binary stream, a pipe that never breaks a line) —
-      // drop it rather than grow without bound.
+      // we can use (a stray binary stream, a pipe that never breaks a line).
+      // Drop it rather than grow without bound.
       if (!settled && buffer.length > MAX_LINE_BYTES) {
         buffer = "";
         stderr.write(
@@ -114,7 +113,7 @@ export function waitForPastedCallback(
         );
       }
     };
-    // EOF or a stream error means nobody can paste — stay pending and let the
+    // EOF or a stream error means nobody can paste: stay pending and let the
     // loopback (or the login deadline) decide, rather than failing a login that
     // a forwarded port could still complete.
     const onDone = () => {

@@ -41,8 +41,8 @@ function input(
     identity: [SIGNING_IDENTITY],
     issuer: SIGNING_OIDC_ISSUER,
     rootsPem: TEST_ROOT_PEM,
-    // Fixed, so the suite is not a clock race: the fixture's logged time sits
-    // inside its certificate's ten-minute window, and "now" is a day later.
+    // Fixed so the suite is not a clock race: a day after the fixture's logged
+    // time.
     now: new Date((INTEGRATED_TIME + 86_400) * 1000),
     ...overrides,
   };
@@ -60,8 +60,8 @@ describe("a well-formed record from the pinned identity", () => {
 });
 
 describe("who signed it", () => {
-  // The rung's core claim: store write access buys nothing, because the attacker
-  // cannot obtain a certificate for OUR workflow identity.
+  // Store write access buys nothing, because the attacker cannot obtain a
+  // certificate for our workflow identity.
   it("refuses a record signed for a different workflow in the same repo", async () => {
     const result = await verifySignedManifest(
       input({ bundle: bundle({ certDer: OTHER_IDENTITY_CERT_DER }) }),
@@ -96,8 +96,8 @@ describe("who signed it", () => {
 });
 
 describe("whether Fulcio issued it", () => {
-  // The identity check alone is worthless if anyone may mint the certificate
-  // asserting it.
+  // The identity check is worthless if anyone may mint the certificate asserting
+  // it.
   it("refuses a certificate that chains to a root we do not pin", async () => {
     const result = await verifySignedManifest(
       input({ bundle: bundle({ certDer: ROGUE_ROOT_CERT_DER }) }),
@@ -154,8 +154,7 @@ describe("what it covers", () => {
 
 describe("when it was signed", () => {
   // A Fulcio certificate lives about ten minutes, so it has long expired by install
-  // time. The logged time is the only thing that can place the signature inside its
-  // validity — with none, there is nothing to check against.
+  // time. Only the logged time can place the signature inside its validity.
   it("refuses a record carrying no transparency-log time", async () => {
     const result = await verifySignedManifest(
       input({ bundle: bundle({ integratedTime: null }) }),
@@ -164,8 +163,8 @@ describe("when it was signed", () => {
     if (!result.ok) expect(result.reason).toContain("no transparency-log time");
   });
 
-  // Before the certificate existed. (The fixture's certificate is deliberately
-  // long-lived so the suite is not a time bomb; Fulcio's real ones last minutes.)
+  // Before the certificate existed. The fixture's certificate is long-lived so
+  // the suite is not a time bomb; Fulcio's real ones last minutes.
   it("refuses a record logged outside its certificate's validity", async () => {
     const result = await verifySignedManifest(
       input({
@@ -185,9 +184,9 @@ describe("when it was signed", () => {
 });
 
 describe("malformed input", () => {
-  // Every one of these would throw if the parse were not wrapped; a throw on this
-  // path would surface as a crash rather than a refusal, and a caller catching
-  // broadly could mistake it for a transport error and retry.
+  // Each would throw if the parse were not wrapped, surfacing as a crash rather
+  // than a refusal, which a caller catching broadly could mistake for a transport
+  // error and retry.
   const cases: [string, unknown][] = [
     ["not an object", 42],
     ["null", null],
@@ -229,18 +228,10 @@ describe("malformed input", () => {
 });
 
 /**
- * THE FAILURE CLASS, which is what a consumer branches on.
- *
- * `reason` is prose for a human; `kind` is the contract. `update.ts` maps it to
- * an exit code and to whether reinstalling is worth suggesting, so a refusal
- * filed under the wrong class is a wrong instruction to a machine - the shape
- * that let a mid-promote window report itself as permanent and tell a wrapper to
- * stop retrying something that clears in seconds.
- *
- * The mid-promote window is the reason `inconsistent` exists: the publisher
- * copies the signed record and the manifest as two adjacent writes, so a reader
- * landing between them sees one new and one old, and a cache can straddle the
- * pair for its whole TTL.
+ * `reason` is prose for a human; `kind` is the contract. `update.ts` maps it to an
+ * exit code and to whether reinstalling is worth suggesting, so a refusal in the
+ * wrong class is a wrong instruction to a machine (for example, telling a wrapper
+ * to stop retrying a mid-promote window that clears in seconds).
  */
 describe("the class a refusal is filed under", () => {
   const refusalFor = async (
@@ -260,10 +251,10 @@ describe("the class a refusal is filed under", () => {
   });
 
   it("files an unreadable record as inconsistent, not invalid", async () => {
-    // A bundle we cannot parse is more often a truncated or straddled read than
-    // a forged record, and the two are indistinguishable here. The install is
-    // refused either way, so the asymmetry favours the self-resolving class: a
-    // wasted retry costs nothing, a wrapper that gives up costs recovery.
+    // An unparseable bundle is more often a truncated or straddled read than a
+    // forgery, and the two are indistinguishable here. The install is refused
+    // either way, so prefer the self-resolving class: a wasted retry is cheap, a
+    // wrapper that gives up is not.
     const r = await refusalFor({
       bundle: {
         verificationMaterial: { certificate: { rawBytes: "not base64!!" } },
@@ -287,22 +278,18 @@ describe("the class a refusal is filed under", () => {
 });
 
 /**
- * The RULE SET, on its own. `release-cli.yml` has two documented entries — a
- * `workflow_call` from release-please (which runs on main) and a tag push (the
- * recovery release) — so the release rings accept two identities per repository
- * that has both. Asserted through the exported rules rather than through a minted
- * certificate, because what is under test here is the matching, not the X.509
- * reading that the cases above already cover end to end.
+ * The rule set on its own, asserted through the exported rules rather than a
+ * minted certificate: what is under test is the matching, not the X.509 reading
+ * covered above. wego-ai's `release-cli.yml` has two entries (a `workflow_call`
+ * from release-please on main, and a tag push for the recovery release), so the
+ * release rings accept both there.
  *
- * THE TWO REPOSITORIES CUT DIFFERENT TAG SHAPES, and these cases exist mostly to
- * pin that (wego/cli#29). wego-ai's release-please sets `include-component-in-tag:
- * true` with `component: "cli"`, so it only ever cut `cli-vX.Y.Z`; this repository
- * sets it false and cuts a bare `vX.Y.Z`. The shipped v1.2.0 rule had wego-ai's
- * repo path with THIS repository's tag shape, which matches no record that has
- * ever existed — and the suite here agreed with it, because it asserted the
- * invented `v1.2.3` rather than a release anyone published. So each direction is
- * now pinned against a REAL tag, and the other repository's shape is asserted to
- * be refused on the same path.
+ * The two repositories cut different tag shapes (wego/cli#29): wego-ai only ever
+ * cut `cli-vX.Y.Z`, this repository cuts a bare `vX.Y.Z`. v1.2.0 shipped a rule
+ * with wego-ai's path and this repository's tag shape, which matched no real
+ * record, and the suite passed because it asserted an invented `v1.2.3`. So each
+ * direction is pinned against a real tag, and the other repository's shape is
+ * asserted to be refused.
  */
 describe("the identities a ring accepts", () => {
   const accepts = (ring: string, uri: string): boolean =>
@@ -310,11 +297,9 @@ describe("the identities a ring accepts", () => {
       typeof rule === "string" ? uri === rule : rule.test(uri),
     );
 
-  /** A SAN for wego-ai's release workflow on `ref`. */
   const tag = (ref: string) =>
     `https://github.com/wego/wego-ai/.github/workflows/release-cli.yml@refs/tags/${ref}`;
 
-  /** The same, for this repository's release workflow. */
   const cliTag = (ref: string) =>
     `https://github.com/wego/cli/.github/workflows/release-cli.yml@refs/tags/${ref}`;
 
@@ -324,10 +309,9 @@ describe("the identities a ring accepts", () => {
   });
 
   it("accepts wego-ai's LAST REAL RELEASE, cli-v1.1.0", () => {
-    // Not a hypothetical. This is the record `cli/stable` served through the
-    // rollback of 2026-09-14, and the one a rollback to the pre-cutover release
-    // puts back. A binary that refuses it cannot update off that ring at all:
-    // exit 6, EXIT.PERMANENT, with no way forward. That is what v1.2.0 did.
+    // The record `cli/stable` served through the 2026-09-14 rollback, and the one
+    // a rollback to the pre-cutover release puts back. A binary that refuses it
+    // cannot update off that ring at all (EXIT.PERMANENT), as v1.2.0 did.
     expect(accepts("stable", tag("cli-v1.1.0"))).toBe(true);
     expect(accepts("next", tag("cli-v1.1.0"))).toBe(true);
   });
@@ -344,10 +328,8 @@ describe("the identities a ring accepts", () => {
   });
 
   it("does not accept either repository under the OTHER's tag shape", () => {
-    // The whole of wego/cli#29 in two lines. wego-ai never cut a bare `vX.Y.Z`
-    // and this repository never cut a `cli-vX.Y.Z`, so a rule that accepted the
-    // swapped shape would be trusting a ref neither repo can produce - and,
-    // as shipped, refusing the one it does.
+    // wego/cli#29: neither repository cuts the other's tag shape, so accepting
+    // the swapped shape would trust a ref neither can produce.
     expect(accepts("next", tag("v1.1.0"))).toBe(false);
     expect(accepts("next", cliTag("cli-v1.2.1"))).toBe(false);
   });
@@ -365,8 +347,7 @@ describe("the identities a ring accepts", () => {
   });
 
   it("refuses the pattern as a SUBSTRING of a longer SAN", () => {
-    // What the anchors buy: a SAN the signer chose that merely CONTAINS an
-    // acceptable one must not pass.
+    // A signer-chosen SAN that merely contains an acceptable one must not pass.
     expect(accepts("next", `${tag("cli-v1.2.3")}@refs/heads/attacker`)).toBe(
       false,
     );
@@ -401,8 +382,8 @@ describe("the identities a ring accepts", () => {
   });
 
   it("keeps the edge lane to its own identities", () => {
-    // The edge lanes trigger only on main, so they get no tag rule — a dogfood
-    // record must never be able to pass as a release record.
+    // The edge lanes trigger only on main, so they get no tag rule, and a dogfood
+    // record must never pass as a release record.
     expect(accepts("edge", EDGE_SIGNING_IDENTITY)).toBe(true);
     expect(accepts("edge", CLI_EDGE_SIGNING_IDENTITY)).toBe(true);
     expect(accepts("edge", SIGNING_IDENTITY)).toBe(false);

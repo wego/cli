@@ -61,8 +61,7 @@ describe("settings file", () => {
   });
 
   it("FAILS on a value the API would reject, rather than dropping it", async () => {
-    // The whole point: a silently discarded currency reprices the answer, which
-    // is the confident-wrong-answer bug this file exists to remove (#1386).
+    // A silently discarded currency reprices the answer (#1386).
     await writeFile(
       join(dir, "bad.json"),
       JSON.stringify({ currency: "riyal" }),
@@ -76,7 +75,7 @@ describe("settings file", () => {
 
   it("FAILS on a misspelled key instead of stripping it to `{}`", async () => {
     // A stripping `z.object` reads `{"curreny":"SAR"}` as no preferences and
-    // prices in USD — the same silent repricing by a different route.
+    // prices in USD: the same silent repricing by a different route.
     await writeFile(
       join(dir, "typo.json"),
       JSON.stringify({ curreny: "SAR", currency: "SAR" }),
@@ -85,15 +84,14 @@ describe("settings file", () => {
       (e: unknown) => e,
     );
     expect(err).toBeInstanceOf(SettingsFileError);
-    // The message names the offending key AND the real ones, or it is unfixable.
     expect((err as Error).message).toContain('"curreny"');
     expect((err as Error).message).toContain("currency, site, locale");
   });
 
   it("FAILS on ENOTDIR: an unreachable path is not an absent file", async () => {
-    // `dir/file.json/settings.json` — a component of the path is a file, so the
-    // preferences the user stored cannot be read. Reporting `{}` would price in
-    // USD and never say why.
+    // `dir/file.json/settings.json`: a component of the path is a file, so the
+    // stored preferences cannot be read. Reporting `{}` would price in USD and
+    // never say why.
     const asFile = join(dir, "file.json");
     await writeFile(asFile, "{}");
     const err = await loadUserSettings(join(asFile, "settings.json")).catch(
@@ -112,8 +110,8 @@ describe("settings file", () => {
     const rendered = formatCliError(err, "wego");
     expect(rendered).toContain("/p/s.json");
     expect(rendered).toContain("delete it");
-    // ONE physical line, ` | `-joined like every other error in the taxonomy: a
-    // caller that reads one line off stderr must not lose the path or the fix.
+    // One physical line, ` | `-joined like every other error: a caller that
+    // reads one line off stderr must not lose the path or the fix.
     expect(rendered).not.toContain("\n");
   });
 
@@ -151,8 +149,8 @@ describe("precedence, pinned end to end (issue #1386)", () => {
   });
 
   it("the API default applies when neither flag nor setting supplies one", () => {
-    // Nothing added, so the request carries no currency and the API's USD
-    // default owns the decision — the CLI never hardcodes it.
+    // The request carries no currency, so the API's USD default applies; the
+    // CLI never hardcodes it.
     expect(applyPreferences({}, {})).toEqual({});
   });
 
@@ -163,9 +161,7 @@ describe("precedence, pinned end to end (issue #1386)", () => {
   });
 
   it("currency: flag > setting > API default, and the source names which won", () => {
-    // The three rungs `flights search` / `hotels search` stamp as
-    // `currencyCodeSource` (issue #1400). No `account` rung: the id_token carries
-    // a market, never a currency.
+    // No `account` source: the id_token carries a market, never a currency.
     expect(resolveCliCurrency("USD", "SAR")).toEqual({
       currency: "USD",
       source: "explicit",
@@ -174,24 +170,19 @@ describe("precedence, pinned end to end (issue #1386)", () => {
       currency: "SAR",
       source: "setting",
     });
-    // No currency at all, so the API's USD default owns the decision — the CLI
-    // never hardcodes it, exactly as with the site floor.
     expect(resolveCliCurrency(undefined, undefined)).toEqual({
       source: "default",
     });
   });
 
   it("every request-scoped *Source copy is dropped from metadata, echoes kept", () => {
-    // The #1534 rule (decision Q2: "strip"): CLI output publishes exactly one
-    // `*Source` per knob, at top level, in the CLI's own vocabulary. The API's
-    // request-scoped copies inside `metadata` answer a narrower question in a
-    // narrower vocabulary — a stored currency arrives merged into the request,
-    // so the API calls it `explicit` while the CLI's label says `setting` — and
-    // forwarding one puts two disagreeing `*Source` fields in one payload.
-    // Typed loosely on purpose: the helper returns its INPUT type, so a settled
-    // snapshot still satisfies the signals the engine reads off it. That means
-    // the static type keeps sources the value no longer has - the removal is a
-    // runtime fact, which is what this asserts.
+    // CLI output publishes exactly one `*Source` per knob, at top level, in the
+    // CLI's own vocabulary (#1534). The API's request-scoped copies inside
+    // `metadata` can disagree: a stored currency arrives merged into the
+    // request, so the API calls it `explicit` while the CLI says `setting`.
+    // Typed loosely on purpose: the helper returns its input type, so the static
+    // type keeps sources the value no longer has; the removal is a runtime fact,
+    // which is what this asserts.
     const priced: Record<string, unknown> = {
       metadata: {
         currencyCode: "SAR",
@@ -202,7 +193,6 @@ describe("precedence, pinned end to end (issue #1386)", () => {
     };
     expect(stripMetadataSources(priced)).toEqual({
       metadata: {
-        // The echoes stay; only the sources are withheld.
         currencyCode: "SAR",
         locale: "ar",
       },

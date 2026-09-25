@@ -11,7 +11,7 @@ import { checkHeader, KNOWN_SCOPES, TYPES } from "./commit-convention";
 //   - the merge/revert/fixup exemptions applied unconditionally -> a pull request titled
 //     "Merge the two release docs" walks past the gate release-please reads.
 //   - the check made to return on the first problem -> "reports every problem" fails.
-//   - the scope check tightened back into a closed list -> `feat(hotels)`, the example
+//   - the scope check tightened into a closed list -> `feat(hotels)`, the example
 //     CONTRIBUTING.md gives contributors, stops being accepted.
 
 describe("headers this repository writes", () => {
@@ -98,9 +98,8 @@ describe("headers git writes for you, in a commit message", () => {
   });
 });
 
-// `Merge ...` and `Revert "..."` are ordinary English. The words alone cannot earn
-// the pass, so the repository state has to agree that a merge or a revert is what
-// is happening.
+// `Merge ...` and `Revert "..."` can be ordinary subjects, so they pass only when
+// the repository state shows a merge or revert in progress.
 describe("merge and revert headers, in a commit message", () => {
   it.each([
     "Merge branch 'main' into feature",
@@ -119,9 +118,9 @@ describe("merge and revert headers, in a commit message", () => {
   });
 });
 
-// The exemptions exist for headers GIT wrote. A pull request title is written by a
-// person, so none of them apply - and the title is the one string release-please
-// reads. `ci-cli` calls `--title`, which leaves exempt off.
+// The exemptions are for headers git wrote. A pull request title is written by a
+// person and is what release-please reads, so none apply. `ci-cli` calls
+// `--title`, which leaves exempt off.
 describe("the same prefixes in a pull request title", () => {
   it.each([
     "Merge the two release docs",
@@ -148,16 +147,16 @@ describe("the body is free text", () => {
   });
 });
 
-// `.coderabbit.yaml` asks the reviewer bot to enforce this convention in prose, and
-// `ci-cli` enforces it as a gate. Prose and code drift. This is what stops them.
+// `.coderabbit.yaml` states this convention in prose for the reviewer bot, and
+// `ci-cli` enforces it in code. This keeps the two from drifting.
 describe("the convention the reviewer bot is told about", () => {
   // The `requirements:` block alone, not the whole file: `hooks` and `deps` both
-  // occur in unrelated comments, so a file-wide search passes while the list the
-  // bot actually judges against is missing them.
+  // occur in unrelated comments, so a file-wide search would pass while the
+  // bot's list is missing them.
   //
-  // Parsed, not matched. A regex for this block has to hard-code the indent of the
-  // key that ends it, and a reformatted file would then over-capture into the
-  // comments this test exists to exclude - passing, vacuously.
+  // Parsed, not regex-matched: a regex would hard-code the indent of the key that
+  // ends the block, and a reformatted file would over-capture into those
+  // comments and pass vacuously.
   const coderabbit = Bun.YAML.parse(
     readFileSync(join(import.meta.dir, "..", ".coderabbit.yaml"), "utf8"),
   ) as {
@@ -170,11 +169,6 @@ describe("the convention the reviewer bot is told about", () => {
     expect(requirements).toContain("Conventional Commits");
   });
 
-  // ONE assertion, where there used to be 24 - an `it.each` over every type and
-  // every known scope. The claim was never "the prose contains `feat`" 24 times
-  // over; it is "the bot's list and the gate's list name the same things", and a
-  // set difference states exactly that while naming whatever drifted. The 24
-  // titles carried no information the failure message does not.
   it("names every type and scope the gate knows", () => {
     const missing = [...TYPES, ...KNOWN_SCOPES].filter(
       (token) => !requirements.includes(token),

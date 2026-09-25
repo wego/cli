@@ -10,28 +10,26 @@ import {
 } from "./der";
 
 /**
- * The four things `wego update` needs out of an X.509 certificate, and nothing
- * else (foundations#74 rung 9).
+ * Reads only what release verification needs from an X.509 certificate
+ * (foundations#74 rung 9).
  *
- * A Sigstore/Fulcio leaf certificate answers "which workflow signed this, as
- * asserted by which OIDC provider" — the SAN and the Fulcio issuer extension — and
- * carries the public key the blob signature verifies against. Verifying that the
- * leaf is really Fulcio's needs one more thing: the exact `tbsCertificate` bytes its
- * issuer signed. This module reads those and stops.
+ * A Fulcio leaf says which workflow signed and which OIDC provider asserted it
+ * (the SAN and the Fulcio issuer extension), and carries the public key the blob
+ * signature verifies against. Checking that the leaf is really Fulcio's also needs
+ * the exact `tbsCertificate` bytes its issuer signed.
  *
- * See `der.ts` for why this is hand-rolled rather than a dependency. Everything
- * here throws `DerError` on anything unexpected; `signature.ts` turns a throw into a
- * refusal, so a certificate this module cannot read is a certificate we do not
- * accept.
+ * See `der.ts` for why this is hand-rolled. Anything unexpected throws `DerError`,
+ * which `signature.ts` turns into a refusal, so a certificate this module cannot
+ * read is never accepted.
  */
 
 /** Fulcio's OIDC-issuer extension (the v2, string-valued one). */
 export const OID_FULCIO_ISSUER_V2 = "1.3.6.1.4.1.57264.1.8";
-/** Fulcio's original issuer extension — a bare UTF-8 value, no ASN.1 wrapper. */
+/** Fulcio's original issuer extension: a bare UTF-8 value, no ASN.1 wrapper. */
 export const OID_FULCIO_ISSUER_V1 = "1.3.6.1.4.1.57264.1.1";
 /** subjectAltName. */
 export const OID_SAN = "2.5.29.17";
-/** basicConstraints — read to tell a CA certificate from a leaf. */
+/** basicConstraints, read to tell a CA certificate from a leaf. */
 export const OID_BASIC_CONSTRAINTS = "2.5.29.19";
 
 /** ecdsa-with-SHA256, the only signature algorithm Fulcio issues or uses. */
@@ -40,9 +38,9 @@ export const OID_ECDSA_SHA256 = "1.2.840.10045.4.3.2";
 export const OID_ECDSA_SHA384 = "1.2.840.10045.4.3.3";
 
 export interface Certificate {
-  /** The complete `tbsCertificate` encoding — the bytes the issuer signed. */
+  /** The complete `tbsCertificate` encoding: the bytes the issuer signed. */
   tbs: Uint8Array<ArrayBuffer>;
-  /** The signature algorithm OID from the outer `signatureAlgorithm` field. */
+  /** From the outer `signatureAlgorithm` field. */
   signatureAlgorithm: string;
   /** The issuer's signature over `tbs`, as DER-encoded ECDSA (r, s). */
   signature: Uint8Array<ArrayBuffer>;
@@ -55,26 +53,21 @@ export interface Certificate {
   notAfter: Date;
   /** Every `uniformResourceIdentifier` in the SAN. */
   sanUris: string[];
-  /** The OIDC issuer this certificate records, or null when it carries none. */
   oidcIssuer: string | null;
-  /** True when basicConstraints marks this a CA. */
   isCa: boolean;
 }
 
-/** A certificate time's four-digit year. UTCTime carries two digits, which RFC
- *  5280 pivots at 50: 50-99 is 19xx, 00-49 is 20xx. GeneralizedTime carries all
- *  four and needs no pivot. */
+/** UTCTime carries two digits, which RFC 5280 pivots at 50: 50-99 is 19xx, 00-49
+ *  is 20xx. GeneralizedTime carries all four. */
 function fullYear(raw: string, isUtcTime: boolean): number {
   const value = Number(raw);
   if (!isUtcTime) return value;
   return value >= 50 ? 1900 + value : 2000 + value;
 }
 
-/** Parse a UTCTime / GeneralizedTime value. */
 function parseTime(tlv: Tlv): Date {
   const text = new TextDecoder().decode(tlv.content);
-  // UTCTime is YYMMDDHHMMSSZ with a 2-digit year the RFC pivots at 50;
-  // GeneralizedTime is YYYYMMDDHHMMSSZ.
+  // UTCTime is YYMMDDHHMMSSZ; GeneralizedTime is YYYYMMDDHHMMSSZ.
   const match =
     tlv.tag === TAG.UTC_TIME
       ? /^(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(text)
@@ -87,19 +80,18 @@ function parseTime(tlv: Tlv): Date {
   );
 }
 
-/** Collect the URI entries out of a SAN extension value. */
 function sanUrisFrom(extnValue: Uint8Array<ArrayBuffer>): string[] {
   const seq = readTagged(extnValue, TAG.SEQUENCE);
   const uris: string[] = [];
   for (const entry of readChildren(seq.content)) {
     // GeneralName's uniformResourceIdentifier is [6] IMPLICIT IA5String, so the
-    // tag is primitive context-specific 6 — 0x86.
+    // tag is primitive context-specific 6: 0x86.
     if (entry.tag === 0x86) uris.push(new TextDecoder().decode(entry.content));
   }
   return uris;
 }
 
-/** The OIDC issuer an extension records, for either Fulcio extension shape. */
+/** Handles either Fulcio issuer extension shape. */
 function oidcIssuerFrom(
   oid: string,
   extnValue: Uint8Array<ArrayBuffer>,
@@ -116,14 +108,13 @@ function oidcIssuerFrom(
   return null;
 }
 
-/** Whether basicConstraints says CA. */
 function isCaFrom(extnValue: Uint8Array<ArrayBuffer>): boolean {
   const seq = readTagged(extnValue, TAG.SEQUENCE);
   const children = readChildren(seq.content);
   const flag = children[0];
-  // `content.length` is checked FIRST: an empty BOOLEAN makes `content[0]`
-  // undefined, and `undefined !== 0` is true — so the absent flag would have read
-  // as `cA: TRUE`, the permissive direction.
+  // Check `content.length` first: an empty BOOLEAN makes `content[0]` undefined,
+  // and `undefined !== 0` is true, so the absent flag would read as `cA: TRUE`,
+  // the permissive direction.
   return (
     flag !== undefined &&
     flag.tag === TAG.BOOLEAN &&
@@ -132,7 +123,7 @@ function isCaFrom(extnValue: Uint8Array<ArrayBuffer>): boolean {
   );
 }
 
-/** Read one Extensions entry: `SEQUENCE { extnID, critical DEFAULT FALSE, extnValue }`. */
+/** `SEQUENCE { extnID, critical DEFAULT FALSE, extnValue }`. */
 function readExtension(tlv: Tlv): {
   oid: string;
   value: Uint8Array<ArrayBuffer>;
@@ -148,14 +139,10 @@ function readExtension(tlv: Tlv): {
   return { oid, value: last.content };
 }
 
-/**
- * The three extension-derived fields, out of a tbsCertificate's trailing
- * `[3] EXPLICIT SEQUENCE OF Extension` (itself optional). Split out of
- * `parseCertificate` so each function states one thing.
- */
+/** Read from a tbsCertificate's trailing, optional
+ *  `[3] EXPLICIT SEQUENCE OF Extension`. */
 type CertExtensions = Pick<Certificate, "sanUris" | "oidcIssuer" | "isCa">;
 
-/** Every extension in the trailing `[3]` wrappers, flattened. */
 function* extensionEntries(
   trailing: Tlv[],
 ): Generator<{ oid: string; value: Uint8Array<ArrayBuffer> }> {
@@ -166,7 +153,6 @@ function* extensionEntries(
   }
 }
 
-/** Fold one extension into the fields being collected. */
 function applyExtension(
   fields: CertExtensions,
   oid: string,
@@ -201,8 +187,8 @@ function readExtensions(trailing: Tlv[]): CertExtensions {
 }
 
 /**
- * Parse a DER certificate. Throws `DerError` on anything it cannot read exactly —
- * there is no lenient path, because every field here feeds a trust decision.
+ * Throws `DerError` on anything it cannot read exactly. There is no lenient path,
+ * because every field feeds a trust decision.
  */
 export function parseCertificate(der: Uint8Array<ArrayBuffer>): Certificate {
   const outer = readTagged(der, TAG.SEQUENCE);
@@ -253,7 +239,7 @@ export function parseCertificate(der: Uint8Array<ArrayBuffer>): Certificate {
  *
  * `size` is the curve's coordinate width in bytes (32 for P-256, 48 for P-384).
  * DER INTEGERs are signed and minimally encoded, so each half may carry a leading
- * zero to clear the sign bit, or be shorter than the field — both are normalised
+ * zero to clear the sign bit, or be shorter than the field; both are normalised
  * here. A half that is genuinely wider than the field is malformed.
  */
 export function ecdsaDerToRaw(
@@ -278,8 +264,8 @@ export function ecdsaDerToRaw(
   return raw;
 }
 
-/** Read a PEM document's base64 body into DER bytes. Every `-----BEGIN X-----`
- *  block is returned, in order, so a bundled chain file works as one input. */
+/** Every `-----BEGIN X-----` block is returned, in order, so a bundled chain file
+ *  works as one input. */
 export function pemToDer(pem: string): Uint8Array<ArrayBuffer>[] {
   const blocks: Uint8Array<ArrayBuffer>[] = [];
   const re = /-----BEGIN [^-]+-----([\s\S]*?)-----END [^-]+-----/g;
@@ -291,8 +277,8 @@ export function pemToDer(pem: string): Uint8Array<ArrayBuffer>[] {
   return blocks;
 }
 
-/** Exact-bytes Name comparison — the only issuer/subject match worth making, since
- *  two Names that differ in encoding are different Names to a verifier. */
+/** Exact bytes, since two Names that differ in encoding are different Names to a
+ *  verifier. */
 export function sameName(
   a: Uint8Array<ArrayBuffer>,
   b: Uint8Array<ArrayBuffer>,

@@ -1,27 +1,23 @@
 #!/usr/bin/env bun
-// The Conventional Commits contract for this repository, in one place.
-//
-// Two callers share it, which is the whole point of the file existing:
+// The Conventional Commits contract for this repository, shared by two callers:
 //
 //   - `.husky/commit-msg` checks the message you just wrote, locally.
-//   - `ci-cli` checks the pull request TITLE, which is the one that matters:
-//     pull requests here are squashed, the squash takes its subject from the
-//     title, and release-please reads that subject to compute the next version
-//     and write the changelog. A local hook cannot see the title, because the
-//     title is edited on GitHub after every hook has run. A local hook cannot
-//     enforce this. It can only stop you arriving with a habit that the gate
-//     then rejects.
+//   - `ci-cli` checks the pull request title, which is the one that matters:
+//     pull requests are squashed, the squash takes its subject from the title,
+//     and release-please reads that subject to compute the next version and
+//     write the changelog. The title is edited on GitHub after every local hook
+//     has run, so the hook can only catch habits early, not enforce this.
 //
-// `.coderabbit.yaml` states the same convention in prose for the reviewer bot, now
-// at `mode: error`. commit-convention.test.ts asserts both lists below appear in
-// that prose, so a list the bot blocks on cannot drift from the one enforced here.
+// `.coderabbit.yaml` states the same convention in prose for the reviewer bot
+// (`mode: error`). commit-convention.test.ts asserts both lists below appear in
+// that prose so they cannot drift.
 
 /**
  * Types release-please understands. `fix` produces a patch, `feat` a minor, and
  * a `!` or a `BREAKING CHANGE:` footer a major. The rest produce no release.
  *
- * Closed set: an unrecognised type is not a style problem, it is a release that
- * silently does not happen.
+ * Closed set: an unrecognised type means a release that silently does not
+ * happen.
  */
 export const TYPES = [
   "feat",
@@ -36,15 +32,14 @@ export const TYPES = [
 ] as const;
 
 /**
- * Scopes are NOT a closed set, and deliberately so: 200 commits of history carry
- * 22 distinct ones (`rehearsal`, `codeowners`, `audit`, `repo`, `review` among
- * them), every one of them legitimate, and Dependabot adds `deps` without asking.
- * A closed list would reject honest work and teach people to reach for
- * `--no-verify`, which costs more than a typo in a scope ever will.
+ * Scopes are deliberately not a closed set: history carries many legitimate
+ * ones (`rehearsal`, `codeowners`, `audit`, `repo`, `review`, ...) and
+ * Dependabot adds `deps`. A closed list would reject honest work and push
+ * people towards `--no-verify`, which costs more than a scope typo.
  *
- * So the shape is checked and the spelling is not. The list below is NOT all 22:
- * it is the common ones, quoted back in the error so a typo is obvious next to
- * them, and asserted against `.coderabbit.yaml` so the two stay in step.
+ * So the shape is checked and the spelling is not. This list is the common
+ * scopes, quoted back in the error so a typo stands out, and asserted against
+ * `.coderabbit.yaml` so the two stay in step.
  */
 export const KNOWN_SCOPES = [
   "cli",
@@ -64,21 +59,19 @@ export const KNOWN_SCOPES = [
   "deps",
 ] as const;
 
-/** Lowercase kebab, which is every scope this repository has ever used. */
+/** Lowercase kebab, which every scope in this repository's history uses. */
 const SCOPE_SHAPE = /^[a-z][a-z0-9-]*$/;
 
 /**
- * Headers git writes for an autosquash. `git commit --fixup` produces them, and
- * the rebase that consumes them throws them away, so they are never a subject
- * anyone reads.
+ * Headers `git commit --fixup` writes for an autosquash. The rebase that
+ * consumes them discards them, so they never become a real subject.
  */
 const AUTOSQUASH = [/^fixup! /, /^squash! /, /^amend! /] as const;
 
 /**
- * Headers git offers during a merge or a revert - and ONLY then. `Merge the two
- * release docs` and `Revert "the flaky retry"` are ordinary subjects a person
- * might write on an ordinary commit, so the words alone cannot earn the pass:
- * the repository state has to agree that a merge or a revert is in progress.
+ * Headers git offers during a merge or a revert. `Merge the two release docs`
+ * could be an ordinary subject, so these pass only when the repository state
+ * shows a merge or revert in progress.
  */
 const IN_PROGRESS = [/^Merge /, /^Revert "/] as const;
 
@@ -93,17 +86,16 @@ export type Problem = { readonly line: string; readonly hint?: string };
  * Check one Conventional Commits header. Takes the header alone or a whole
  * commit message; only the first line is a contract, the body is free text.
  *
- * `exempt` says this is a commit message, so the headers git writes are allowed
- * through - including a `#`-prefixed one, which is how git tells you the commit
- * was aborted. A pull request title is never a header git wrote, so none of that
- * applies to it: `Merge the two release docs` and `# release` are just titles,
- * and both used to walk straight past the gate release-please reads.
+ * `exempt` says this is a commit message, so headers git writes are allowed
+ * through, including a `#`-prefixed one (git's sign of an aborted commit). A
+ * pull request title is never written by git, so `Merge the two release docs`
+ * and `# release` are checked like any other title.
  *
  * `inProgress` is the repository state behind the `Merge `/`Revert "` pass. The
- * caller reads it; this function stays pure.
+ * caller reads it so this function stays pure.
  *
- * Returns every problem rather than the first, so one run tells you everything
- * you have to fix.
+ * Returns every problem rather than the first, so one run shows everything to
+ * fix.
  */
 export function checkHeader(
   message: string,
@@ -169,26 +161,22 @@ export function checkHeader(
 }
 
 /**
- * Two callers, two explicit modes, and no guessing between them:
+ * Usage:
  *
  *   commit-convention.ts --file <path>    a commit message git wrote out
  *   commit-convention.ts --title <text>   a pull request title
  *
- * The mode is named because the earlier version inferred it - it read the
- * argument as a file when that path existed, and as literal text otherwise.
- * On the CI call site the argument is the pull request title: attacker-chosen
- * text on a public repository. A title of `package.json`, or of any path the
- * runner can read, made the gate open that file, check ITS first line, and
- * print that line into a public log. Verified: the title `package.json`
- * printed `{`.
+ * The mode is explicit, never inferred from whether the argument is an existing
+ * path: in CI the argument is the pull request title, attacker-chosen text on a
+ * public repository, and a title like `package.json` must not make the gate
+ * read that file and print its first line into a public log.
  *
- * Exit 1 on a problem, and say which.
+ * Exits 1 on a problem, 2 on bad usage.
  */
 if (import.meta.main) {
   const [mode, value] = process.argv.slice(2);
-  // An empty value is rejected here rather than in `checkHeader`, which treats an
-  // empty header as an aborted commit message and passes it. A pull request with
-  // no title is not that.
+  // An empty value is rejected here because `checkHeader` treats an empty
+  // header as an aborted commit message and passes it.
   if ((mode !== "--file" && mode !== "--title") || !value) {
     console.error("usage: commit-convention.ts --file <path> | --title <text>");
     process.exit(2);
@@ -205,9 +193,8 @@ if (import.meta.main) {
     }
   }
 
-  // The marker files git writes while a merge, a revert or a cherry-pick is
-  // unfinished. Their presence is what lets a `Merge ...` subject through; their
-  // absence means the word is just the first word of an ordinary subject.
+  // Marker files git writes while a merge, revert or cherry-pick is unfinished.
+  // Only their presence lets a `Merge ...` subject through.
   const inProgress =
     fromFile &&
     (await Promise.all(

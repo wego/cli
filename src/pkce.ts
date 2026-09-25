@@ -1,9 +1,9 @@
 /**
  * PKCE (RFC 7636) + CSRF `state` helpers for the loopback login flow.
  *
- * Portable Web Crypto only (runs under Bun/Node) — no secret, no Node-only
- * crypto. The AS enforces S256 server-side (`plain` is rejected), so we only
- * ever produce an S256 challenge.
+ * Portable Web Crypto only (runs under Bun and Node): no secret, no Node-only
+ * crypto. The AS enforces S256 server-side (`plain` is rejected), so only an
+ * S256 challenge is produced.
  */
 
 function base64url(bytes: Uint8Array): string {
@@ -27,7 +27,6 @@ export function generateCodeVerifier(): string {
   return randomBase64url(48);
 }
 
-/** S256 challenge = BASE64URL(SHA-256(verifier)). */
 export async function codeChallengeS256(verifier: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -36,7 +35,6 @@ export async function codeChallengeS256(verifier: string): Promise<string> {
   return base64url(new Uint8Array(digest));
 }
 
-/** An opaque CSRF `state` value. */
 export function generateState(): string {
   return randomBase64url(16);
 }

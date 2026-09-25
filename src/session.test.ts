@@ -13,7 +13,7 @@ import {
 /**
  * The session id groups one working stretch, so the API's events and the CLI's
  * own `cli_command_ran` land in the same PostHog session. Every expiry rule is
- * exercised against an injected `now` — never a real clock — so the 24h bound is
+ * exercised against an injected `now`, never a real clock, so the 24h bound is
  * testable at all.
  */
 

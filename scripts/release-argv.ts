@@ -1,28 +1,19 @@
 /**
- * ARGV ROUTING FOR THE RELEASE PUBLISHER: which moving pointer a run advances.
+ * Argv routing for the release publisher: which moving pointer a run advances.
  *
- * Extracted from `upload-release-blob.ts` for the reason `ring-rules.ts`,
- * `release-signing.ts`, `blob-publish.ts` and `blob-consistency.ts` were all
- * extracted from it before: the decisions below are the ones that can be wrong,
- * and in the publisher they were unreachable. They closed over a module-level
- * `argv` and ended in `process.exit`, in a module that runs its whole publish at
- * import - no `import.meta.main` guard, every statement top-level - so importing
- * it to ask "what does `--promote --to stable` route to?" starts a publisher
- * instead of answering, and the first refusal it reaches exits the test runner.
+ * Kept out of `upload-release-blob.ts` because that module runs its whole
+ * publish at import (no `import.meta.main` guard), so these decisions could not
+ * be tested there.
  *
- * WHAT IS AT STAKE. `computeAdvanceTargets` decides whether a run moves
- * `cli/stable` - the pointer the entire install base follows - moves `cli/next`,
- * or moves nothing at all. `wego update` replaces the running binary on a
- * CHECKSUM difference and never on a version comparison, so whatever a ring
- * serves is what its install base receives on the next update. A `--freeze` that
- * routed to `["next"]` would advance a pointer the operator asked to leave
- * alone, and every gate downstream of this function would agree with it, because
- * they are handed the targets rather than asked to re-derive them.
+ * `computeAdvanceTargets` decides whether a run moves `cli/stable` (the pointer
+ * the whole install base follows), moves `cli/next`, or moves nothing.
+ * `wego update` replaces the binary on a checksum difference, not a version
+ * comparison, so whatever a ring serves is what its install base gets next.
+ * Every downstream gate is handed these targets rather than re-deriving them,
+ * so a wrong answer here is not caught later.
  *
- * NO `process.exit`, AND NO PRINTING. Each function returns its value or an
- * `{ error }`, and the publisher does the exiting. That is what makes the
- * refusals testable: the messages below are what an operator reads at 3am during
- * a promote, and a message naming the wrong flag sends them to the wrong lane.
+ * No `process.exit` and no printing: each function returns its value or an
+ * `{ error }`, and the publisher does the exiting, so the refusals are testable.
  */
 import { isRing, type Ring } from "./ring-rules";
 
@@ -30,7 +21,7 @@ import { isRing, type Ring } from "./ring-rules";
  *  advances `cli/next`. */
 export type Mode = "publish" | "freeze" | "promote";
 
-/** A refusal, carrying the line the publisher prints before it exits 1. */
+/** A refusal: the line the publisher prints before it exits 1. */
 export interface ArgvError {
   error: string;
 }
@@ -39,12 +30,9 @@ export const isArgvError = (v: unknown): v is ArgvError =>
   typeof v === "object" && v !== null && "error" in v;
 
 /**
- * The mode a leading flag selects.
- *
- * Total on purpose: anything that is not one of the two flags is a publish,
- * because the bare-positional form is `upload-release-blob.ts v1.2.3`. That
- * makes an unrecognised `--flag` read as a publish TAG, which is what
- * {@link leadingFlagError} exists to catch first.
+ * Anything that is not one of the two flags is a publish, because the bare form
+ * is `upload-release-blob.ts v1.2.3`. That makes an unrecognised `--flag` read
+ * as a publish tag, which {@link leadingFlagError} catches first.
  */
 export function parseMode(flag: string | undefined): Mode {
   if (flag === "--promote") return "promote";
@@ -55,9 +43,8 @@ export function parseMode(flag: string | undefined): Mode {
 /**
  * An unknown flag in the mode position, refused before any store access.
  *
- * Without this a typo'd `--frezee` becomes the tag, and the run gets as far as
- * the `vX.Y.Z` shape guard before complaining - about a tag the operator never
- * typed.
+ * Without this a typo'd `--frezee` becomes the tag, and the `vX.Y.Z` shape
+ * guard complains about a tag the operator never typed.
  */
 export function leadingFlagError(argv: string[]): ArgvError | null {
   const first = argv[0];
@@ -91,16 +78,11 @@ export function tagPositionError(argv: string[], mode: Mode): ArgvError | null {
 /**
  * `--to <ring>`, defaulting to `next`.
  *
- * Every ring is nameable, `edge` included. It was refused here while this lived
- * in the previous repository, on the reasoning that the edge lane publishes
- * its own `X.Y.Z-edge.<sha>` builds and a plain release must never land on
- * `edge`. That is still true as a DEFAULT - the default is `next`, and nothing
- * routes a release to `edge` on its own - but a parser that cannot even name a
- * ring the promote lane operates on is the wrong place to enforce it. An
- * operator promoting deliberately would get a usage error instead of the
- * promote, and the real guards (the tag gate, `--require-serving`, and the
- * byte-identity check against `cli/<tag>/`) are the ones that decide whether a
- * ring may be advanced.
+ * Every ring is nameable, `edge` included. A plain release should not land on
+ * `edge` by default, and nothing routes it there on its own, but the parser is
+ * the wrong place to enforce that. The real guards (the tag gate,
+ * `--require-serving`, and the byte-identity check against `cli/<tag>/`) decide
+ * whether a ring may be advanced.
  */
 export function parsePromoteTarget(argv: string[]): Ring | ArgvError {
   const i = argv.indexOf("--to");
@@ -116,9 +98,8 @@ export function parsePromoteTarget(argv: string[]): Ring | ArgvError {
  * `--require-serving <ring>`: the ring that must already serve this tag before a
  * promote may proceed, or `null` when the flag is absent.
  *
- * Resolved at argv time and beside the tag gate, so a typo costs one cheap step
- * rather than a Blob round trip - the same reason `releaseTagError` runs before
- * any store access.
+ * Resolved at argv time so a typo fails before any Blob round trip, like
+ * `releaseTagError`.
  */
 export function parseRequireServing(argv: string[]): Ring | null | ArgvError {
   const i = argv.indexOf("--require-serving");
@@ -131,11 +112,10 @@ export function parseRequireServing(argv: string[]): Ring | null | ArgvError {
 }
 
 /**
- * THE ROUTING DECISION: which moving pointers this run advances, if any.
+ * Which moving pointers this run advances, if any.
  *
- * `next` and `stable` are the same stable line at two distances from the install
- * base - `cli/next` is the candidate real people run, `cli/stable` is what
- * everyone receives, and stable is reached ONLY by promoting a next build.
+ * `cli/next` is the candidate real people run, `cli/stable` is what everyone
+ * receives, and stable is reached only by promoting a next build.
  *
  * A bare publish advances `cli/next` so that a local one-shot reproduces the
  * release job's routing, rather than putting a fresh build in front of the whole

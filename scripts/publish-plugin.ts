@@ -1,30 +1,24 @@
 /**
- * Publish the plugin repo (foundations#101 rung 4).
+ * Publish the plugin repo (foundations#101).
  *
  *   bun run scripts/publish-plugin.ts              # clone, write the plan, push
  *   bun run scripts/publish-plugin.ts --print-plan # print the plan, write nothing
  *
  * Writes exactly the files `pluginPublishPlan()` names into `wego/skills`, the
- * repo third-party discovery reads. The plan is the whole contract: this file
- * holds the mechanics and no policy about WHAT is published.
+ * repo third-party discovery reads. This file holds the mechanics and no policy
+ * about what is published.
  *
- * Deliberately simpler than the lane it replaces, which shipped a bounded push
- * retry, a rebase classifier and a post-push read-back and never ran once. What
- * is here instead is ONE after-clone check - the subset predicate - which covers
- * an empty repo, the steady state and a stray file together. A push that races
- * another writer fails the step; a re-run reconciles, because the publish is
- * idempotent (it commits nothing when the tree already matches source).
+ * Deliberately simple: no push retry or rebase handling, just one after-clone
+ * check (the subset predicate). A push that races another writer fails the
+ * step; a re-run reconciles, because the publish is idempotent (it commits
+ * nothing when the tree already matches source).
  *
  * Skips gracefully (exit 0) when `SKILLS_PUBLISH_TOKEN` is unset, unless
- * `REQUIRE_PUBLISH=true` - the same token gate `publish-skill-blob.ts` uses.
+ * `REQUIRE_PUBLISH=true` (see `publishGate`).
  *
- * PROVISIONED AND ARMED ARE TWO DIFFERENT EVENTS, and only the second one puts
- * a value in that variable. The App credentials this token is minted from
- * already exist, so "the credential is provisioned" no longer means the lane
- * publishes: `promote-cli.yml` mints the token only when the repository
- * variable `SKILLS_PUBLISH_ENABLED` is `true`, which rung 5(b) sets after the
- * publisher has been rehearsed against a real remote. Until then the token is
- * empty and every promote takes the skip branch by design.
+ * The App credentials exist, but `promote-cli.yml` mints the token only when
+ * the repository variable `SKILLS_PUBLISH_ENABLED` is `true`. Otherwise the
+ * token is empty and every promote takes the skip branch by design.
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -46,10 +40,8 @@ const TOKEN_NAME = PLUGIN_TOKEN_ENV;
 
 const plan = pluginPublishPlan(SKILLS.map((s) => s.id));
 
-// Every source is stat'd BEFORE anything else happens, `--print-plan` included.
-// Without this the flag would print the plan straight from a constant whether or
-// not the files exist, so it would report three publishable files on a tree that
-// has none - proving the plan's length rather than the publish.
+// Every source is checked before anything else, `--print-plan` included, so
+// the flag cannot print a plan for files that do not exist.
 const missing = plan
   .map((p) => p.from)
   .filter((from) => !existsSync(join(cliRoot, from)));
@@ -62,9 +54,8 @@ if (missing.length > 0) {
 }
 
 if (process.argv.includes("--print-plan")) {
-  // Both sides, on purpose. The three destination names are fixed strings, so a
-  // destination-only dump could never show that a source was drawn from the
-  // eval corpus or the staging overlay - which is the mistake worth catching.
+  // Both sides: the destination names are fixed, so only the source column can
+  // show that a file was drawn from the wrong place (e.g. the eval corpus).
   for (const { from, to } of plan) console.log(`${from} -> ${to}`);
   process.exit(0);
 }
@@ -82,8 +73,7 @@ if (!gate.publish) {
 const work = mkdtempSync(join(tmpdir(), "wego-plugin-publish-"));
 let exitCode = 0;
 try {
-  // Shallow: the publish reads the tip and writes on top of it. No history is
-  // consulted, so fetching it would cost time and prove nothing.
+  // Shallow: the publish only reads the tip and writes on top of it.
   git(work, "clone", "--depth", "1", REPO, "repo");
   const repo = join(work, "repo");
 
@@ -93,7 +83,7 @@ try {
     .filter(Boolean)
     .map((line) => line.slice(line.indexOf("\t") + 1));
   // Two ways a clone can hold something this publish did not write: a path the
-  // plan does not name, or a path it DOES name that is not a regular file.
+  // plan does not name, or a path it names that is not a regular file.
   const offenders = [
     ...unexpectedPluginFiles(tracked, plan),
     ...nonRegularTrackedFiles(staged),

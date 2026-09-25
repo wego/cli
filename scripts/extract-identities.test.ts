@@ -11,9 +11,8 @@ import {
   sanFromBundle,
 } from "./extract-identities";
 
-/** The two SANs the lanes really sign, harvested from published records.
- *  Written here as literals ON PURPOSE and only here: these are
- *  the expectations the script is checked against, not the values it emits. */
+/** The two SANs the lanes sign, harvested from published records. Literals on
+ *  purpose: they are the expectations the script is checked against. */
 const EDGE_SAN =
   "https://github.com/wego/cli/.github/workflows/edge-cli.yml@refs/heads/main";
 const TAG_SAN =

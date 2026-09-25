@@ -2,14 +2,13 @@ name: Rollback (cli)
 
 # Move `cli/stable` back to a named earlier release.
 #
-# A separate workflow from `promote-cli.yml`. Rollback used to be an input on the
-# promote lane that removed gates. Two gates added without that guard broke every
-# rollback (wego/cli#48). This file has no executable reference to `cli/next`, so
-# no gate here can depend on it. `scripts/workflow-lanes.test.ts` asserts that.
+# Separate from `promote-cli.yml` so that no promote gate can couple to
+# `cli/next` and block a rollback (wego/cli#48). This file has no executable
+# reference to `cli/next`; `scripts/workflow-lanes.test.ts` asserts that.
 #
-# Posture. A blocked rollback extends exposure to a bad build. Two cheap checks
-# block. Everything else runs after the move. The promote gates are not repeated:
-# the target already served `cli/stable`, and that is stronger evidence than a gate.
+# A blocked rollback extends exposure to a bad build, so only two cheap checks
+# block and everything else runs after the move. The promote gates are not
+# repeated: the target already served `cli/stable`, which is stronger evidence.
 #
 # The tag has no default. Use `plan_only` to rehearse without moving anything.
 on:
@@ -35,18 +34,15 @@ permissions:
   contents: read
 
 jobs:
-  # The human gate. Same shape and same reasoning as `promote-cli.yml`: not an
-  # environment with required reviewers, though this repository could have them -
-  # it is public, and `stable-rollback` is its own environment (see that file for
-  # the full reasoning). The list below is the authority because it lives in
-  # version control: CODEOWNERS owns `.github/workflows/`, so a change to it is a
-  # diff that `main` will not take without a release-signer review, where an
-  # environment's reviewer list is a settings toggle that leaves no record here.
-  # This job holds no secrets and no variables.
+  # The human gate, as in `promote-cli.yml` (see that file for the reasoning). The
+  # allow-list lives in version control rather than as environment reviewers:
+  # CODEOWNERS owns `.github/workflows/`, so changing it needs a release-signer
+  # review, while an environment's reviewer list is a settings toggle with no
+  # record here. This job holds no secrets and no variables.
   #
-  # Both actors must be promoters, as in the promote lane. A replay matters more
-  # here: it puts `cli/stable` back on this run's `inputs.tag`, which moves the
-  # whole install base onto an older release once stable has advanced past it.
+  # Both actors must be promoters. A replay matters more here: it puts
+  # `cli/stable` back on that run's `inputs.tag`, moving every install onto an
+  # older release once stable has advanced past it.
   approve:
     name: Approve rolling cli/stable back to ${{ inputs.tag }}
     runs-on: ubuntu-latest
@@ -107,12 +103,11 @@ jobs:
     # dispatch of this file is always `main`.
     #
     # Separate from `stable-promote`, though both run from `main` and hold the same
-    # token value. This is the break-glass lane and has to stay fast, so it must not
-    # inherit a protection rule added for the promote lane. Required reviewers on the
-    # old shared `production` did exactly that.
+    # token value. This is the break-glass lane and must stay fast, so it must not
+    # inherit a protection rule added for the promote lane.
     #
-    # Not cryptographic separation: the same value, with write access to the whole
-    # store, sits in all four lane environments.
+    # Not cryptographic separation: the same token, with write access to the whole
+    # store, is in all four lane environments.
     environment:
       name: stable-rollback
     permissions:

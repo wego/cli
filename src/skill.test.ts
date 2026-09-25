@@ -36,8 +36,8 @@ afterEach(async () => {
   await rm(cwd, { recursive: true, force: true });
 });
 
-/** Build injectable deps + captured output. `confirm` defaults to yes; `body`
- *  is a shortcut for the sole skill's embedded body. */
+/** `confirm` defaults to yes; `body` is a shortcut for the sole skill's
+ *  embedded body. */
 function makeDeps(overrides: Partial<SkillDeps> & { body?: string } = {}): {
   deps: SkillDeps;
   out: string[];
@@ -212,11 +212,9 @@ describe("skill install (Part A – id defaulting + registry)", () => {
     const { deps, out, confirmCalls } = makeDeps();
     expect(await skill(["install"], deps)).toBe(0);
     expect(await readFile(userSkillFile(), "utf8")).toBe(BODY);
-    // OWNERSHIP is presence-only — `hasOwnerMarker` never reads the file, so an
-    // empty marker from any older binary still reads as ours. The contents are a
-    // separate signal: the SHA256 of the body just written, which lets the
-    // background refresh tell "wego wrote this" from "a human edited it" (see
-    // the local-modifications block below). Not a version stamp.
+    // Ownership is presence-only, so an empty marker from an older binary still
+    // reads as ours. The contents are the SHA256 of the body just written (see
+    // the local-modifications block below), not a version stamp.
     expect((await readFile(ownerMarker(), "utf8")).split("\n")[0]).toMatch(
       /^[0-9a-f]{64}$/,
     );
@@ -293,7 +291,6 @@ describe("skill ownership marker (presence-only + legacy)", () => {
     await writeFile(join(dir, "SKILL.md"), "old body\n");
     await writeFile(join(dir, ".wego-skill-version"), "0.0.1\n");
 
-    // A body change should UPGRADE in place (marker present), not refuse.
     const { deps, out } = makeDeps({ body: "new body\n" });
     expect(await skill(["install", "-y"], deps)).toBe(0);
     expect(out.join("\n")).toMatch(/Updated wego skill/);
@@ -301,10 +298,9 @@ describe("skill ownership marker (presence-only + legacy)", () => {
   });
 
   describe("retiring the legacy marker", () => {
-    // Two names for one fact is fine while they are just presence flags. It stops
-    // being fine once mtimes are load-bearing: the refresh watches BOTH names and
-    // takes the OLDEST, so a legacy marker that install never restamps stays stale
-    // forever and holds the throttle window permanently open.
+    // A refresh watches both names and takes the oldest mtime, so a legacy marker
+    // that install never restamps stays stale forever and holds the throttle
+    // window open.
     const dir = () => join(home, ".claude", "skills", "wego");
     const legacy = () => join(dir(), ".wego-skill-version");
 
@@ -327,10 +323,9 @@ describe("skill ownership marker (presence-only + legacy)", () => {
     });
 
     it("removes it on the byte-identical branch too", async () => {
-      // The branch that writes no body still restamps the marker, so it has to
-      // retire the legacy name as well — otherwise `install` on an already-current
-      // legacy dir leaves the stale mtime in place, which is exactly the
-      // permanently-armed case.
+      // The branch that writes no body still restamps the marker, so it must
+      // retire the legacy name too, or an already-current legacy dir keeps the
+      // stale mtime.
       await legacyInstall(BODY);
       const { deps, out } = makeDeps();
       expect(await skill(["install", "-y"], deps)).toBe(0);
@@ -340,10 +335,8 @@ describe("skill ownership marker (presence-only + legacy)", () => {
     });
 
     it("leaves no marker the refresh would see as stale", async () => {
-      // The end the two cases above serve, asserted directly: after any install,
-      // exactly one recognized marker remains, so `oldest` cannot be pinned to a
-      // file nothing restamps. Without this, `skill install --embedded` was
-      // reversed by the very next ordinary command.
+      // Exactly one recognized marker remains, so the oldest mtime cannot come
+      // from a file nothing restamps.
       await legacyInstall("old body\n");
       await skill(["install", "-y"], makeDeps({ body: "new\n" }).deps);
 
@@ -355,9 +348,8 @@ describe("skill ownership marker (presence-only + legacy)", () => {
   });
 
   it("adopts a marker-less file whose bytes already match canonical (writes the marker)", async () => {
-    // The accepted-tradeoff path: a coincidental byte-match grants ownership, so
-    // the NEXT body change upgrades in place instead of being refused as foreign
-    // forever. Nothing is overwritten here — the bytes are already ours.
+    // The accepted tradeoff: a coincidental byte-match grants ownership, so the
+    // next body change upgrades in place instead of being refused as foreign.
     const dir = join(home, ".claude", "skills", "wego");
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "SKILL.md"), BODY); // identical, but no marker
@@ -368,7 +360,6 @@ describe("skill ownership marker (presence-only + legacy)", () => {
     expect(await exists(join(dir, ".wego-skill-owner"))).toBe(true); // adopted
     expect(await readFile(join(dir, "SKILL.md"), "utf8")).toBe(BODY); // untouched
 
-    // The point of adopting: a later body change now upgrades without --force.
     const second = makeDeps({ body: "next body\n" });
     expect(await skill(["install", "-y"], second.deps)).toBe(0);
     expect(second.out.join("\n")).toMatch(/Updated wego skill/);
@@ -395,7 +386,6 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
     expect(await skill(["install", "-y"], remote.deps)).toBe(0);
     const written = await readFile(userSkillFile(), "utf8");
-    // The remote canonical body was used, and nothing rewrote it on the way in.
     expect(written).toBe(REMOTE);
     expect(written).toContain("wego whoami (remote)");
   });
@@ -411,12 +401,9 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
   });
 
   describe("requireRemote (the background refresh's mode)", () => {
-    // The foreground install MUST fall back to embedded — it may be creating the
-    // file from nothing, and "never fails on a down remote" is its contract. The
-    // background refresh must NOT: the installed body can be NEWER than this
-    // binary's embed (an earlier refresh pulled a published body postdating the
-    // build), so a fallback would silently downgrade a good file — and since the
-    // throttle stamp is already written, it would stay downgraded for 24h.
+    // Unlike the foreground install, a refresh must not fall back to embedded:
+    // the installed body can be newer than this binary's embed, so a fallback
+    // would silently downgrade it.
     const NEWER = "# newer than this binary's embedded copy\n";
 
     it("leaves an existing, newer skill untouched when the remote is unverifiable", async () => {
@@ -456,10 +443,9 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("refreshOnly leaves an unowned target alone but still exits 0", async () => {
-      // The gap this closes: ownership gates WHETHER the refresh runs, but the
-      // target list is a fresh auto-detect. An agent dir created after the
-      // original install would otherwise silently gain a skill nobody asked for
-      // — a new directory in someone's $HOME from a background write.
+      // Ownership gates whether the refresh runs, but the target list is a fresh
+      // auto-detect, so an agent dir created after the original install would
+      // otherwise gain a skill nobody asked for.
       const REMOTE = "# published\n";
       const { deps } = makeDeps({
         body: EMBEDDED,
@@ -472,7 +458,6 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       await mkdir(unowned, { recursive: true });
 
       expect(await skill(["install", "-y"], deps)).toBe(0);
-      // No SKILL.md, and no marker claiming a dir we never owned.
       expect(await exists(join(unowned, "SKILL.md"))).toBe(false);
       expect(await exists(join(unowned, ".wego-skill-owner"))).toBe(false);
     });
@@ -491,10 +476,9 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       await mkdir(owned, { recursive: true });
       const stale = "# stale\n";
       await writeFile(join(owned, "SKILL.md"), stale);
-      // A real baseline recording `stale`, so this asserts the `refreshOnly`
-      // write-scoping and nothing else. An EMPTY (pre-baseline) marker is a
-      // separate case the refresh deliberately preserves — see "leaves a
-      // pre-baseline install alone" below.
+      // A real baseline, so this tests only the `refreshOnly` scoping. An empty
+      // (pre-baseline) marker is a separate case the refresh preserves; see
+      // "leaves a pre-baseline install alone" below.
       const h = new Bun.CryptoHasher("sha256");
       h.update(stale);
       await writeFile(join(owned, ".wego-skill-owner"), h.digest("hex"));
@@ -504,8 +488,8 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("still writes the verified remote body when the channel IS reachable", async () => {
-      // Declining must be scoped to failure — otherwise the refresh would never
-      // update anything and the whole feature would be inert.
+      // Declining must be scoped to failure, or the refresh would never update
+      // anything.
       const REMOTE = "# freshly published\n";
       const { deps } = makeDeps({
         body: EMBEDDED,
@@ -519,12 +503,9 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
   });
 
   describe("local modifications (the silent-overwrite guard)", () => {
-    // Ownership answers "may we write here". It does NOT answer "are the bytes
-    // currently there ours to discard". Conflating the two is what let the
-    // background refresh — silent, unattended, io bound to no-ops — throw away a
-    // hand-edited SKILL.md inside 24h with no diff, no backup and no log line.
-    // The marker now records the SHA256 of what wego last wrote, so the two
-    // questions can be answered separately.
+    // Ownership answers "may we write here", not "are the bytes there ours to
+    // discard". The silent refresh leaves no diff, backup or log line, so the
+    // marker records the SHA256 of what wego last wrote to answer the second.
     const REMOTE = "# freshly published\n";
     const refreshDeps = () =>
       makeDeps({
@@ -535,8 +516,8 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
         refreshOnly: true,
       });
 
-    /** An owned dir holding `body`, with a marker baseline recording `wrote`
-     *  (defaults to `body` — i.e. untouched since wego wrote it). */
+    /** `wrote` is the baseline the marker records; it defaults to `body`, i.e.
+     *  untouched since wego wrote it. */
     async function ownedDir(body: string, wrote = body): Promise<string> {
       const dir = join(home, ".claude", "skills", "wego");
       await mkdir(dir, { recursive: true });
@@ -549,8 +530,6 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
 
     it("the background refresh does NOT overwrite a locally modified body", async () => {
       const EDITED = "# published\n\nMy team's extra house rule.\n";
-      // Baseline says wego wrote the pristine body; the file now differs ⇒ a
-      // human edited it.
       await ownedDir(EDITED, "# published\n");
       const { deps } = refreshDeps();
 
@@ -567,9 +546,8 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("DOES refresh when the body still matches what wego wrote", async () => {
-      // The guard must be scoped to real edits — otherwise the first refresh
-      // freezes every install forever, which is the bug this feature exists to
-      // fix, reintroduced from the other side.
+      // The guard must be scoped to real edits, or no install would ever be
+      // refreshed.
       await ownedDir("# stale but pristine\n");
       const { deps } = refreshDeps();
 
@@ -578,11 +556,9 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("leaves a pre-baseline install alone (contentless/legacy marker)", async () => {
-      // Every marker written before the baseline landed is empty, so "modified"
-      // is unknowable. The SILENT path must not resolve that by writing: `wego
-      // update` replaces the binary without running an install, so a machine can
-      // reach here holding a hand-edited body under a baseline-less marker, and
-      // a silent overwrite would destroy it with no diff, backup or log line.
+      // A marker from before the baseline is empty, so "modified" is unknowable.
+      // The silent path must not resolve that by writing: the body may be hand
+      // edited, and an overwrite would leave no diff, backup or log line.
       const dir = join(home, ".claude", "skills", "wego");
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, "SKILL.md"), "# hand edited\n");
@@ -594,12 +570,9 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("the INSTALLER rebaselines a pre-baseline install, so preserving it cannot be permanent", async () => {
-      // The other half of the rule above, and what keeps it from reintroducing
-      // the staleness this feature exists to remove: nothing else ever writes a
-      // baseline for a pre-marker install, so if the installer preserved it too,
-      // the refresh would freeze every existing machine forever. `curl | bash`
-      // passes --keep-local-edits WITHOUT refreshOnly, and that combination
-      // adopts the dir: one loud overwrite buys a correct baseline from then on.
+      // Nothing else ever writes a baseline for a pre-marker install, so if the
+      // installer (`--keep-local-edits` without refreshOnly) preserved it too,
+      // the refresh would skip that machine forever.
       const dir = join(home, ".claude", "skills", "wego");
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, "SKILL.md"), "# stale\n");
@@ -614,7 +587,6 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
         0,
       );
       expect(await readFile(userSkillFile(), "utf8")).toBe(REMOTE);
-      // And the baseline now exists, so the next refresh can decide properly.
       const h = new Bun.CryptoHasher("sha256");
       h.update(REMOTE);
       expect(
@@ -642,8 +614,8 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("a FOREGROUND install still overwrites an edit – but reports it", async () => {
-      // The user typed the command and is reading the output, so overwriting is
-      // what they asked for. Doing it without a word is what must not happen.
+      // A user who typed the command asked for the overwrite, but it must not
+      // happen silently.
       await ownedDir("# edited\n", "# published\n");
       const { deps, out } = makeDeps({
         body: EMBEDDED,
@@ -657,12 +629,9 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("--keep-local-edits preserves an edit on the FOREGROUND path", async () => {
-      // The hole the refreshOnly-only guard left: "foreground" is not the same as
-      // "attended". The curl | bash installer runs this exact foreground path with
-      // no TTY and nobody reading stdout, unconditionally, on every re-run - so
-      // reinstalling to update the binary silently discarded an operator's edit.
-      // This flag is how an unattended caller takes the refresh's protection
-      // WITHOUT refreshOnly's never-create rule, which the installer needs.
+      // "Foreground" is not "attended": the curl | bash installer runs this path
+      // with nobody reading stdout on every re-run, and uses this flag to keep an
+      // operator's edit without refreshOnly's never-create rule.
       const EDITED = "# published\n\nMy team's extra house rule.\n";
       await ownedDir(EDITED, "# published\n");
       const { deps, out } = makeDeps({
@@ -679,9 +648,8 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("--keep-local-edits still installs where there is nothing to preserve", async () => {
-      // It must not become a de-facto refreshOnly: the installer's first run on a
-      // clean machine has to CREATE the skill, which is the whole point of running
-      // it from the installer.
+      // It must not act like refreshOnly: the installer's first run on a clean
+      // machine has to create the skill.
       const { deps } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
@@ -709,11 +677,9 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("an UNATTENDED re-run does not downgrade to embedded when the remote fails", async () => {
-      // `--keep-local-edits` does not cover this: the installed body still
-      // matches its baseline, so it is not an "edit". But an earlier refresh may
-      // have installed a published body that postdates this binary's embed, so
-      // writing the embedded copy over it is a downgrade. The installer runs
-      // unattended on every re-run, so nobody would see it happen.
+      // Not an edit (the body matches its baseline), but an earlier refresh may
+      // have installed a published body newer than this binary's embed, so
+      // writing the embedded copy over it would be an unseen downgrade.
       const NEWER = "# published later than this binary\n";
       await ownedDir(NEWER);
       const { deps } = makeDeps({
@@ -729,8 +695,8 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("still CREATES from the embedded copy when the remote fails", async () => {
-      // The case the fallback exists for. Guarding the downgrade must not turn a
-      // clean machine + down channel into "no skill at all".
+      // Guarding the downgrade must not leave a clean machine with a down channel
+      // without any skill.
       const { deps } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
@@ -744,8 +710,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("an ATTENDED install still takes the embedded fallback", async () => {
-      // Unchanged contract: a user typed it, reads the output, and "install never
-      // fails on a down remote" is the foreground promise.
+      // A typed install never fails on a down remote.
       await ownedDir("# whatever was there\n");
       const { deps } = makeDeps({
         body: EMBEDDED,
@@ -758,8 +723,8 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("records the written body's digest in the marker", async () => {
-      // The baseline every check above depends on. If install stopped writing
-      // it, all of them would silently degrade to "unknown" and pass anyway.
+      // Every check above depends on this baseline. Without it they would all
+      // degrade to "unknown" and still pass.
       const { deps } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
@@ -771,9 +736,8 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       h.update(REMOTE);
       const marker = await readFile(ownerMarker(), "utf8");
       expect(marker.split("\n")[0]).toBe(h.digest("hex"));
-      // It is the REMOTE body's digest, and the marker says so: a fixture that
-      // injects `skillUrl` with no ring cannot name a channel, so the source reads
-      // `remote` — "from a channel, not from this binary".
+      // A fixture that injects `skillUrl` with no ring cannot name a channel, so
+      // the source reads `remote`.
       expect(markerSource(marker)).toBe("remote");
     });
 
@@ -787,11 +751,9 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
     });
 
     it("refuses a pre-existing temp path instead of writing through it", async () => {
-      // The temp name derives from the pid, so it is guessable. A plain write follows a
-      // symlink, which would let anyone able to pre-create it redirect the body out of
-      // the skill dir. `wx` (create-exclusive) makes that a per-target failure instead.
-      // Simulated with a plain file, which exercises the same exclusive-create refusal
-      // without needing a symlink target to point at.
+      // The pid-based temp name is guessable, and a plain write would follow a
+      // planted symlink. A plain file exercises the same exclusive-create refusal
+      // without needing a symlink target.
       const dir = join(home, ".claude", "skills", "wego");
       await mkdir(dir, { recursive: true });
       const planted = join(dir, `SKILL.md.tmp.${process.pid}`);
@@ -800,17 +762,12 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       const { deps, err } = makeDeps({ body: EMBEDDED });
       expect(await skill(["install", "-y"], deps)).toBe(1);
       expect(err.join("\n")).toMatch(/Failed to install to/);
-      // The squatted path is cleaned up rather than left to poison the next run, and the
-      // real body was never written through it.
       expect(await exists(join(dir, "SKILL.md"))).toBe(false);
     });
 
     it("fails loudly rather than silently replacing an unreadable SKILL.md", async () => {
-      // A present-but-unreadable file must never read as "does not exist" —
-      // `installOne` gates every overwrite protection on `existing !== null`,
-      // and `writeFileAtomic`'s rename only needs the DIRECTORY writable, not
-      // the target file, so treating unreadable-as-absent would silently
-      // replace a file nobody could even read to check first.
+      // `rename` needs only the directory writable, so treating an unreadable
+      // file as absent would skip every overwrite protection and replace it.
       const dir = join(home, ".claude", "skills", "wego");
       await mkdir(dir, { recursive: true });
       const file = join(dir, "SKILL.md");
@@ -825,15 +782,13 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
         // Restore before the harness's afterEach rm()'s the tmpdir tree.
         await chmod(file, 0o600).catch(() => {});
       }
-      // Never reached the write path — the original bytes are untouched.
       expect(await readFile(file, "utf8")).toBe("# unreadable\n");
     });
   });
 
   it("reports a filesystem write failure as a per-target failure", async () => {
-    // installOne must never throw — the multi-target driver depends on getting
-    // an outcome per dir. A directory sitting where SKILL.md belongs makes the
-    // rename fail for real, rather than mocking fs.
+    // A directory where SKILL.md belongs makes the rename fail for real, without
+    // mocking fs.
     const { deps, err } = makeDeps({ body: EMBEDDED });
     await mkdir(join(home, ".claude", "skills", "wego", "SKILL.md"), {
       recursive: true,
@@ -844,9 +799,8 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
   });
 
   it("falls back to embedded when the resolver REJECTS, not just resolves null", async () => {
-    // The "install never fails on a down remote" invariant must hold at the
-    // composition point, not rely on `fetchRemoteSkill` being fail-closed-by-
-    // return: a resolver that throws would otherwise hard-fail the install.
+    // "Install never fails on a down remote" must not depend on the resolver
+    // returning null rather than throwing.
     const { deps } = makeDeps({
       body: EMBEDDED,
       skillUrl: URL,
@@ -909,8 +863,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
         return Promise.resolve(REMOTE);
       },
     });
-    // The only non-install sub-command that resolves a skill: it reports a
-    // target path and must never touch the network (offline, auth-free).
+    // `path` resolves a skill but must never touch the network.
     expect(await skill(["path"], deps)).toBe(0);
     expect(called).toBe(false);
     expect(out[0]).toBe(userSkillFile());
@@ -940,7 +893,6 @@ describe("skill install (Part C – multi-agent path table)", () => {
   });
 
   it("auto-detect (global) skips agents whose home config dir is absent", async () => {
-    // Only ~/.claude and ~/.cursor exist → only those two are targeted.
     await mkdir(join(home, ".claude"), { recursive: true });
     await mkdir(join(home, ".cursor"), { recursive: true });
     const { deps } = makeDeps();
@@ -951,7 +903,6 @@ describe("skill install (Part C – multi-agent path table)", () => {
     expect(
       await exists(join(home, ".cursor", "skills", "wego", "SKILL.md")),
     ).toBe(true);
-    // ~/.codex was absent → skipped.
     expect(
       await exists(join(home, ".codex", "skills", "wego", "SKILL.md")),
     ).toBe(false);
@@ -981,19 +932,16 @@ describe("skill install (Part C – multi-agent path table)", () => {
   });
 
   it("is best-effort: a foreign target is skipped, the rest install, exit 0", async () => {
-    // Make the project .claude target foreign (no marker); .agents is clean.
     const claudeDir = join(cwd, ".claude", "skills", "wego");
     await mkdir(claudeDir, { recursive: true });
     await writeFile(join(claudeDir, "SKILL.md"), "hand-authored\n");
 
     const { deps, out, err } = makeDeps();
     expect(await skill(["install", "--scope", "project", "-y"], deps)).toBe(0);
-    // Foreign target refused...
     expect(err.join("\n")).toMatch(/not installed by wego/);
     expect(await readFile(join(claudeDir, "SKILL.md"), "utf8")).toBe(
       "hand-authored\n",
     );
-    // ...the .agents target still installed.
     expect(
       await exists(join(cwd, ".agents", "skills", "wego", "SKILL.md")),
     ).toBe(true);
@@ -1016,7 +964,6 @@ describe("skill install (Part C – multi-agent path table)", () => {
     expect(await skill(["uninstall", "--scope", "project"], remove.deps)).toBe(
       0,
     );
-    // Neither copy is orphaned.
     expect(
       await exists(join(cwd, ".claude", "skills", "wego", "SKILL.md")),
     ).toBe(false);
@@ -1026,7 +973,6 @@ describe("skill install (Part C – multi-agent path table)", () => {
   });
 
   it("exits non-zero only when EVERY target failed", async () => {
-    // Both project targets foreign → all fail → exit 1.
     for (const root of [".claude", ".agents"]) {
       const dir = join(cwd, root, "skills", "wego");
       await mkdir(dir, { recursive: true });
@@ -1058,12 +1004,8 @@ describe("skill path / uninstall / dispatch", () => {
   });
 
   it("path reports where the skill ACTUALLY is on a non-Claude machine", async () => {
-    // `path` used to reuse `uninstall`'s conservative Claude-only default, so on a
-    // Codex-only home it printed ~/.claude/skills/wego/SKILL.md - a file that does
-    // not exist. Not cosmetic: the agent-onboarding doc (apps/api/src/skills.ts)
-    // tells an agent to READ this path to load the skill in-session, so the wrong
-    // line makes onboarding fail silently on exactly the machines the
-    // auto-detecting installer serves.
+    // The API's agent-onboarding doc tells an agent to read this path, so naming
+    // a Claude path that does not exist would make onboarding fail silently.
     await mkdir(join(home, ".codex"), { recursive: true });
     const installed = makeDeps();
     expect(await skill(["install", "-y"], installed.deps)).toBe(0);
@@ -1078,15 +1020,12 @@ describe("skill path / uninstall / dispatch", () => {
   });
 
   it("path ignores a FOREIGN SKILL.md in a detected dir", async () => {
-    // `installOne` refuses a marker-less SKILL.md as foreign, so a multi-agent
-    // machine can hold someone else's file beside ours. Reporting the foreign one
-    // is worse than reporting nothing: onboarding tells the agent to READ this
-    // path, so it would load unrelated instructions and look like it worked.
+    // Onboarding tells the agent to read this path, so reporting someone else's
+    // file would load unrelated instructions while looking like it worked.
     await mkdir(join(home, ".codex"), { recursive: true });
     const { deps } = makeDeps();
     await skill(["install", "-y"], deps); // Codex-only home ⇒ lands in .codex
 
-    // A foreign file appears in the Claude dir — no marker, not ours.
     const foreign = join(home, ".claude", "skills", "wego");
     await mkdir(foreign, { recursive: true });
     await writeFile(join(foreign, "SKILL.md"), "# someone else's skill\n");
@@ -1097,10 +1036,8 @@ describe("skill path / uninstall / dispatch", () => {
   });
 
   it("path reports NOTHING when only a foreign file occupies the location", async () => {
-    // The ownership filter is undone at exactly the moment it matters if the
-    // fallback ignores ownership: no owned copy exists, so we fall through and
-    // name the very file `installOne` refuses to touch. stdout must stay empty —
-    // onboarding READS what this prints.
+    // With no owned copy, the fallback must not name the foreign file either:
+    // onboarding reads what this prints.
     const dir = join(home, ".claude", "skills", "wego");
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "SKILL.md"), "# not ours\n"); // no marker
@@ -1112,9 +1049,8 @@ describe("skill path / uninstall / dispatch", () => {
   });
 
   it("path keeps one deterministic answer when nothing is installed", async () => {
-    // The pre-install "where would it land" use: with no copy on disk anywhere,
-    // fall back to the single conservative target rather than listing every
-    // detected agent's hypothetical dir.
+    // Pre-install "where would it land": one conservative target rather than
+    // every detected agent's hypothetical dir.
     await mkdir(join(home, ".codex"), { recursive: true });
     const { deps, out } = makeDeps();
     expect(await skill(["path"], deps)).toBe(0);
@@ -1189,7 +1125,6 @@ describe("markerRing", () => {
   });
 
   it("names no ring for a pre-ring marker", () => {
-    // One bare digest line, written by every binary before the ring stamp.
     expect(markerRing(DIGEST)).toBeNull();
     expect(markerRing(null)).toBeNull();
   });
@@ -1206,10 +1141,8 @@ describe("markerRing", () => {
 });
 
 describe("the ring stamp and the edit baseline share one marker file", () => {
-  // The back-compat risk of adding a second line: `markerBaseline` used to match
-  // its 64-hex regex against the WHOLE trimmed file, so a ring-stamped marker
-  // would have read as "no baseline" and silently disabled local-edit detection
-  // for exactly the installs that carry a ring.
+  // Matching the digest against the whole file would read a ring-stamped marker
+  // as "no baseline" and silently disable local-edit detection.
   it("a ring-stamped install still detects a later local edit", async () => {
     const { deps } = makeDeps({ ring: "edge" });
     expect(await skill(["install", "-y"], deps)).toBe(0);
@@ -1218,9 +1151,8 @@ describe("the ring stamp and the edit baseline share one marker file", () => {
     expect(markerRing(marker)).toBe("edge");
     expect(marker.split("\n")[0]).toMatch(/^[0-9a-f]{64}$/);
 
-    // Edit it, then ask an unattended caller to preserve edits. That decision runs
-    // through the baseline, so it can only come out right if the digest survived
-    // the ring line.
+    // Preserving the edit depends on the baseline, so it only works if the
+    // digest survived the ring line.
     const edited = `${await readFile(userSkillFile(), "utf8")}\nhouse rule\n`;
     await writeFile(userSkillFile(), edited);
     const second = makeDeps({ ring: "edge" });
@@ -1232,46 +1164,37 @@ describe("the ring stamp and the edit baseline share one marker file", () => {
   });
 
   it("keeps the digest on the FIRST line whatever else the marker grows", async () => {
-    // The marker is append-shaped: a bare digest (#1188), then an optional `ring=`
-    // (foundations#74), then an optional `source=` (#1751). Every reader of the
-    // BASELINE takes line one, so that is the invariant to pin — not the file's
-    // total length, which each of those rungs changed on purpose.
+    // The marker is a digest followed by optional `ring=` and `source=` lines.
+    // Every baseline reader takes line one, so that is the invariant to pin.
     const { deps } = makeDeps();
     expect(await skill(["install", "-y"], deps)).toBe(0);
     const marker = await readFile(ownerMarker(), "utf8");
     expect(marker.split("\n")[0]).toMatch(/^[0-9a-f]{64}$/);
-    // No ring recorded on this install, so none is claimed — the pre-ring
-    // behaviour every reader still degrades to.
     expect(markerRing(marker)).toBeNull();
   });
 
   it("records WHERE the body came from, separately from who owns the dir", async () => {
-    // The fact the install message used to get wrong (#1751): it stamped the
-    // BINARY's version onto a body the binary had not necessarily produced. Source
-    // and ring are different questions and the marker answers both.
+    // Source and ring are different questions, and the marker answers both.
     const embedded = makeDeps({ ring: "stable" });
     expect(await skill(["install", "-y"], embedded.deps)).toBe(0);
     const marker = await readFile(ownerMarker(), "utf8");
     expect(markerRing(marker)).toBe("stable");
-    // No remote configured in this fixture, so the body is the embedded copy —
-    // even though a `stable` install owns the dir.
+    // No remote in this fixture, so the body is embedded even though a `stable`
+    // install owns the dir.
     expect(markerSource(marker)).toBe("embedded");
   });
 });
 
 describe("skill install --owned-only with NO channel configured (the shipped wiring)", () => {
-  // The post-update refresh: `update` spawns the NEW binary's
+  // The post-update refresh: `update` spawns the new binary's
   // `skill install --owned-only -y`, and `index.ts` supplies neither `skillUrl`
-  // nor `fetchRemoteSkill`. Every test above injects a channel, so the shape the
-  // binary actually ships in had no coverage at all — which is how #24 shipped:
-  // `verified` was `canonical !== null`, permanently false without a channel, so
-  // rule 3 declined on every machine that already had the skill and the refresh
-  // could never write.
+  // nor `fetchRemoteSkill`. The tests above all inject a channel, so this covers
+  // the wiring the binary ships with, where `verified` is always false.
   const STALE = "# stale\n";
   const FRESH = "# this binary's embed\n";
 
-  /** An owned dir holding `body`, with a marker baseline recording `wrote`
-   *  (defaults to `body` — i.e. untouched since wego wrote it). */
+  /** `wrote` is the baseline the marker records; it defaults to `body`, i.e.
+   *  untouched since wego wrote it. */
   async function ownedDir(body: string, wrote = body): Promise<string> {
     const dir = join(home, ".claude", "skills", "wego");
     await mkdir(dir, { recursive: true });

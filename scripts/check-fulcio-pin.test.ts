@@ -1,12 +1,10 @@
 /**
- * The comparison, without the network. `check-fulcio-pin.ts` itself does one
- * `fetch` behind `import.meta.main`; everything that can be wrong about the
- * ANSWER is in these two pure functions, so that is what is tested.
+ * `check-fulcio-pin.ts` does one `fetch` behind `import.meta.main`; the
+ * comparison logic is in two pure functions, so that is what is tested.
  *
- * The cases below are the ones that decide whether this check is worth running:
- * a reformatting of the same certificates must NOT alarm (or the weekly job
- * becomes noise and gets muted, which is how a real rotation would then be
- * missed), and a genuine change in the SET must always alarm.
+ * A reformatting of the same certificates must not alarm (or the weekly job
+ * becomes noise and gets muted, and a real rotation is missed), and a genuine
+ * change in the set must always alarm.
  */
 import { describe, expect, it } from "bun:test";
 import { certificateBodies, pinDrift } from "./check-fulcio-pin";
@@ -23,15 +21,11 @@ describe("certificateBodies", () => {
     expect(certificateBodies(pem(A, B))).toEqual([A, B].sort());
   });
 
-  // The pin lives inside a TypeScript template literal and the endpoint returns a
-  // plain bundle, so wrapping and trailing whitespace differ for reasons that have
-  // nothing to do with trust.
   it("ignores line wrapping and surrounding whitespace", () => {
     const wrapped = `-----BEGIN CERTIFICATE-----\n  ${A.slice(0, 4)}\n${A.slice(4)}  \n-----END CERTIFICATE-----\n`;
     expect(certificateBodies(wrapped)).toEqual([A]);
   });
 
-  // Neither side promises an order; the SET is the claim.
   it("is order-insensitive", () => {
     expect(certificateBodies(pem(A, B))).toEqual(certificateBodies(pem(B, A)));
   });
@@ -57,18 +51,15 @@ describe("pinDrift", () => {
     expect(drift).toContain("1 pinned but no longer served");
   });
 
-  // An empty answer is the one shape that could quietly pass as "nothing to
-  // report" - a truncated response, a proxy, an endpoint that moved. It must
-  // alarm, because the alternative is a check that reports green having compared
-  // the pin against nothing.
+  // An empty answer (a truncated response, a proxy, an endpoint that moved)
+  // must alarm, or the check passes having compared the pin against nothing.
   it("refuses to read an empty bundle as agreement", () => {
     const drift = pinDrift(pem(A, B), "");
     expect(drift).toContain("no certificates");
   });
 
-  // The message is the whole product of this check: it fires at most once every
-  // few years, to someone who has never seen it before, about a failure with no
-  // other symptom. It has to explain itself.
+  // It fires rarely, to someone who has never seen it, about a failure with no
+  // other symptom, so the message has to explain itself.
   it("explains the consequence and the fix", () => {
     const drift = pinDrift(pem(A), pem(B)) ?? "";
     expect(drift).toContain("sigstore-roots.ts");

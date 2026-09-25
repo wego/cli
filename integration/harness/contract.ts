@@ -2,10 +2,9 @@
  * The contract every exchange in the fake is checked against: `contract/openapi.json`,
  * the vendored copy of the API's published document.
  *
- * This is what keeps the fake honest. A hand-written stand-in can only fail
- * when it disagrees with itself; a fake whose every request and every answer must
- * satisfy the API's own published schema fails when the CLI and the API disagree,
- * which is the one disagreement this tier exists to catch.
+ * A hand-written fake can only fail when it disagrees with itself. Checking every
+ * request and answer against the API's published schema makes it fail when the CLI
+ * and the API disagree, which is what this tier exists to catch.
  *
  * A validator for the slice of JSON Schema the document uses, not a general one:
  * `type`, `properties`, `required`, `additionalProperties`, `items`, `enum`, `const`,

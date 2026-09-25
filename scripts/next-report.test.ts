@@ -1,16 +1,12 @@
 /**
- * The next report, rendered from the SHARED payloads and read through a fake
- * GitHub API on a fake clock.
- *
  * The payloads in `scripts/next-report/payloads/` are the cross-repository
- * interface: wego-ai tests its writer against the same files, byte for byte.
- * So a rendering test here is also a statement that the two sides agree on what
- * each verdict looks like, and the files are read, never inlined.
+ * interface: wego-ai tests its writer against the same files, byte for byte. So
+ * they are read, never inlined, and a rendering test here also shows the two
+ * sides agree on what each verdict looks like.
  *
- * The polling cases matter as much as the rendering ones. The release lane waits
- * up to 45 minutes; a wait that ended on the wrong state (reporting "did not
- * start" while a check was running, or trusting a check from another App) would
- * put the wrong sentence in front of a person deciding a promote.
+ * The polling cases matter as much as the rendering ones: a wait that ended on
+ * the wrong state (reporting "did not start" while a check was running, or
+ * trusting a check from another App) would mislead a person deciding a promote.
  */
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -105,7 +101,7 @@ describe("a completed report, per shared payload", () => {
       "| Search round trips | – | ✓ flights ✓ hotels ✓ |",
     );
     expect(table).toContain("| Startup | 39 ms | 41 ms |");
-    // The evals are their own check now, never a row of the smoke's table.
+    // The evals are their own check, never a row of the smoke's table.
     expect(table).not.toContain("Skill evals");
   });
 
@@ -486,7 +482,7 @@ const evalsCheck = (overrides: Partial<CheckRun> & { body?: string } = {}) =>
     ...overrides,
   });
 
-/** A GitHub API that answers each check name from its own list. */
+/** Answers every check-runs query with both lists; `pickCheck` filters by name. */
 const fakeChecks = (smoke: CheckRun[], evals: CheckRun[]) =>
   fakeApi(() => [...smoke, ...evals]);
 

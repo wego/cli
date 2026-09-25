@@ -1,91 +1,73 @@
 # Release-path ownership. Every path here can change what a published binary is,
-# where it comes from, or who may sign it - so each needs a review from someone
-# who holds those rights, not just any writer.
+# where it comes from, or who may sign it, so each needs review from a release
+# signer, not just any writer.
 #
-# Deliberately NOT a catch-all `*` line: the rest of the tree is ordinary CLI code
-# reviewed the ordinary way. Branch protection on `main` requires a code-owner
-# review, so a `*` line would make these three people a bottleneck on every change.
+# No catch-all `*` line: branch protection on `main` requires code-owner review,
+# so a `*` line would make these three people a bottleneck on every change.
 .github/workflows/   @sunny-wego @yeouchien-wego @chuyeowego
 .github/actions/     @sunny-wego @yeouchien-wego @chuyeowego
 .github/CODEOWNERS   @sunny-wego @yeouchien-wego @chuyeowego
 src/release-signing/ @sunny-wego @yeouchien-wego @chuyeowego
 scripts/             @sunny-wego @yeouchien-wego @chuyeowego
 
-# The SET OF PACKAGES that runs inside those same jobs, and the config that decides
-# what gets released. Same lever as the scripts above, which is why it belongs at the
-# same bar - and it was the one hole in the list:
+# The packages that run inside those same jobs, and the config that decides what
+# gets released. They have the same reach as the scripts above, so the same bar:
 #
-#   - `bun.lock` chooses the code that executes beside the signing identity and the
+#   - `bun.lock` chooses the code that runs beside the signing identity and the
 #     store token. The release lane runs a frozen install and then a publish script
-#     that imports `@vercel/blob`; the package manager runs no lifecycle scripts, so
-#     a payload has to live in imported code, and imported code is exactly what this
-#     file selects.
-#   - `package.json`'s `dependencies` are COMPILED INTO THE SHIPPED BINARY by
-#     `bun build --compile` (src/api.ts imports zod), then hashed and signed. Nothing
-#     is forged in that path - the malicious bytes are genuinely the release - so no
-#     amount of job isolation reaches it. Review is the only control, which is why
-#     the reviewer has to be the same one who may change a release script.
-#   - the release-please files decide the version and the tag that `release-cli.yml`
-#     builds from.
+#     that imports `@vercel/blob`. No lifecycle scripts run, so a payload would have
+#     to be in imported code, which is what this file selects.
+#   - `package.json` `dependencies` are compiled into the shipped binary by
+#     `bun build --compile` (src/api.ts imports zod), then hashed and signed. Bad
+#     bytes there would be the genuine release, so job isolation does not help and
+#     review is the only control.
+#   - The release-please files decide the version and the tag that
+#     `release-cli.yml` builds from.
 #
-# Before this, changing a script that runs in the privileged job needed a release
-# signer, while changing the set of packages that runs beside it needed one ordinary
-# reviewer. That was backwards.
-#
-# Leading slashes are load-bearing: CODEOWNERS is gitignore-style, so a bare
-# `package.json` would match one at any depth rather than the repository root.
+# Leading slashes matter: CODEOWNERS uses gitignore-style patterns, so a bare
+# `package.json` would match at any depth, not just the repository root.
 /package.json                  @sunny-wego @yeouchien-wego @chuyeowego
 /bun.lock                      @sunny-wego @yeouchien-wego @chuyeowego
 /release-please-config.json    @sunny-wego @yeouchien-wego @chuyeowego
 /.release-please-manifest.json @sunny-wego @yeouchien-wego @chuyeowego
 
-# THE SELF-UPDATE DECISION PATH. `src/release-signing/` above decides whether a
-# signed build record VERIFIES. These two decide what is done with that verdict,
-# and no amount of signing reaches them:
+# The self-update decision path. `src/release-signing/` decides whether a signed
+# build record verifies. These two decide what is done with that result:
 #
-#   - `src/update.ts` is what a verify failure has to travel through to become a
-#     refusal. Widening one error path from "refuse to install" to "warn and
-#     continue" defeats the signature check without editing a line of the code
-#     that performs it, and it reads like ordinary error-handling polish.
-#   - `src/ring-follow.ts` decides WHOSE bytes an install accepts. Self-update
-#     compares checksums, not versions, so the recorded pointer is the entire
-#     policy for what a machine downloads - and the rule that no record is a
-#     REFUSAL rather than a guessed default is the only thing standing between a
-#     missing file and an install following a ring nobody chose.
+#   - `src/update.ts` turns a verify failure into a refusal. Changing one error
+#     path from "refuse to install" to "warn and continue" defeats the signature
+#     check without touching the verifier, and looks like ordinary error handling.
+#   - `src/ring-follow.ts` decides whose bytes an install accepts. Self-update
+#     compares checksums, not versions, so the recorded pointer is the whole policy
+#     for what a machine downloads. Treating a missing record as a refusal, not a
+#     guessed default, is what stops an install following a ring nobody chose.
 #
-# SECURITY.md already declares "the self-update path, including signature
-# verification and how an update decides what to install" in scope. Owning only
-# the verification half was the disagreement; this closes it.
+# SECURITY.md puts "the self-update path, including signature verification and
+# how an update decides what to install" in scope, so both halves are owned.
 src/update.ts      @sunny-wego @yeouchien-wego @chuyeowego
 src/ring-follow.ts @sunny-wego @yeouchien-wego @chuyeowego
 
-# THE CREDENTIAL PATH, in scope by the same sentence in SECURITY.md:
-# "credential handling, the OAuth + PKCE login flow, token storage on disk".
-# Each of these holds a control that is invisible to a reviewer who is not
-# already looking for it, and each is a plausible-looking small diff away from
-# being gone:
+# The credential path, in scope per SECURITY.md: "credential handling, the
+# OAuth + PKCE login flow, token storage on disk". Each file holds a control that
+# is easy to miss in review and easy to remove with a small diff:
 #
-#   - `src/oauth.ts` performs the token request and receives the access, refresh
-#     and id tokens. It is the only place the CLI's credentials exist before
-#     something writes them down, and the one client that must stay Auth Code +
-#     PKCE (never ROPC).
-#   - `src/pkce.ts` generates the verifier and the CSRF `state`. That entropy and
-#     the S256 challenge ARE the binding between the browser that authorized and
-#     the process that redeems; shortening a length or returning a fixed value on
-#     some branch looks like a refactor and makes the flow interceptable.
-#   - `src/loopback.ts` decides which callback requests may settle a login -
-#     origin first, then `state`. Relaxing either lets any other process on the
-#     machine hand the flow an authorization code, or cancel a login in flight.
-#   - `src/paste-callback.ts` is a second door onto that same lock: the SSH flow
-#     completes by hand through the same interpreter, so what a pasted URL is
-#     allowed to be is part of the same decision.
-#   - `src/storage.ts` is the 0600 token file. The chmod after the write is there
-#     because `mode` applies only on creation; deleting that one line leaves
-#     tokens readable by every user on the box, and no test output changes shape.
-#   - `src/config-dir.ts` owns the 0700 directory that sits under it. Whichever
-#     command runs first on a fresh machine fixes that directory's mode, so a
-#     change here can downgrade token storage from a command that never mentions
-#     a token.
+#   - `src/oauth.ts` makes the token request and receives the access, refresh and
+#     id tokens. It is the only place credentials exist before they are stored,
+#     and it must stay Auth Code + PKCE (never ROPC).
+#   - `src/pkce.ts` generates the verifier and the CSRF `state`. Their entropy and
+#     the S256 challenge bind the authorizing browser to the redeeming process;
+#     shortening a length or returning a fixed value makes the flow interceptable.
+#   - `src/loopback.ts` decides which callback requests may complete a login
+#     (origin first, then `state`). Relaxing either lets another local process
+#     inject an authorization code or cancel a login.
+#   - `src/paste-callback.ts` handles the SSH flow, where the callback URL is
+#     pasted by hand through the same logic, so it is part of the same control.
+#   - `src/storage.ts` writes the 0600 token file. The chmod after the write is
+#     needed because `mode` applies only on creation; removing it leaves tokens
+#     readable by every user, and no test output changes.
+#   - `src/config-dir.ts` creates the 0700 directory above it. Whichever command
+#     runs first on a fresh machine sets its mode, so a change here can weaken
+#     token storage from a command unrelated to tokens.
 src/oauth.ts          @sunny-wego @yeouchien-wego @chuyeowego
 src/pkce.ts           @sunny-wego @yeouchien-wego @chuyeowego
 src/loopback.ts       @sunny-wego @yeouchien-wego @chuyeowego
@@ -93,108 +75,89 @@ src/paste-callback.ts @sunny-wego @yeouchien-wego @chuyeowego
 src/storage.ts        @sunny-wego @yeouchien-wego @chuyeowego
 src/config-dir.ts     @sunny-wego @yeouchien-wego @chuyeowego
 
-# The two that decide WHERE a credential goes and whether it may travel in
-# cleartext. Neither is purely a security file, and both are included anyway:
+# The two files that decide where a credential goes and whether it may travel in
+# cleartext. Neither is purely a security file, but both are owned:
 #
-#   - `src/target.ts` resolves which backend one binary talks to, at run time,
-#     from a flag or an env var. It therefore names the host that receives the
-#     access token, and its prod default is a safety property, not a preference:
-#     changing the default, or the endpoint bundle a target implies, redirects
-#     live credentials without touching any file that mentions a token.
-#   - `src/config.ts` carries `assertSecureUrl`, the guard that refuses a
-#     plaintext endpoint for anything but a loopback host - the reason auth codes
-#     and refresh tokens cannot be sent over `http://`. It is also what
-#     `update.ts` uses to check the recorded install URL, so it is the one file
-#     on BOTH paths. It does see ordinary config churn; that cost is accepted
-#     because the guard is a single `superRefine` away from allowing cleartext
-#     everywhere.
+#   - `src/target.ts` picks the backend at run time from a flag or env var, so it
+#     names the host that receives the access token. Changing its prod default, or
+#     the endpoints a target implies, redirects live credentials without touching
+#     any file that mentions a token.
+#   - `src/config.ts` holds `assertSecureUrl`, which refuses a plaintext endpoint
+#     except on loopback, so auth codes and refresh tokens never go over
+#     `http://`. `update.ts` also uses it to check the recorded install URL, so it
+#     is on both paths. The ordinary config churn is accepted as the cost.
 src/target.ts @sunny-wego @yeouchien-wego @chuyeowego
 src/config.ts @sunny-wego @yeouchien-wego @chuyeowego
 
-# THE AGENT'S INSTRUCTIONS. `skills/wego/SKILL.md` is compiled into the binary
+# The agent's instructions. `skills/wego/SKILL.md` is compiled into the binary
 # (`src/skill-embed.ts`) and, after every self-update, written into each agent
-# skill directory this machine already has (`skill install --owned-only`). Its
-# prose is then followed by the user's coding agent, with the user's
-# permissions - so a sentence added here reaches every install as surely as
-# code does, and is easier to miss in review.
+# skill directory the machine has (`skill install --owned-only`). The user's
+# coding agent follows it with the user's permissions, so a sentence added here
+# reaches every install like code does, and is easier to miss in review.
 #
 #   - `skills/` is the body itself.
 #   - `plugin/` is what the promote lane publishes to wego/skills.
 #   - `src/skill.ts` decides WHERE the body is written (the agent path table).
 #   - `src/skill-embed.ts` decides WHICH body is embedded.
 #
-# Signing is not the gap: the remote skill channel is gone, so the body is
-# exactly as trustworthy as the verified binary. As with `package.json` above,
-# the bytes are genuinely the release, and review is the only control.
+# The body ships only inside the signed binary, so signing covers delivery. As
+# with `package.json` above, the bytes are the genuine release, and review is
+# the only control.
 skills/            @sunny-wego @yeouchien-wego @chuyeowego
 plugin/            @sunny-wego @yeouchien-wego @chuyeowego
 src/skill.ts       @sunny-wego @yeouchien-wego @chuyeowego
 src/skill-embed.ts @sunny-wego @yeouchien-wego @chuyeowego
 
-# THE DECLARED SCOPE. The self-update and credential entries above cite
-# SECURITY.md as their reason for being owned. If any writer could narrow that
-# scope without a signer's review, the stated reason for owning those paths
-# could shrink with it.
+# The declared scope. The entries above cite SECURITY.md as their reason, so
+# narrowing its scope needs the same review.
 /SECURITY.md @sunny-wego @yeouchien-wego @chuyeowego
 
-# THE INPUT TO THE api<->cli CONTRACT CHECK. Owned for REVIEW VISIBILITY, not
-# for runtime reach - and the distinction is the reason this comment exists.
+# The input to the API contract check. Owned for review visibility, not runtime
+# reach.
 #
-# NOTHING IN THIS FILE EXECUTES. It is read at build time by
-# `scripts/generate-api-types.ts`, which emits `src/api-types.d.ts`; that output
-# is not committed, is imported only with `import type`, and is erased before a
-# byte of it could reach the shipped binary. The endpoints the CLI actually
-# talks to come from `src/target.ts`, which is owned above. So this is NOT the
-# `bun.lock` case, and it is not claimed to be.
+# Nothing in this file executes. `scripts/generate-api-types.ts` reads it at
+# build time to emit `src/api-types.d.ts`, which is not committed, is imported
+# only with `import type`, and never reaches the shipped binary. The endpoints
+# the CLI talks to come from `src/target.ts`, owned above.
 #
-# What it does control is the contract CHECK ITSELF. Both halves of that chain
-# are already owned - the generator and `scripts/ci-contract-drift.test.ts` -
-# while the document they run against was not. That is backwards in the same
-# way `bun.lock` was: you cannot own a check and leave its input open.
+# It does control the contract check itself. The generator and
+# `scripts/ci-contract-drift.test.ts` are owned, so the document they check
+# against should be too:
 #
 #   - Checks A and C (`src/api-contract.ts`, under `bun run typecheck`) compare
-#     the CLI's Zod types against THIS file. Widening a request schema here
-#     makes Check C - the outbound-exactness half - stop objecting to a field
-#     the real API would reject.
-#   - Check B (`src/api-contract.test.ts`) walks THIS file to confirm the fields
-#     the CLI's behaviour depends on are still published. An edit here can make
-#     that walk pass for a path the API does not serve.
-#   - The CI drift step is `continue-on-error` with an explicit `exit 0` on
-#     every path, BY DESIGN (the API deploys on its own cadence). So a
-#     hand-edited contract earns a `::warning::` and merges. Nothing fails.
+#     the CLI's Zod types against this file. Widening a request schema here
+#     makes Check C stop objecting to a field the real API would reject.
+#   - Check B (`src/api-contract.test.ts`) walks this file to confirm the fields
+#     the CLI depends on are still published. An edit here can make it pass for
+#     a path the API does not serve.
+#   - The CI drift step only warns (the API deploys on its own schedule), so a
+#     hand-edited contract merges with a `::warning::`.
 #
-# The practical problem is size: at ~7,300 lines, a changed enum value, a
-# relaxed `required`, or a dropped field is invisible in a diff nobody scrolls.
-# A refresh commit is this file ALONE (`bun run api-contract:refresh`, per
-# CONTRIBUTING), so the owner's question is a cheap one - "is this the
-# generator's output, or did someone type it?" - which is exactly the review
-# this cannot get today.
+# The file is large, so a changed enum, a relaxed `required` or a dropped field
+# is easy to miss. A refresh commit changes only this file
+# (`bun run api-contract:refresh`, per CONTRIBUTING), so the owner only has to
+# ask whether it is the generator's output.
 #
-# LOW URGENCY, recorded as such. No credential and no executable path runs
-# through here; the cost of being wrong is a weakened compile-time check, not a
-# redirected token.
+# Low urgency: no credential or executable path goes through here. The worst
+# case is a weaker compile-time check.
 contract/openapi.json @sunny-wego @yeouchien-wego @chuyeowego
 
-# THE INTEGRATION TIER. Unlike the unit tests below, it is a release gate:
-# `release` needs `integration (<target>)` on every target but Windows, so what this
-# directory accepts is what may be published. Two things in it are a small diff
-# away from making that gate vacuous or unsafe:
+# The integration tier. Unlike the unit tests, it is a release gate: `release`
+# needs `integration (<target>)` on every target but Windows. Two parts can make
+# that gate meaningless or unsafe with a small diff:
 #
 #   - `harness/contract.ts` and `harness/fake.ts` hold every exchange to the
 #     contract. Relaxing the validator, or letting an unexpected request pass,
-#     turns the tier back into a fake that can only fail when it disagrees with
-#     itself, and every scenario still reads green.
+#     leaves every scenario green while checking nothing.
 #   - `fixtures/` is what the fake answers with. A fixture copied from a real
 #     response must not carry the account it came from; review is the check.
 integration/ @sunny-wego @yeouchien-wego @chuyeowego
 
-# Deliberately NOT owned, so the omissions read as decisions rather than gaps:
+# Not owned, on purpose:
 #
-#   - `src/commands.ts` and `src/index.ts` wire the login flow together, but they
-#     also carry every other command in the CLI. Owning them would put a release
-#     signer on nearly every pull request in the repository - the bottleneck the
-#     missing `*` line exists to avoid. The controls themselves live in the
-#     modules above, and those are owned.
-#   - The `*.test.ts` files beside these modules. Deleting the test that pins
-#     fail-closed buys nothing on its own: the behaviour change it was hiding
-#     still has to be made in a file on this list, and that still needs a signer.
+#   - `src/commands.ts` and `src/index.ts` wire up the login flow but also every
+#     other command. Owning them would put a release signer on nearly every PR.
+#     The controls live in the owned modules above.
+#   - The `*.test.ts` files beside these modules. Deleting a fail-closed test
+#     changes nothing by itself: the behaviour change still has to happen in an
+#     owned file.

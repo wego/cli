@@ -24,7 +24,7 @@ describe("interpretCallback", () => {
   });
 
   it("ignores an error param that lacks the matching state", () => {
-    // state is checked FIRST — a stray ?error= without our state is not for us.
+    // A stray ?error= without our state must not cancel the login.
     expect(interpretCallback("/callback?error=access_denied", "st-1")).toEqual({
       kind: "ignore",
     });
@@ -145,7 +145,6 @@ describe("startLoopback (live ephemeral server)", () => {
       await new Promise((r) => setTimeout(r, 50));
       expect(settled).toBe(false); // login NOT cancelled by the unsolicited hit
 
-      // A legitimate redirect with the right state still resolves it.
       const ok = await fetch(
         `${listener.redirectUri}?code=the-code&state=st-1`,
       );
@@ -178,10 +177,8 @@ describe("startLoopback (live ephemeral server)", () => {
   it("buffers a callback that arrives before the waiter is armed", async () => {
     const listener = startLoopback("/callback");
     try {
-      // Redirect hits the server BEFORE waitForCode() is called.
       const res = await fetch(`${listener.redirectUri}?code=early&state=st-9`);
       expect(res.status).toBe(200);
-      // The waiter attaches afterwards and still receives the buffered code.
       expect(await listener.waitForCode("st-9", 5_000)).toBe("early");
     } finally {
       listener.close();
@@ -191,10 +188,8 @@ describe("startLoopback (live ephemeral server)", () => {
   it("keeps an early valid callback even when an unsolicited one also arrives first", async () => {
     const listener = startLoopback("/callback");
     try {
-      // Both arrive BEFORE waitForCode: a wrong-state hit then the real one.
       await fetch(`${listener.redirectUri}?error=access_denied&state=evil`);
       await fetch(`${listener.redirectUri}?code=real&state=st-7`);
-      // The wrong-state one is ignored; the valid one still resolves.
       expect(await listener.waitForCode("st-7", 5_000)).toBe("real");
     } finally {
       listener.close();
@@ -211,14 +206,13 @@ describe("startLoopback (live ephemeral server)", () => {
     }
   });
 
-  // Some clients register a BARE-origin loopback redirect (no /callback path);
+  // Some clients register a bare-origin loopback redirect (no /callback path);
   // an empty redirectPath must produce a bare redirect_uri and still match `/`.
   it("supports a bare redirect (empty path) and matches the root callback", async () => {
     const listener = startLoopback("");
     try {
       const url = new URL(listener.redirectUri);
       expect(url.hostname).toBe("127.0.0.1");
-      // Bare redirect_uri: no path component.
       expect(listener.redirectUri).toBe(`http://127.0.0.1:${url.port}`);
 
       const pending = listener.waitForCode("st-bare", 5_000);

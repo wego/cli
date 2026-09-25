@@ -29,8 +29,7 @@ describe("the self-update gate's verdict", () => {
   });
 
   it("names the fail-closed refusal on exit 6 - the shape v1.2.0 shipped", () => {
-    // The exact stderr a v1.2.0 binary produced against production, which every
-    // lane check passed over.
+    // The exact stderr a v1.2.0 binary produced against production.
     const v = interpretUpdate({
       code: 6,
       stdout: "",
@@ -41,8 +40,8 @@ describe("the self-update gate's verdict", () => {
     if (!v.ok) {
       expect(v.reason).toContain("exited 6");
       expect(v.reason).toContain("fail-closed refusal");
-      // Points at the SAN, not at the bridge: since wego/cli#29 the bridge's
-      // `cli-v1.1.0` record verifies, so it is no longer a route to exit 6.
+      // Points at the SAN, not the bridge: the bridge's `cli-v1.1.0` record
+      // verifies (wego/cli#29), so it is not a route to exit 6.
       expect(v.reason).toContain("SAN");
       expect(v.reason).toContain("wego/cli#29");
       expect(v.reason).not.toContain("legacy bridge");
@@ -61,8 +60,8 @@ describe("the self-update gate's verdict", () => {
 
 describe("the gate refuses to pass on a binary that tests nothing", () => {
   it("detects the from-source / dev-version short circuit", () => {
-    // `update.ts:364` returns EXIT.OK here, so an exit-code-only gate would go
-    // green having exercised no network path at all.
+    // `src/update.ts` returns EXIT.OK here, so an exit-code-only gate would pass
+    // having exercised no network path.
     const out =
       "Self-update applies to installed release binaries (running from source – use `git pull`). Reinstall the latest with:\n  curl -fsSL https://api.wego.com/install | bash";
     expect(refusedAsUnreleased(out)).toBe(true);
@@ -78,9 +77,9 @@ describe("the gate refuses to pass on a binary that tests nothing", () => {
 });
 
 describe("the replace-path claim (--force-replace, the macOS leg)", () => {
-  // The success line `downloadAndReplace` prints, arrow and all. Matched loosely
-  // enough to survive a reworded path suffix, tightly enough that the up-to-date
-  // line can never satisfy it.
+  // The success line `downloadAndReplace` prints. Matched loosely enough to
+  // survive a reworded path suffix, tightly enough that the up-to-date line can
+  // never satisfy it.
   it("reads a real swap out of the success line", () => {
     expect(
       reportedReplaced(
@@ -90,8 +89,8 @@ describe("the replace-path claim (--force-replace, the macOS leg)", () => {
   });
 
   it("is not satisfied by the up-to-date short circuit", () => {
-    // The whole point: with --force this line means the force flag never took
-    // and the quarantine clear went unrun, which must be a red run, not a green.
+    // With --force this line means the flag never took and the quarantine
+    // clear went unrun, which must fail.
     expect(reportedReplaced("Already up to date (1.2.7, ring next).")).toBe(
       false,
     );

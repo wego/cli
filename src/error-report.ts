@@ -44,7 +44,7 @@ export function isTimeoutError(err: unknown): boolean {
 }
 
 /** True for a `fetch` network failure (DNS/connection refused/reset), which
- *  surfaces as a `TypeError` — distinct from a well-formed HTTP error response. */
+ *  surfaces as a `TypeError`, distinct from a well-formed HTTP error response. */
 function isNetworkError(err: unknown): boolean {
   return err instanceof TypeError;
 }
@@ -53,10 +53,10 @@ function isNetworkError(err: unknown): boolean {
  * Every member of the API's closed `code` enum, mapped onto its exit class. The
  * object literal is checked **both** ways against the generated `ProblemCode`:
  * a code the API added is a missing key, a code it renamed or dropped is an
- * excess one — so the enum and this table cannot drift apart silently the way
- * the hand-written switch here did. A `Map` (not a `Record` lookup) because the
- * wire `code` is an untrusted string: an unrecognised or future token misses and
- * falls through to the status fallback below.
+ * excess one, so the enum and this table cannot drift apart silently. A `Map`
+ * (not a `Record` lookup) because the wire `code` is an untrusted string: an
+ * unrecognised or future token misses and falls through to the status fallback
+ * below.
  */
 const EXIT_BY_PROBLEM_CODE = new Map<string, number>(
   Object.entries({
@@ -74,11 +74,11 @@ const EXIT_BY_PROBLEM_CODE = new Map<string, number>(
   } satisfies Record<ProblemCode, number>),
 );
 
-/** Exit class for a typed `ApiHttpError`: prefer the API's machine `code` (a
- *  closed enum), else fall back to the HTTP status — which still covers an
- *  unparseable body, an absent `code`, and any code a newer API emits that this
- *  binary was compiled before. Split out of `exitCodeForError` to keep that
- *  dispatcher within the cognitive-complexity gate. */
+/** Prefer the API's machine `code` (a closed enum), else fall back to the HTTP
+ *  status, which still covers an unparseable body, an absent `code`, and any
+ *  code a newer API emits that this binary was compiled before. Split out of
+ *  `exitCodeForError` to keep that dispatcher within the cognitive-complexity
+ *  gate. */
 function exitCodeForHttpError(err: ApiHttpError): number {
   const byCode =
     err.code === undefined ? undefined : EXIT_BY_PROBLEM_CODE.get(err.code);
@@ -89,10 +89,9 @@ function exitCodeForHttpError(err: ApiHttpError): number {
   return EXIT.PERMANENT;
 }
 
-/** Map any thrown value to the stable exit class above. */
 export function exitCodeForError(err: unknown): number {
-  // Bad local input, caught before any network call — the same class as a bad
-  // flag, because a settings file IS the user's input (issue #1386).
+  // Bad local input, caught before any network call: the same class as a bad
+  // flag, because a settings file is the user's input (issue #1386).
   if (err instanceof SettingsFileError) return EXIT.USAGE;
   if (err instanceof UnauthorizedError) return EXIT.AUTH;
   if (err instanceof NotFoundError) return EXIT.NOT_FOUND;
@@ -108,8 +107,8 @@ export function exitCodeForError(err: unknown): number {
 
 /**
  * Render a thrown value into a single, actionable stderr line: the API's `code`
- * and `detail`, the `trace_id` (which equals the API's request-log id — quote it
- * to support), a Retry-After hint, and the next action. stdout stays JSON-only,
+ * and `detail`, the `trace_id` (the API's request-log id, to quote to support),
+ * a Retry-After hint, and the next action. stdout stays JSON-only,
  * so this only ever goes to stderr. `prog` is the invoked binary name.
  */
 function formatHttpError(err: ApiHttpError, prog: string): string {
@@ -144,16 +143,13 @@ function rateLimitRemedy(err: ApiHttpError, prog: string): string[] {
 }
 
 /**
- * The next action for an auth-class failure, and there are two of them. A
- * missing or expired token is fixed by logging in again; a **scope shortfall**
- * is not — the session is valid, it just isn't permitted for this operation, and
- * re-running `login` re-requests the same scope set and lands on the same 403.
- * Saying "run `wego login`" there sends the caller round a loop that cannot
- * terminate, so the scope case gets its own line.
+ * A missing or expired token is fixed by logging in again; a scope shortfall is
+ * not. The session is valid but not permitted for this operation, and re-running
+ * `login` re-requests the same scope set and gets the same 403, so the scope
+ * case gets its own remedy.
  *
  * Inert until `apps/api` enables per-route scope enforcement (`requireScope` is
- * wired and no-op), which is exactly why it is written now: the day it lands,
- * the remedy is already right.
+ * wired and no-op); written ahead so the remedy is right when it lands.
  */
 function authRemedy(err: ApiHttpError, prog: string): string[] {
   if (err.code === "insufficient_scope") {
@@ -166,11 +162,8 @@ function authRemedy(err: ApiHttpError, prog: string): string[] {
 
 export function formatCliError(err: unknown, prog: string): string {
   if (err instanceof SettingsFileError) {
-    // Name the file, because the whole point of the settings layer is that a
-    // preference is inspectable — an unfixable "invalid settings" line would
-    // reintroduce exactly the invisibility it replaced. ONE line, ` | `-joined
-    // like `formatHttpError`: a non-zero exit owes the caller a single
-    // actionable line, and three physical lines let a line-reader drop the path.
+    // Name the file so the user can fix it. One line, ` | `-joined like
+    // `formatHttpError`: a line-reader must not drop the path.
     return `${err.message} | ${err.path} | fix that file, or delete it to start over (\`${prog} config list\` re-reads it)`;
   }
   if (err instanceof ApiHttpError) return formatHttpError(err, prog);

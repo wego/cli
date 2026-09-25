@@ -34,7 +34,6 @@ const CITY_SID = body("hotels-search-create").searchId;
 const HOTEL_SID = body("hotels-rooms-create").searchId;
 const RATE_ID = body("hotels-rates").rates[0].id;
 
-/** A results page, edited for one scenario. */
 const page = (edit: Edit): Answer => answer("hotels-search-results", edit);
 
 /** A completed page with no hotels, over `totalCandidates` candidates. */
@@ -74,9 +73,9 @@ const query = (
   op: string,
 ) => Object.fromEntries(fake.requests(op)[0]?.query ?? []);
 
-/** The rule: the API's request-scoped `*Source` copies inside `metadata`
- *  are stripped at print time, so the CLI's own top-level label is the ONE
- *  `*Source` a payload carries per knob. The `locale` echo stays. */
+/** The API's request-scoped `*Source` copies inside `metadata` are stripped at
+ *  print time, so the CLI's top-level label is the only `*Source` a payload
+ *  carries per knob. The `locale` echo stays. */
 function expectOneSourcePerKnob(
   result: CliResult,
   source: string,
@@ -841,7 +840,7 @@ describe("hotels results", () => {
     it(`a bare read prices in ${rung}, and names the rung`, async () => {
       // A searchId carries no currency, so a bare read applies the stored
       // preference even when the search was created with a flag; repeating the
-      // flag on the read is the documented way to match it (docs/settings.md).
+      // flag on the read is how to match it.
       signIn(s.home);
       writeSettings(s.home, settings);
       const fake = s.fake({ routes: [route("hotels-search-results")] });

@@ -1,32 +1,23 @@
 /**
- * Harvest the signing identities `identity.ts` must trust from REAL published
- * records (wego/foundations#129, Phase 1).
+ * Harvest the signing identities `identity.ts` must trust from real published
+ * records (wego/foundations#129).
  *
- * WHY A SCRIPT AND NOT A TYPED STRING.
+ * Why a script and not hand-typed strings: `verifySignedManifest` accepts a
+ * record iff its leaf certificate's SAN matches one of these rules, so a typo
+ * either locks every client out of updates or, worse, silently widens what a
+ * client accepts. The strings are long, nearly identical, and differ from the
+ * wego-ai ones by one path segment, which is easy to transcribe wrong and to
+ * miss in review.
  *
- * An identity is the whole of the trust decision: `verifySignedManifest` accepts a
- * record iff its leaf certificate's SAN matches one of these rules, so a typo in a
- * hand-written string either locks every client out of every update or — far worse
- * — silently widens what a client will accept. The strings are also long, nearly
- * identical to each other, and differ from the wego-ai ones by a single path
- * segment. That is exactly the shape of thing a human transcribes wrong and a
- * reviewer reads past.
+ * This script downloads the two records the lanes published, reads the SAN from
+ * each leaf certificate with the same parser the binary verifies with
+ * (`parseCertificate`), and emits the rules.
  *
- * So they are never typed. This script downloads the two records the
- * lanes actually published, reads the SAN out of each leaf certificate with the
- * SAME parser the binary uses to verify one (`parseCertificate`), and emits the
- * rules. If a rule in `identity.ts` disagrees with what a lane really signs, this
- * script is what notices.
- *
- * WHAT IT REFUSES.
- *
- * Every field that carries authority is asserted, not trusted: the OIDC issuer, the
- * owner/repo, the workflow filename, and the ref shape. A record that parses but
- * names something unexpected is a failure with the mismatch printed, never a
- * quietly-emitted rule. The generalisation from a harvested SAN to a rule is the
- * narrowest one that works: only the VERSION in the tag ref becomes a pattern,
- * because `wego update` reads a ring and cannot know which release is behind it.
- * Everything else stays a literal, taken verbatim from the record.
+ * Every field that carries authority is asserted, not trusted: the OIDC issuer,
+ * owner/repo, workflow filename and ref shape. An unexpected value fails with
+ * the mismatch printed. Only the version in the tag ref becomes a pattern,
+ * because `wego update` reads a ring and cannot know which release is behind
+ * it; everything else stays a literal taken from the record.
  *
  * USAGE
  *
@@ -37,9 +28,8 @@
  *   --edge <version>    the edge build version whose record supplies the edge rule
  *   --store <origin>    overrides STORE_ORIGIN
  *
- * Prints the two rules as TypeScript, ready to paste into `identity.ts`. It does
- * not edit the file: the diff is the reviewable artefact, and a script that both
- * decides and applies leaves nothing for a human to check.
+ * Prints the two rules as TypeScript to paste into `identity.ts`. It does not
+ * edit the file, so the resulting diff is what a human reviews.
  */
 
 import {
@@ -48,33 +38,28 @@ import {
 } from "../src/release-signing/identity";
 import { parseCertificate } from "../src/release-signing/x509";
 
-/** The repository whose lanes may sign a wego CLI release. Asserted rather than
- *  read off the record: the point of the check is that a record from somewhere
- *  else must fail loudly, and a script that emitted whatever owner it happened to
- *  find would launder exactly the substitution this rung exists to stop. */
+/** Asserted rather than read off the record, so a record from another
+ *  repository fails loudly instead of being emitted as a trusted rule. */
 export const EXPECTED_REPO = "wego/cli";
 
-/** The publishing lanes, by workflow filename. `release-cli.yml` signs what
- *  `next` and `stable` serve; `edge-cli.yml` signs what `edge` serves. */
+/** `release-cli.yml` signs what `next` and `stable` serve; `edge-cli.yml` signs
+ *  what `edge` serves. */
 export const RELEASE_WORKFLOW = "release-cli.yml";
 export const EDGE_WORKFLOW = "edge-cli.yml";
 
-/** The only ref an edge record may carry. The edge lane triggers on main and
- *  nothing else, so this is a literal, not a pattern. */
+/** The edge lane triggers only on main, so this is a literal, not a pattern. */
 export const EDGE_REF = "refs/heads/main";
 
 /**
- * A Fulcio SAN, split into the parts that carry authority.
- *
- * `workflow` stops at the `@` and `ref` takes the rest, so a ref containing an `@`
- * cannot eat into the workflow name. Anchored at both ends: unanchored, a SAN that
- * merely CONTAINS a legitimate identity would parse as one.
+ * `workflow` stops at the `@` and `ref` takes the rest, so a ref containing an
+ * `@` cannot eat into the workflow name. Anchored at both ends so a SAN that
+ * merely contains a legitimate identity does not parse as one.
  */
 const SAN_SHAPE =
   /^https:\/\/github\.com\/(?<owner>[^/]+)\/(?<repo>[^/]+)\/\.github\/workflows\/(?<workflow>[^@/]+)@(?<ref>.+)$/;
 
-/** A plain release tag ref. The `-rc.N` line is gone (#74 rung 7), so a prerelease
- *  suffix is not a release identity and must not parse as one here either. */
+/** A plain release tag ref. There are no `-rc.N` releases, so a prerelease
+ *  suffix is not a release identity. */
 const TAG_REF_SHAPE = /^refs\/tags\/v\d+\.\d+\.\d+$/;
 
 export interface SanParts {
@@ -84,7 +69,6 @@ export interface SanParts {
   ref: string;
 }
 
-/** Split a SAN URI into its parts, or throw naming the string that failed. */
 export function parseSan(san: string): SanParts {
   const m = SAN_SHAPE.exec(san);
   if (!m?.groups) {
@@ -103,17 +87,16 @@ export function parseSan(san: string): SanParts {
 }
 
 /**
- * The SAN URI out of a Sigstore bundle's leaf certificate, via the same parser the
+ * The SAN URI from a Sigstore bundle's leaf certificate, via the same parser the
  * binary verifies with.
  *
- * The bundle is `v0.3`, which carries a single `certificate`; `v0.2` and earlier
- * carried an `x509CertificateChain` whose FIRST entry is the leaf. Both are read so
- * a store holding an older record is not a silent miss, and anything else is a
- * throw rather than a guess.
+ * `v0.3` bundles carry a single `certificate`; `v0.2` and earlier carry an
+ * `x509CertificateChain` whose first entry is the leaf. Both are read so an
+ * older record in the store is not missed; anything else throws.
  *
- * A leaf with zero SAN URIs, or more than one, is refused: Fulcio issues exactly
- * one for a workflow identity, and picking one out of several would be choosing
- * which identity to trust.
+ * A leaf with zero or several SAN URIs is refused: Fulcio issues exactly one for
+ * a workflow identity, and picking one of several would be choosing which
+ * identity to trust.
  */
 export function sanFromBundle(bundle: unknown): string {
   const vm = (bundle as { verificationMaterial?: Record<string, unknown> })
@@ -154,7 +137,6 @@ export function sanFromBundle(bundle: unknown): string {
   return cert.sanUris[0] as string;
 }
 
-/** Assert the parts a record must carry, naming the field that disagreed. */
 function assertParts(
   san: string,
   want: { workflow: string },
@@ -175,7 +157,6 @@ function assertParts(
   return parts;
 }
 
-/** Escape a literal for embedding in a `RegExp` source. */
 function escapeRe(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 }
@@ -183,19 +164,15 @@ function escapeRe(literal: string): string {
 export interface IdentityRules {
   /** The exact SAN an edge record carries, emitted verbatim. */
   edge: string;
-  /** The harvested tag SAN, for the record. */
   tagSan: string;
-  /** `RegExp` source generalising ONLY the version in the tag ref. */
+  /** `RegExp` source generalising only the version in the tag ref. */
   tagPattern: string;
 }
 
 /**
- * Turn the two harvested SANs into the two rules.
- *
- * The edge rule is the SAN itself — the ref is fixed, so nothing is generalised.
- * The tag rule replaces the version, and only the version: everything before
- * `refs/tags/v` is escaped and kept verbatim from the record, so the repo, the
- * workflow file and the ref prefix all remain literals that came off a real
+ * The edge rule is the SAN itself, since the ref is fixed. The tag rule replaces
+ * only the version: everything before `refs/tags/v` is escaped and kept verbatim,
+ * so the repo, workflow file and ref prefix remain literals from a real
  * certificate.
  */
 export function identityRulesFrom(
@@ -228,7 +205,6 @@ export function identityRulesFrom(
   };
 }
 
-/** The TypeScript to paste into `identity.ts`. */
 export function renderRules(rules: IdentityRules): string {
   return [
     "export const CLI_RELEASE_TAG_IDENTITY =",

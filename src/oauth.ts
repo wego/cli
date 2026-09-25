@@ -4,7 +4,7 @@ import { formatZodError } from "./zod-error";
 
 /**
  * OAuth2 Authorization-Code + PKCE token operations (client side). The CLI uses
- * Auth Code + PKCE only — never ROPC (OAuth 2.1). Refresh-token rotation is
+ * Auth Code + PKCE only, never ROPC (OAuth 2.1). Refresh-token rotation is
  * handled by the AS; the CLI just persists whatever refresh token comes back.
  */
 
@@ -16,18 +16,17 @@ export interface TokenSet {
   /** The user's Wego market (POS), decoded from the id_token's `country_code`
    *  claim when present. Used to default `--site` (source `account`) so the CLI
    *  transacts in the user's market without the caller passing it. Undefined
-   *  when the response carried no id_token, or it had no 2-letter country_code
-   *  (auth-verified: `country_code` rides on the id_token, never the access
-   *  token — so the API can't derive this; only the CLI can). */
+   *  when the response carried no id_token, or it had no 2-letter country_code.
+   *  `country_code` is only on the id_token, never the access token, so the API
+   *  cannot derive this; only the CLI can. */
   market?: string;
   /** Replayed to the API as the `x-wego-id-token` assertion. */
   idToken?: string;
 }
 
-/** Decode the `country_code` claim from an id_token JWT into a 2-letter market
- *  code, or `undefined`. Decode-only (NOT signature-verified): it's the user's
- *  own token, used solely to default `--site`, which an explicit `--site` always
- *  overrides — so a stale/expired id_token is harmless here. */
+/** Decode-only, not signature-verified: it is the user's own token, used only
+ *  to default `--site`, which an explicit `--site` always overrides, so a stale
+ *  or expired id_token is harmless here. */
 function marketFromIdToken(idToken: unknown): string | undefined {
   if (typeof idToken !== "string") return undefined;
   const payload = idToken.split(".")[1];
@@ -65,7 +64,6 @@ export function isIdTokenUsable(idToken: unknown, now = Date.now()): boolean {
   }
 }
 
-/** Build the `/authorize` URL for the loopback flow. */
 export function buildAuthorizeUrl(
   config: CliConfig,
   params: { redirectUri: string; state: string; codeChallenge: string },
@@ -83,9 +81,9 @@ export function buildAuthorizeUrl(
 
 /**
  * The untrusted `/token` response. Only `access_token` is required (a non-empty
- * string); `refresh_token` and `expires_in` are read leniently below — a missing
- * or odd-typed value just means "no refresh token" / "no known expiry" rather
- * than a hard failure, so an AS that omits or mistypes them still logs you in.
+ * string); `refresh_token` and `expires_in` are read leniently below: a missing
+ * or odd-typed value means "no refresh token" or "no known expiry" rather than
+ * a hard failure, so an AS that omits or mistypes them still logs you in.
  */
 const TokenResponseSchema = z.looseObject({
   access_token: z
@@ -120,10 +118,9 @@ export function parseTokenResponse(json: unknown, now = Date.now()): TokenSet {
  * The token endpoint was never reached: connection refused, DNS, TLS, reset, or
  * the deadline. Typed here rather than left as whatever `fetch` threw, because
  * that differs by platform: Bun raises a `TypeError` for a refused connection on
- * macOS and an `Error` on Linux, and only a `TypeError` read as a network
- * failure, so the same unreachable auth server exited 7 on one and 2 on the other
- * (found by `integration/login-more.test.ts` on the Linux runner). The api
- * client wraps its own `fetch` the same way (`ApiUnreachableError`).
+ * macOS and an `Error` on Linux, and an untyped error would give the same
+ * unreachable auth server different exit codes on each. The api client wraps
+ * its own `fetch` the same way (`ApiUnreachableError`).
  *
  * The message carries the cause, because a failed refresh prints only the
  * message: it is what tells a refused connection from DNS, TLS or a proxy.
@@ -138,22 +135,20 @@ export class TokenEndpointUnreachableError extends Error {
   }
 }
 
-/** A thrown value's own words, for a message. */
 export function causeText(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
 /**
  * A non-2xx response from the token endpoint, carrying the auth server's own
- * OAuth2 error rather than collapsing every distinct cause to one status line.
- * Before this, a failed refresh reached the user as `token endpoint failed: 400`
- * and nothing said whether the token was revoked, expired, or rotated away, so
- * a lost session was undiagnosable after the fact (investigation #1360, H5).
+ * OAuth2 error rather than only a status line, so a lost session can be
+ * diagnosed afterwards as revoked, expired or rotated away (investigation #1360,
+ * H5).
  *
- * The refresh token is NEVER captured here. Only the non-secret RFC 6749 §5.2
+ * The refresh token is never captured here. Only the non-secret RFC 6749 §5.2
  * error fields, and a bounded snippet of the raw body for the rare non-OAuth2
- * failure (a captive portal, a 5xx HTML page) — and the snippet stays off
- * stderr, reached only by the local failure record.
+ * failure (a captive portal, a 5xx HTML page). The snippet stays off stderr and
+ * is reached only by the local failure record.
  */
 export class TokenEndpointError extends Error {
   readonly status: number;
@@ -199,10 +194,10 @@ function tokenErrorMessage(args: {
 /** Cap on how many chars of an error body (or `error_description`) are retained,
  *  so a captive portal or a 5xx HTML page cannot flood the local record. */
 const MAX_ERROR_BODY = 500;
-/** Byte cap on the error body actually READ off the wire, so a mis-pointed or
- *  hostile `WEGO_AUTH_TOKEN_URL` cannot make the CLI buffer a huge body before
- *  the char cap above ever applies — the same hazard `version-notice.ts` bounds
- *  with `readBounded`. Generous vs `MAX_ERROR_BODY` so no real error is clipped. */
+/** Byte cap on the error body read off the wire, so a mis-pointed or hostile
+ *  `WEGO_AUTH_TOKEN_URL` cannot make the CLI buffer a huge body before the char
+ *  cap above applies. Generous next to `MAX_ERROR_BODY` so no real error is
+ *  clipped. */
 const MAX_ERROR_BODY_BYTES = 8 * 1024;
 
 /** Truncate to `max` chars without ending on a lone high surrogate, so the
@@ -216,9 +211,9 @@ function capText(text: string, max = MAX_ERROR_BODY): string {
 
 /** Redact the exact secret values the CLI just sent from a response body, so a
  *  token an auth server ever echoes back (a validation dump, a WAF page) cannot
- *  reach the local record or stderr (investigation #1360, lesson 6: design so
- *  the secret never moves). Exact-substring only — no guessing, no false
- *  redaction; the `>= 8` floor skips values too short to be a credential. */
+ *  reach the local record or stderr (investigation #1360). Exact-substring only,
+ *  so nothing is redacted by mistake; the `>= 8` floor skips values too short to
+ *  be a credential. */
 export function redactSecrets(
   text: string,
   secrets: Array<string | undefined>,
@@ -228,17 +223,16 @@ export function redactSecrets(
     if (!secret || secret.length < 8) continue;
     // A secret can be reflected raw (a JSON field the AS echoes) OR
     // percent-encoded (the `x-www-form-urlencoded` request body the AS received
-    // and reflects back), so redact both forms. The raw-only search misses a
-    // token whose `+` / `/` / `=` chars were encoded on the wire.
+    // and reflects back), so redact both forms. A raw-only search misses a token
+    // whose `+`, `/` or `=` chars were encoded on the wire.
     for (const form of secretForms(secret))
       out = out.split(form).join("[REDACTED]");
   }
   return out;
 }
 
-/** The distinct on-the-wire representations of a secret the CLI sent: the raw
- *  value, and its `x-www-form-urlencoded` form — the exact encoding `postToken`
- *  transmits it with. Deduped when the two coincide (a URL-safe value). */
+/** The raw value and its `x-www-form-urlencoded` form (the encoding `postToken`
+ *  sends it with), deduped when the two coincide. */
 function secretForms(secret: string): string[] {
   const encoded = new URLSearchParams({ v: secret }).toString().slice(2);
   return encoded === secret ? [secret] : [secret, encoded];
@@ -248,7 +242,7 @@ function secretForms(secret: string): string[] {
  * Turn a token-endpoint error status + raw body into a {@link TokenEndpointError},
  * tolerantly: a JSON body with a string `error` yields the structured fields, and
  * anything else (non-JSON, or JSON without `error`) yields a bounded raw snippet.
- * Both retained texts are char-capped. Pure and never throws — a failed diagnosis
+ * Both retained texts are char-capped. Pure and never throws: a failed diagnosis
  * must not mask the auth failure it describes. The caller redacts secrets from
  * `rawBody` first (`postToken`), so nothing sensitive is captured even if the AS
  * echoes the request.
@@ -265,7 +259,7 @@ export function parseTokenError(
   const safeStatusText = capText(statusText);
   try {
     const json = JSON.parse(body) as Record<string, unknown>;
-    // Cap `error` too — it is attacker-controlled on a hostile endpoint and
+    // Cap `error` too: it is attacker-controlled on a hostile endpoint and
     // reaches stderr via `tokenErrorMessage`. An empty-string `error` (some
     // proxies emit `{"error":""}`) is treated as absent, but a present
     // `error_description` still takes the structured path so the meaningful text
@@ -287,7 +281,7 @@ export function parseTokenError(
       });
     }
   } catch {
-    // Not JSON, or not an object — fall through to the raw-snippet path.
+    // Not JSON, or not an object: fall through to the raw-snippet path.
   }
   return new TokenEndpointError({
     status,
@@ -300,12 +294,9 @@ export function parseTokenError(
  *  / `whoami` surface a network failure promptly instead of hanging. */
 const TOKEN_TIMEOUT_MS = 30_000;
 
-/** Read at most `MAX_ERROR_BODY_BYTES` off an error response, then stop and drop
- *  the connection. Bounds memory the way `res.text()` cannot — it buffers the
- *  whole body first. Degrades to `""` on any read failure, never throws. */
-/** Acquire a default reader, or `undefined` if the stream is locked/cancelled.
- *  Calling `getReader()` (no args) infers the default-reader type, which keeps
- *  `readCappedBody` from leaking a raw error when acquisition itself fails. */
+/** `undefined` if the stream is locked or cancelled, so `readCappedBody` does
+ *  not leak a raw error when acquisition itself fails. Calling `getReader()`
+ *  with no args infers the default-reader type. */
 function acquireReader(stream: ReadableStream<Uint8Array>) {
   try {
     return stream.getReader();
@@ -314,6 +305,9 @@ function acquireReader(stream: ReadableStream<Uint8Array>) {
   }
 }
 
+/** Read at most `MAX_ERROR_BODY_BYTES` off an error response, then drop the
+ *  connection. `res.text()` would buffer the whole body first. Degrades to `""`
+ *  on any read failure, never throws. */
 async function readCappedBody(res: Response): Promise<string> {
   const stream = res.body;
   if (!stream) return "";
@@ -327,8 +321,7 @@ async function readCappedBody(res: Response): Promise<string> {
       if (done) break;
       // Copy only up to the remaining budget BEFORE storing, so a single
       // oversized chunk (a server that buffers the whole body) is neither
-      // retained in full nor kept alive as a view over its backing buffer —
-      // memory stays bounded to MAX_ERROR_BODY_BYTES.
+      // retained in full nor kept alive as a view over its backing buffer.
       const remaining = MAX_ERROR_BODY_BYTES - size;
       const chunk =
         value.byteLength > remaining ? value.slice(0, remaining) : value;

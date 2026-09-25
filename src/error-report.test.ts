@@ -26,8 +26,8 @@ const CODE_TAXONOMY: Record<string, { status: number; exit: number }> = {
 };
 
 /** A status whose fallback class differs from `exit`, so a row passes only if
- *  the CODE decided it. Without this a dead `case` looks correct: every code
- *  here shares a status the fallback already classifies the same way. */
+ *  the code decided it. Without this a missing table entry looks correct: every
+ *  code here shares a status the fallback already classifies the same way. */
 const decoyStatus = (exit: number) => (exit === EXIT.NOT_FOUND ? 500 : 404);
 
 describe("exitCodeForError (issue #1110 taxonomy)", () => {
@@ -36,12 +36,9 @@ describe("exitCodeForError (issue #1110 taxonomy)", () => {
     expect(exitCodeForError(new NotFoundError("GET /x"))).toBe(EXIT.NOT_FOUND);
   });
 
-  // In wego-ai this suite also cross-checked `CODE_TAXONOMY` below against the
-  // API's closed `Problem.code` enum, read from `apps/api/contract/openapi.json`
-  // in the same tree. That file is not in this repository, so the cross-check
-  // cannot run here; it is the job of the contract-drift lane, which #127 defers
-  // to a later phase. Everything below still pins the taxonomy this binary
-  // ships - what each code and each bare status maps to - against the table.
+  // Completeness against the API's `Problem.code` enum is a typecheck
+  // (`satisfies Record<ProblemCode, number>` in error-report.ts). These cases
+  // pin what each code and each bare status maps to.
 
   for (const [code, { status, exit }] of Object.entries(CODE_TAXONOMY)) {
     it(`maps ${code} by its machine code, over the status`, () => {
@@ -61,8 +58,8 @@ describe("exitCodeForError (issue #1110 taxonomy)", () => {
   }
 
   it("falls back to status for a code this binary does not know", () => {
-    // A code a NEWER api emits, and the two the switch used to name but this
-    // API never emitted: all three must ride the status, not a stale `case`.
+    // A code a newer API emits, and two plausible codes this API never emits:
+    // all three must fall back to the status.
     const unknown = (c: string, status: number) =>
       exitCodeForError(new ApiHttpError(status, "GET /x", { code: c }));
     expect(unknown("some_future_code", 404)).toBe(EXIT.NOT_FOUND);

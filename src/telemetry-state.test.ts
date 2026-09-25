@@ -42,7 +42,7 @@ describe("telemetry state file", () => {
 
   it("fails CLOSED on malformed or unparseable contents", async () => {
     // The file may hold an opt-out, so an unreadable one must not be read as
-    // consent. A torn write previously resurrected telemetry silently.
+    // consent.
     await saveTelemetryState(path, { enabled: false });
     await writeFile(path, '{"enabled": false, "deviceI');
     expect(await loadTelemetryState(path)).toEqual({ enabled: false });
@@ -112,9 +112,9 @@ describe("telemetry state file", () => {
 
 describe("defaultTelemetryPath", () => {
   it("honours an explicitly passed scope, which is how targets stay apart", () => {
-    // The scope is still a parameter: `loadCliConfig` passes the target-aware leaf
-    // (`targetConfigScope`) for the token-issuer state, and the bare `wego` for the
-    // rest. Only the DEFAULT stopped varying.
+    // The scope is a parameter: `loadCliConfig` passes the target-aware leaf
+    // (`targetConfigScope`) for the token-issuer state, and the bare `wego` for
+    // the rest.
     expect(defaultTelemetryPath({ XDG_CONFIG_HOME: "/cfg" }, "wego")).toBe(
       "/cfg/wego/telemetry.json",
     );

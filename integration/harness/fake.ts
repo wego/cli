@@ -43,7 +43,6 @@ export interface Seen {
   pathParams: Record<string, string>;
   headers: Headers;
   body: unknown;
-  /** The bearer token, if one was sent. */
   token?: string;
 }
 
@@ -86,7 +85,6 @@ export interface Fake {
     redirectUri: string;
     tokens: TokenSet;
   }) => void;
-  /** The requests one operation received, in order. */
   requests: (op: string) => Seen[];
   stop: () => void;
 }

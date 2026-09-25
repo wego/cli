@@ -213,7 +213,7 @@ describe("token endpoint calls", () => {
         status: 400,
         statusText: "Bad Request",
       });
-      // Lock the stream so `readCappedBody`'s getReader throws — the never-throws
+      // Lock the stream so `readCappedBody`'s getReader throws: the never-throws
       // contract must still yield a TokenEndpointError, not a raw error.
       res.body?.getReader();
       return Promise.resolve(res);
@@ -315,7 +315,7 @@ describe("parseTokenError", () => {
 
   it("never ends a truncated snippet on a lone surrogate half", () => {
     // A 😀 (surrogate pair) straddling the 500-char boundary must not leave a
-    // lone high surrogate — the record has to be a well-formed string.
+    // lone high surrogate: the record has to be a well-formed string.
     const err = parseTokenError(
       500,
       "x",
@@ -350,7 +350,7 @@ describe("redactSecrets", () => {
 
   it("redacts a secret the AS reflects in its percent-encoded wire form", () => {
     // `+` `/` `=` are percent-encoded by URLSearchParams on the wire, so a body
-    // that echoes the request the AS received carries the encoded token — the
+    // that echoes the request the AS received carries the encoded token. A
     // raw-value search alone would miss it and leak it into the record.
     const token = `aa+bb/cc=${"d".repeat(120)}`;
     const encoded = new URLSearchParams({ refresh_token: token })

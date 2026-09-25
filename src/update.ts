@@ -19,31 +19,27 @@ import {
 import { usage, usageErrorLabel } from "./usage";
 
 /**
- * `wego update` — replace the installed binary in place with the latest release
- * from its own channel.
+ * `wego update`: replace the installed binary in place with the latest release
+ * from its own ring.
  *
- * The CLI ships as a self-contained single-file binary published to a public
- * Vercel Blob store under a ring pointer (`cli/edge`, `cli/next`, `cli/stable`),
- * named `wego-<os>-<arch>`, with a per-ring `SHA256SUMS.txt`. This command
- * mirrors the `curl … | bash` installer (`apps/api` `renderInstallScript`) in
- * TypeScript: platform-detect → fetch the checksums → compare against the running
- * binary → download → verify fail-closed → atomically swap `process.execPath`.
+ * Releases are single-file binaries named `wego-<os>-<arch>` in a public Vercel
+ * Blob store under a ring pointer (`cli/edge`, `cli/next`, `cli/stable`), with a
+ * per-ring `SHA256SUMS.txt`. This mirrors the `curl … | bash` installer
+ * (`apps/api` `renderInstallScript`): detect the platform, fetch the checksums,
+ * compare against the running binary, download, verify fail-closed, then
+ * atomically swap `process.execPath`.
  *
- * Where it fetches from is the **ring the installer recorded** on this machine
- * (`~/.config/<scope>/install.json`, `ring-follow.ts`), never a URL baked into
- * the binary: self-update compares checksums rather than versions, so the pointer
- * is the whole policy and it has to be a fact on the machine rather than a build
- * argument (foundations#74 rung 3). Assets are fetched through the recorded
- * endpoint's own `?dl=` branch, so the release store stays server-side here too.
- * **No record is a refusal**, not a fallback: guessing a ring is the drift this
- * design removes. A from-source run still degrades to a "reinstall" hint — there
- * is no installed binary to replace, so there is nothing to record.
- *
- * Written against injected deps so the flow is unit-testable without touching the
- * network or the real filesystem; `index.ts` wires the concrete implementations.
+ * The ring comes from the install record the installer wrote
+ * (`~/.config/<scope>/install.json`, see `ring-follow.ts`), never from a URL baked
+ * into the binary. Self-update compares checksums rather than versions, so the
+ * ring pointer is the whole policy and must be a fact on the machine rather than
+ * a build argument (foundations#74 rung 3). Assets are fetched through the
+ * recorded endpoint's `?dl=` branch so the release store stays server-side. No
+ * record means refusal, not a guessed ring. A from-source run gets a reinstall
+ * hint instead, since there is no installed binary to replace.
  */
 
-/** The from-source version stamp (matches `index.ts`'s `VERSION` fallback). */
+/** Matches `index.ts`'s `VERSION` fallback. */
 const DEV_VERSION = "0.0.0-dev";
 
 export interface UpdateIo {
@@ -52,61 +48,48 @@ export interface UpdateIo {
 }
 
 export interface UpdateDeps extends UpdateIo {
-  /** The running binary's version (matches `wego version`); `0.0.0-dev` from source. */
+  /** `0.0.0-dev` from source. */
   version: string;
-  /** True when running from source (a runtime exec-path signal, NOT the
-   *  env-stamped version which a stray `WEGO_BUILD_VERSION` can spoof). When true,
-   *  self-update refuses: `execPath` is the Bun/Node runtime, not an installed
-   *  binary to replace. */
+  /** A runtime exec-path signal, not the env-stamped version, which a stray
+   *  `WEGO_BUILD_VERSION` can spoof. When true, self-update refuses: `execPath`
+   *  is the Bun/Node runtime, not an installed binary. */
   fromSource: boolean;
-  /** The install record this binary follows, or `null` when there is none, it is
-   *  unreadable, or it is malformed (`ring-follow.ts` folds all three into one
-   *  `null` — every one of them refuses). */
+  /** `null` when the record is missing, unreadable or malformed
+   *  (`ring-follow.ts` folds all three together); each one refuses. */
   readInstallRecord: () => Promise<InstallRecord | null>;
-  /** Where that record lives, named in the refusal so the user can see what is
-   *  missing. */
+  /** Named in the refusal so the user can see what is missing. */
   installRecordPath: string;
   /** `<apiBase>/install` for the reinstall hint; undefined when unbaked. */
   installUrl?: string;
-  /** `process.platform`. */
   platform: NodeJS.Platform;
-  /** `process.arch`. */
   arch: string;
-  /** Absolute path of the running binary (`process.execPath`). */
   execPath: string;
-  /** `fetch`, injectable for tests. */
   fetch: typeof fetch;
-  /** Gunzip a gzip member in-process (`Bun.gunzipSync`). Injectable for tests. */
   gunzip: (data: Uint8Array<ArrayBuffer>) => Uint8Array<ArrayBuffer>;
   /** Lowercase hex sha256 of the file at `path`. */
   hashFile: (path: string) => Promise<string>;
-  /** Write bytes to `path`. */
   writeFile: (path: string, data: Uint8Array) => Promise<void>;
-  /** `chmod path mode`. */
   chmod: (path: string, mode: number) => Promise<void>;
-  /** Atomic rename `from` → `to`. */
+  /** Must be atomic. */
   rename: (from: string, to: string) => Promise<void>;
   /** Best-effort remove (force). */
   rm: (path: string) => Promise<void>;
   /** Best-effort clear the macOS `com.apple.quarantine` xattr; no-op elsewhere. */
   clearQuarantine: (path: string) => Promise<void>;
-  /** Confirm the in-place replace; bypassed by `-y`. */
+  /** Bypassed by `-y`. */
   confirm: (question: string) => Promise<boolean>;
-  /** A per-run-unique temp path, a sibling of `execPath` on the same filesystem
-   *  (so the final rename stays atomic and two concurrent runs can't collide on
-   *  one predictable name — the post-verify swap TOCTOU). */
+  /** A per-run-unique sibling of `execPath` on the same filesystem, so the final
+   *  rename stays atomic and two concurrent runs cannot collide on one
+   *  predictable name (a post-verify swap TOCTOU). */
   tempPath: string;
-  /** Best-effort remove any stale temp siblings an interrupted run left behind. */
+  /** Best-effort remove stale temp siblings an interrupted run left behind. */
   sweepTemps: () => Promise<void>;
   /** The Sigstore roots a signed build record must chain to (foundations#74 rung
-   *  9). Injected like every other dep here so a test can pin its own throwaway
-   *  root; `index.ts` wires the real pinned Fulcio anchors. Not a user-reachable
-   *  switch — there is no flag or env var that reaches it. */
+   *  9). Injected so a test can pin its own throwaway root; no flag or env var
+   *  reaches it. */
   trustedRootsPem: string;
-  /** Run the freshly swapped binary's own `skill install --owned-only`.
-   *
-   *  Optional: absent ⇒ the step is skipped, which is what every unit test
-   *  that builds these deps by hand wants. `index.ts` wires the real spawn. */
+  /** Runs the freshly swapped binary's own `skill install --owned-only`. When
+   *  absent the step is skipped, which hand-built unit test deps rely on. */
   spawnSkillInstall?: (execPath: string) => Promise<void>;
 }
 
@@ -127,11 +110,7 @@ export const UPDATE_USAGE = usage({
   note: "An install with no recorded ring refuses. Not available when running from source.",
 });
 
-/**
- * Parse `wego update` argv (everything after `update`). Every flag is a valueless
- * boolean; anything else (an unknown flag or a stray positional) is a usage
- * error. Throws a usage `Error` the caller renders on stderr with exit 2.
- */
+/** Throws a usage `Error` on an unknown flag or a stray positional. */
 export function parseUpdateArgs(args: string[]): UpdateOptions {
   const opts: UpdateOptions = { check: false, yes: false, force: false };
   for (const arg of args) {
@@ -153,8 +132,6 @@ export function parseUpdateArgs(args: string[]): UpdateOptions {
   return opts;
 }
 
-/** The `curl … | bash` reinstall one-liner, naming the deploy's install URL when
- *  it was baked, else a placeholder. */
 function reinstallHint(deps: UpdateDeps): string {
   return `curl -fsSL ${deps.installUrl ?? "<your-api-host>/install"} | bash`;
 }
@@ -170,8 +147,6 @@ const ARCH_BY_NODE_ARCH: Record<string, "arm64" | "x64" | undefined> = {
   x64: "x64",
 };
 
-/** Map `process.platform`/`arch` to the installer's asset scheme, or null when
- *  unsupported. */
 function assetOsArch(
   deps: UpdateDeps,
 ): { os: "darwin" | "linux"; arch: "arm64" | "x64" } | null {
@@ -180,8 +155,7 @@ function assetOsArch(
   return os && arch ? { os, arch } : null;
 }
 
-/** Pull the sha256 for `asset` out of a `SHA256SUMS.txt` body (`<hash>␠␠<name>`
- *  lines, as `sha256sum` writes them), or null when absent. */
+/** Parses `<hash>␠␠<name>` lines as `sha256sum` writes them. */
 function expectedSum(sums: string, asset: string): string | null {
   for (const line of sums.split("\n")) {
     const match = line.trim().match(/^([0-9a-f]{64})\s+\*?(.+)$/i);
@@ -190,15 +164,14 @@ function expectedSum(sums: string, asset: string): string | null {
   return null;
 }
 
-// Network deadlines, mirroring the install script's `curl --connect-timeout 15
-// --max-time 600`: the small checksums read gets a short deadline; the 60–95 MB
-// binary download a long one. Without a signal a stalled blob would hang the
-// self-update forever (a `TimeoutError` maps to the timeout/network exit class).
+// Mirrors the install script's `curl --connect-timeout 15 --max-time 600`: a
+// short deadline for the small checksums read, a long one for the 60–95 MB
+// binary. Without a deadline a stalled blob would hang the update forever (a
+// `TimeoutError` maps to the timeout/network exit class).
 const SUMS_TIMEOUT_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 600_000;
 
-/** `fetch` under a hard deadline, throwing on a non-2xx so the caller's catch
- *  maps it to an exit class. */
+/** Throws on a non-2xx so the caller's catch maps it to an exit class. */
 async function fetchOk(
   deps: UpdateDeps,
   url: string,
@@ -212,8 +185,8 @@ async function fetchOk(
   return res;
 }
 
-/** Map a download/replace failure to an actionable stderr line + exit code,
- *  keeping the errno branches out of `downloadAndReplace`'s complexity budget. */
+/** Split out to keep the errno branches out of `downloadAndReplace`'s
+ *  complexity budget. */
 function classifyReplaceError(
   deps: UpdateDeps,
   err: unknown,
@@ -250,15 +223,13 @@ function classifyReplaceError(
   };
 }
 
-/** Fetch the new binary's bytes, preferring the gzipped asset (issue #1235): it
- *  is ~2.7× smaller (63.8 → 24.0 MB) and the download is the whole update cost.
- *  Decompress it in-process, and fall back to the raw asset ONLY when the archive
- *  is absent — HTTP 404, the state of a channel frozen from a pre-#1235 tag, which
- *  carries no `.gz`. A gz that is present but malformed (or a non-404 error)
- *  throws rather than silently retrying the raw asset — a tampered archive must
- *  not degrade into a different download. The caller's fail-closed hash check then
- *  rejects any decompressed binary that doesn't match the raw checksum, so the gz
- *  is never trusted beyond decompression. */
+/** Prefers the gzipped asset (issue #1235): it is ~2.7× smaller (63.8 → 24.0 MB)
+ *  and the download is the whole update cost. Falls back to the raw asset only on
+ *  HTTP 404, which is what a ring frozen from a pre-#1235 tag returns. A gz that
+ *  is present but malformed, or any other error, throws instead of retrying the
+ *  raw asset, so a tampered archive cannot degrade into a different download.
+ *  The caller's hash check against the raw checksum means the gz is never
+ *  trusted beyond decompression. */
 async function fetchNewBinary(
   deps: UpdateDeps,
   base: string,
@@ -284,8 +255,7 @@ async function fetchNewBinary(
   return deps.gunzip(new Uint8Array(await gz.arrayBuffer()));
 }
 
-/** Download the asset, verify it against `expected`, and atomically swap it over
- *  the running binary. Returns an exit code; leaves no partial file behind. */
+/** Returns an exit code; leaves no partial file behind. */
 async function downloadAndReplace(
   deps: UpdateDeps,
   base: string,
@@ -294,18 +264,14 @@ async function downloadAndReplace(
   expected: string,
   os: "darwin" | "linux",
 ): Promise<number> {
-  // A per-run-unique sibling of the running binary: same filesystem (so the final
-  // rename stays atomic, never EXDEV) and non-shared (two concurrent runs can't
-  // race on one predictable path, defeating the fail-closed check). Swept and
-  // cleaned up on every failure path.
   const tmp = deps.tempPath;
   await deps.sweepTemps();
   try {
     await deps.writeFile(tmp, await fetchNewBinary(deps, base, ring, asset));
     const got = await deps.hashFile(tmp);
     if (got !== expected) {
-      // Guard the cleanup so a failed `rm` can't swallow the security-relevant
-      // "refusing to install" signal + its stable exit code (fall into catch).
+      // A failed `rm` must not fall into the catch and swallow the "refusing to
+      // install" message and its stable exit code.
       await deps.rm(tmp).catch(() => {});
       deps.error(
         `checksum mismatch for ${asset} (expected ${expected}, got ${got}) – refusing to install`,
@@ -313,7 +279,6 @@ async function downloadAndReplace(
       return EXIT.PERMANENT;
     }
     await deps.chmod(tmp, 0o755);
-    // Clear the Gatekeeper quarantine on a freshly downloaded binary (macOS).
     if (os === "darwin") await deps.clearQuarantine(tmp);
     await deps.rename(tmp, deps.execPath);
   } catch (err) {
@@ -322,15 +287,13 @@ async function downloadAndReplace(
     deps.error(message);
     return code;
   }
-  // The binary that just landed carries its own embedded SKILL.md, so the skill
-  // on disk is now the previous build's. Re-run the NEW binary's installer to
-  // bring them back in step – `--owned-only`, so it refreshes the folders this
-  // machine already has and never creates one the user never asked for.
+  // The new binary embeds its own SKILL.md, so the skill on disk is now the
+  // previous build's. Re-run the new binary's installer with `--owned-only` so it
+  // refreshes the folders this machine already has and creates none.
   //
-  // Outside the try above on purpose: that catch classifies REPLACE failures,
-  // and a spawn problem is not one. Best-effort, and after the swap is already
-  // durable – a skill that fails to refresh must never turn a completed binary
-  // swap into a failed update. The next update tries again.
+  // Outside the try above because that catch classifies replace failures. This
+  // is best-effort: a skill that fails to refresh must not turn a completed swap
+  // into a failed update. The next update tries again.
   try {
     await deps.spawnSkillInstall?.(deps.execPath);
   } catch {
@@ -342,30 +305,26 @@ async function downloadAndReplace(
   return EXIT.OK;
 }
 
-/** Resolved fetch target, or a terminal exit code when this install can't
- *  self-update (from source, no recorded ring, Windows, unsupported platform). */
+/** A number is a terminal exit code: this install cannot self-update. */
 type Preflight =
   | number
   | { base: string; ring: string; asset: string; os: "darwin" | "linux" };
 
-/** Vet the running install before any network call: it must know which ring it
- *  follows, and it must be replaceable in place (the guards the install script
- *  applies — platform support; a `.exe` can't be swapped while it runs). */
+/** Runs before any network call: the install must know which ring it follows
+ *  and be replaceable in place (the install script's guards: platform support,
+ *  and a `.exe` cannot be swapped while it runs). */
 async function preflight(deps: UpdateDeps): Promise<Preflight> {
-  // From source there is nothing to fetch from and nothing meaningful to replace,
-  // so no ring is recorded and none is needed. Gate on the exec-path signal
-  // first: under `bun run src/index.ts` the later rename would target
-  // `process.execPath` (the Bun runtime), and a stray `WEGO_BUILD_VERSION` in the
-  // environment can make `version` non-dev, so version alone is unsafe.
+  // Gate on the exec-path signal first: under `bun run src/index.ts` the rename
+  // would target the Bun runtime, and a stray `WEGO_BUILD_VERSION` can make
+  // `version` non-dev, so version alone is unsafe.
   if (deps.fromSource || deps.version === DEV_VERSION) {
     deps.log(
       `Self-update applies to installed release binaries (running from source – use \`git pull\`). Reinstall the latest with:\n  ${reinstallHint(deps)}`,
     );
     return EXIT.OK;
   }
-  // The ring the INSTALLER recorded decides where the bytes come from. Absent,
-  // unreadable or malformed all refuse: `update` replaces the running binary on a
-  // checksum difference alone, so a guessed pointer is a guessed payload.
+  // A missing, unreadable or malformed record refuses: `update` replaces the
+  // binary on a checksum difference alone, so a guessed ring is a guessed payload.
   const followed = followRecordedRing({
     record: await deps.readInstallRecord(),
     recordPath: deps.installRecordPath,
@@ -376,18 +335,18 @@ async function preflight(deps: UpdateDeps): Promise<Preflight> {
     return EXIT.PERMANENT;
   }
   const { base, ring } = followed;
-  // Defense-in-depth: the record is a plain local file, so anyone able to write
-  // it could otherwise point the download (binary + its checksums) at a
-  // plaintext, attacker-controlled host. Re-assert transport before any fetch
-  // (loopback http stays allowed for local dev, matching config.ts's OAuth rule).
+  // Defense in depth: the record is a plain local file, so anyone able to write
+  // it could point the binary and its checksums at a plaintext, attacker-
+  // controlled host. Loopback http stays allowed for local dev, matching
+  // config.ts's OAuth rule.
   try {
     assertSecureUrl(base, `the recorded ${ring} install URL`);
   } catch (err) {
     deps.error(err instanceof Error ? err.message : String(err));
     return EXIT.PERMANENT;
   }
-  // A running .exe can't be overwritten in place on Windows the way POSIX allows;
-  // point the user at the manual download, as the installer already does.
+  // Windows cannot overwrite a running .exe in place; point at the manual
+  // download, as the installer does.
   if (deps.platform === "win32") {
     const winAsset = "wego-windows-x64.exe";
     deps.log(
@@ -411,44 +370,37 @@ async function preflight(deps: UpdateDeps): Promise<Preflight> {
 }
 
 /**
- * Fetch the ring's signed build record and decide whether it vouches for these
- * manifest bytes. Returns a stderr-ready refusal, or `null` when the manifest may
- * be trusted (foundations#74 rung 9).
- *
- * Fail-closed on every branch, including an ABSENT record. That is deliberate and
- * it is the one decision here worth defending: treating "no record" as "not signed
- * yet, carry on" would hand any store writer a downgrade — delete the record, and
- * verification turns itself off. It costs nothing in practice, because a binary
- * that contains this code can only have been built by the workflow that publishes
- * the record: there is no install in the field that would start refusing.
- *
- * The record is fetched from the ring's `cli-sig/` prefix through the same
- * first-party `?dl=` endpoint the binary already uses, so the release store's
- * hostname stays server-side here too.
- */
-/**
- * A refusal, plus the error that CAUSED it when the cause was transport rather
- * than a verdict.
- *
- * Both outcomes refuse — fail-closed is the whole point — but they are not the same
- * event, and `EXIT.PERMANENT` for both told a caller that a timeout on the record
- * URL is as final as a forged record. `src/error-report.ts` owns a stable exit-code
- * taxonomy precisely so a wrapper can retry the temporary and stop on the permanent.
+ * A refusal, plus the error that caused it when the cause was transport rather
+ * than a verdict. Both refuse, but a timeout on the record URL is not as final as
+ * a forged record, and `src/error-report.ts` keeps a stable exit-code taxonomy so
+ * a wrapper can retry the temporary and stop on the permanent.
  */
 interface RecordRefusal {
   reason: string;
   /**
-   * Set only when the record could not be READ because the host was not reached —
-   * a DNS/connect/reset failure or the deadline firing. Deliberately NOT set for an
-   * HTTP status: a `404` on the record URL means this ring carries no record, which
-   * is the permanent, fail-closed case this rung exists for, not a blip to retry.
+   * Set only when the host was not reached (DNS, connect, reset, or the deadline).
+   * Not set for an HTTP status: a `404` on the record URL means this ring carries
+   * no record, which is the permanent fail-closed case, not a blip to retry.
    */
   unreachable?: unknown;
-  /** WHY verification refused, when it got far enough to have an opinion.
-   *  Absent on the fetch failure above, which `unreachable` already classifies. */
+  /** Why verification refused, when it got that far. Absent on a fetch failure,
+   *  which `unreachable` classifies. */
   kind?: VerifyFailure;
 }
 
+/**
+ * Returns a stderr-ready refusal, or `null` when the ring's signed build record
+ * vouches for these manifest bytes (foundations#74 rung 9).
+ *
+ * Fail-closed on every branch, including an absent record. Treating "no record"
+ * as "not signed yet" would hand any store writer a downgrade: delete the record
+ * and verification turns itself off. It costs nothing in practice, because a
+ * binary containing this code can only have been built by the workflow that
+ * publishes the record.
+ *
+ * The record is fetched from the ring's `cli-sig/` prefix through the same
+ * first-party `?dl=` endpoint, so the release store's hostname stays server-side.
+ */
 async function verifyRingManifest(
   deps: UpdateDeps,
   base: string,
@@ -480,8 +432,7 @@ async function verifyRingManifest(
   const result = await verifySignedManifest({
     bundle,
     payload: manifest,
-    // Which workflow is allowed to have signed THIS ring: the edge lane's records
-    // are not release records, and vice versa.
+    // The edge lane's records are not release records, and vice versa.
     identity: identitiesForRing(ring),
     issuer: SIGNING_OIDC_ISSUER,
     rootsPem: deps.trustedRootsPem,
@@ -495,7 +446,6 @@ async function verifyRingManifest(
   return null;
 }
 
-/** Fetch the checksums, decide against the running binary, confirm, and apply. */
 async function runUpdate(
   deps: UpdateDeps,
   opts: UpdateOptions,
@@ -511,37 +461,29 @@ async function runUpdate(
     const sumsBytes = new Uint8Array(
       await (await fetchOk(deps, sumsUrl, SUMS_TIMEOUT_MS)).arrayBuffer(),
     );
-    // VERIFY BEFORE TRUSTING. Everything below this point treats the manifest as
-    // authority — it decides whether to replace the running binary, and with what.
-    // Fetching it over TLS proves only that the store served it, and the threat
-    // this answers is someone who can WRITE that store, who would replace the
-    // binary and the manifest together. So the manifest's signed build record is
-    // checked first, and a manifest without a good one is not read at all.
+    // Verify before trusting: everything below treats the manifest as authority
+    // over whether and with what to replace the binary. TLS proves only that the
+    // store served it, and the threat is someone who can write that store and
+    // would replace the binary and manifest together. So a manifest without a
+    // good signed build record is not read at all.
     const refusal = await verifyRingManifest(deps, base, ring, sumsBytes);
     if (refusal) {
-      // REFUSING IS NOT IN QUESTION - nothing is installed in any branch below.
-      // What differs is the exit code a wrapper branches on, and the one line a
-      // human reads. Three outcomes, because there are three different things
-      // the person in front of this can usefully do.
+      // Every branch refuses; they differ in the exit code a wrapper branches on
+      // and the advice a person reads.
       //
-      //  unreachable  the host was never reached. Keeps the taxonomy's own code
-      //               so a caller retries; no advice, a network blip is not a
-      //               reason to touch your install.
-      //  inconsistent the record and the manifest do not agree. A ring MID-
-      //               PROMOTE produces exactly this - the publisher copies the
-      //               record and the manifest as two adjacent writes, and a cache
-      //               can straddle the pair - so it clears on its own. RETRYABLE,
-      //               not PERMANENT: telling a wrapper to stop retrying something
-      //               that resolves in seconds is a lie told to a machine, which
-      //               is worse than a confusing sentence told to a person.
+      //  unreachable  the host was never reached. Keeps the taxonomy's code so a
+      //               caller retries, with no advice: a network blip is no
+      //               reason to touch the install.
+      //  inconsistent the record and manifest disagree. A ring mid-promote does
+      //               this (the publisher writes the two separately and a cache
+      //               can straddle them), so it clears on its own. RETRYABLE,
+      //               not PERMANENT, so a wrapper keeps retrying.
       //  identity     the ring serves a record this binary's trust set can never
-      //               accept. A dead end, and the ONLY class reinstalling fixes -
-      //               a newer build carries a different trust set. This is what
-      //               stranded every 1.2.0 and 1.2.1 install (wego/cli#29), with
-      //               a message that named the problem and no remedy.
+      //               accept. The only class reinstalling fixes, since a newer
+      //               build carries a different trust set. Without this advice
+      //               every 1.2.0 and 1.2.1 install was stranded (wego/cli#29).
       //  invalid      not a Fulcio record at all. Permanent, and reinstalling
-      //               changes nothing, so it gets the reason and no advice
-      //               rather than advice that would not work.
+      //               does not help, so it gets the reason and no advice.
       if (refusal.unreachable !== undefined) {
         deps.error(refusal.reason);
         return exitCodeForError(refusal.unreachable);
@@ -568,8 +510,7 @@ async function runUpdate(
     );
     return exitCodeForError(err);
   }
-  // Fail-closed: an absent sums line means we can't verify the download, so we
-  // refuse rather than install something unverified.
+  // Fail-closed: without a sums line the download cannot be verified.
   if (!expected) {
     deps.error(
       `${asset} is not listed in ${sumsUrl} – refusing to install an unverified binary`,
@@ -602,7 +543,6 @@ async function runUpdate(
   return downloadAndReplace(deps, base, ring, asset, expected, os);
 }
 
-/** `wego update [--check] [-y] [--force]`. */
 export async function update(
   args: string[],
   deps: UpdateDeps,

@@ -3,34 +3,30 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 /**
- * Response schemas stay tolerant in VALUE.
+ * Response schemas stay tolerant in value.
  *
- * Checks A, B and C all ask whether a shape still lines up. This asks something
- * they cannot: whether the CLI's parser has quietly promised that a value set
- * will never grow.
+ * Checks A, B and C (`api-contract.ts`, `api-contract.test.ts`) ask whether a
+ * shape still lines up. This asks whether the CLI's parser has promised that a
+ * value set will never grow.
  *
- * The failure it prevents is the only one in this repository that cannot be
- * fixed after the fact. A closed set fails the WHOLE response on an unknown
- * value, and every installed binary carries it compiled in. So the API adds a
- * value - additive, contract intact, nobody at fault - and every CLI already on
- * a laptop starts rejecting whole responses, with no fix but "everyone please
- * upgrade".
+ * A closed set fails the whole response on an unknown value, and every
+ * installed binary has it compiled in. When the API adds a value (an additive,
+ * contract-compatible change), every CLI already installed starts rejecting
+ * whole responses, and the only fix is for everyone to upgrade.
  *
- * Note this is NOT covered by Check A. Check A compares the CLI's schema
- * against the contract as it stands, so a closed set that matches the contract
- * today passes. It fails only on the next refresh - which is after the API has
- * shipped the new value, and long after the brittle binaries went out.
- * Check A protects the next build; this protects the installed base.
+ * Check A does not cover this. It compares the CLI's schema against the
+ * contract as it stands, so a closed set that matches today passes, and fails
+ * only on the next refresh, after the API has shipped the new value and the
+ * brittle binaries are already out. Check A protects the next build; this
+ * protects the installed base.
  *
- * Type safety is not what is given up. The generated types carry the contract's
- * enums (`code` is a ten-value union in `api-types.d.ts`), so the compiler
- * knows every value. Only the runtime parser stays open, and a command that
- * genuinely branches on a value says so in CLOSED_SET_ALLOWLIST.
+ * Type safety is kept: the generated types carry the contract's enums, so the
+ * compiler knows every value. Only the runtime parser stays open, and a command
+ * that branches on a value says so in CLOSED_SET_ALLOWLIST.
  *
- * AN AST WALK, NOT A TEXT SCAN, and that is load-bearing. Every current mention
- * of `z.enum` and `.refine` in api.ts sits inside a COMMENT explaining this very
- * rule - a grep reports five offenders and all five are the documentation. A
- * check that cries wolf on its own rationale teaches people to weaken it.
+ * This is an AST walk, not a text scan, because the mentions of `z.enum` and
+ * `.refine` in api.ts are comments explaining this rule. A grep would flag the
+ * documentation itself.
  */
 
 const SOURCE = new URL("./api.ts", import.meta.url);
@@ -77,15 +73,14 @@ function findCalls(names: {
   return hits;
 }
 
-/** Closed sets a command genuinely branches on. An entry here is the "branch
- *  that justifies it", named - which is what the rule asks for. Empty today: no
- *  command branches on any value the API sends. */
+/** Closed sets a command branches on, each naming the branch that justifies it.
+ *  Empty while no command branches on a value the API sends. */
 const CLOSED_SET_ALLOWLIST: Array<{ line: number; because: string }> = [];
 
 describe("response schemas stay tolerant in value", () => {
   it("finds zod calls at all (the walk is not silently empty)", () => {
     // Without this, a broken walk would report zero offenders and read as a
-    // pass - the same vacuity Check A guards against with its `never` arm.
+    // pass.
     expect(
       findCalls({ zodFactories: ["string", "object"] }).length,
     ).toBeGreaterThan(10);

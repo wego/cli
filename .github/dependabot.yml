@@ -1,39 +1,23 @@
 # yaml-language-server: $schema=https://json.schemastore.org/dependabot-2.0.json
 #
-# What this file is for: the dependency graph for this repository returns 16
-# packages - the 9 declared in `package.json`, the 6 action repos named directly
-# in `.github/workflows/`, and the root package itself. `bun.lock` resolves 100,
-# and that whole tree is covered by `bun audit` in `ci-cli` and in the release
-# lane (#75).
+# The npm tree in `bun.lock` is covered by `bun audit` in `ci-cli` and the
+# release lane. This file covers GitHub Actions: those used in workflows, and
+# those used only inside composite actions under `.github/actions/`, which the
+# dependency graph does not see. The most important is
+# `sigstore/cosign-installer`, which runs in the `sign` job, the only job with
+# `id-token: write`. SHA pins stop a compromised publisher from pushing new code,
+# but they do not tell you when a pinned version is disclosed as vulnerable.
 #
-# What nothing covered before this file: GitHub Actions that appear ONLY inside
-# a composite definition under `.github/actions/`. Three of them:
-#
-#   oven-sh/setup-bun          .github/actions/setup-bun/action.yml
-#   actions/cache              .github/actions/setup-bun/action.yml
-#   sigstore/cosign-installer  .github/actions/sign-manifest/action.yml
-#
-# The last one is the reason this is worth doing. `sign-manifest` runs in the
-# `sign` job, the only job in the repository that holds `id-token: write`. Every
-# action in this repository is SHA-pinned, which stops a compromised publisher
-# from pushing new code at us - but a pin cannot tell you that the version you
-# pinned has since been DISCLOSED vulnerable. Nothing here did.
-#
-# `verify-build/action.yml` and `verify-replace/action.yml` contain no
-# third-party `uses:` and so need no entry.
-#
-# Deliberately NOT here: a `bun` ecosystem entry. Considered and rejected. One
-# runtime dependency means near-zero churn, `bun audit` already watches that
-# tree for disclosures, and `/package.json` and `/bun.lock` sit at the
-# release-signer bar in CODEOWNERS - so every lockfile bump would spend one of
-# three named reviewers on a PR with no prose to review.
+# No `bun` ecosystem entry, on purpose. There is one runtime dependency,
+# `bun audit` already watches that tree, and `/package.json` and `/bun.lock`
+# need a release signer's review in CODEOWNERS, so every lockfile bump would
+# take one of three named reviewers for a PR with nothing to review.
 
 version: 2
 
 updates:
-  # 1. The workflows. `directory: "/"` is where the `github-actions` ecosystem
-  #    looks for `.github/workflows/*.yml`, and this is the entry that covers
-  #    the 6 action repos the dependency graph already sees.
+  # 1. The workflows. `directory: "/"` makes the `github-actions` ecosystem scan
+  #    `.github/workflows/`.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -41,84 +25,44 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "Asia/Singapore"
-    # Small on purpose. Grouped below, so the steady state is one open PR; the
-    # headroom is for a week where a group member is held back by a failing
-    # check and a second bump lands behind it.
+    # Grouped below, so normally one PR is open. The headroom covers a bump held
+    # back by a failing check with another landing behind it.
     open-pull-requests-limit: 5
-    # Without this, Dependabot titles its pull requests `Bump <dep> from <a> to
-    # <b>`, which is not a Conventional Commit. Pull requests here are squashed
-    # and release-please reads the squash subject, so an untyped subject
-    # produces no release entry at all. `prefix` + `include: "scope"` gives
-    # `chore(deps): ...`, which `scripts/commit-convention.ts` accepts today -
-    # it treats scopes as an open set.
+    # Without this, Dependabot titles PRs `Bump <dep> from <a> to <b>`, which is
+    # not a Conventional Commit. PRs are squashed and release-please reads the
+    # squash subject, so an untyped subject gets no release entry. This gives
+    # `chore(deps): ...`, which `scripts/commit-convention.ts` accepts.
     #
-    # `.github/workflows/ci-cli.yml` still SKIPS bots in its title check, and
-    # that is not redundant with this: a title gate on a bot fails a required
-    # check on a pull request no human can retitle.
+    # `ci-cli.yml` still skips bots in its title check: a title gate on a bot
+    # would fail a required check on a PR no human can retitle.
     commit-message:
       prefix: "chore"
       include: "scope"
-    # One pull request for all workflow-level action bumps. These are read by
-    # the same reviewers in the same sitting and there is nothing to learn from
-    # splitting them. The composite entries below are deliberately left OUT of
-    # this group - see the note there.
+    # One PR for all workflow action bumps: the same reviewers read them together.
+    # The composite actions below are kept out of this group (see the note there).
     groups:
       github-actions:
         patterns:
           - "*"
 
-  # 2. The composite actions, as ONE entry over a glob.
+  # 2. The composite actions, as one entry over a glob.
   #
-  #    The `github-actions` ecosystem is DIRECTORY-SCOPED, and the `/` entry
-  #    above does not reach `.github/actions/<dir>/action.yml`. The mechanism,
-  #    from dependabot-core, because none of it is in the published docs:
+  #    The ecosystem is directory-scoped: `directory: "/"` reads a root
+  #    `action.yml` (there is none) and `.github/workflows/`, nothing else. Any
+  #    other directory is scanned for `*.yml`/`*.yaml` files, so a directory
+  #    holding an `action.yml` is read as a manifest. `directories:` globs are
+  #    expanded before the ecosystem runs, so each match behaves like a literal
+  #    `directory:`. (From dependabot-core; the published docs do not say this.)
   #
-  #      - `directory: "/"` is a special case. It fetches a ROOT-level
-  #        `action.yml`/`action.yaml` if one exists, then scans
-  #        `.github/workflows/`. Nothing else. There is no root `action.yml`
-  #        here, so that entry sees the workflows and only the workflows.
-  #        (`github_actions/lib/dependabot/github_actions/file_fetcher.rb`)
-  #      - Any OTHER directory sets the scan root to that directory itself and
-  #        takes every file in it matching `/\.ya?ml$/` - so a directory that
-  #        holds an `action.yml` is read as a manifest.
-  #      - `directories:` entries containing `*`, `?` or `[...]` are expanded
-  #        with `Dir.glob` BEFORE any ecosystem fetcher runs, so the expansion
-  #        is ecosystem-agnostic and each matched directory is then handled
-  #        exactly as a literal `directory:` would be.
-  #        (`updater/lib/dependabot/file_fetcher_command.rb`)
+  #    A glob, not one entry per directory, so a composite action added later is
+  #    covered without editing this file. `*` is one level deep, which matches
+  #    the `.github/actions/<dir>/action.yml` convention.
   #
-  #    A glob rather than one entry per directory, deliberately. Listing the
-  #    directories by hand means a composite action added later is silently
-  #    unwatched until somebody remembers this file, which is the same class of
-  #    quiet gap the whole file exists to close. The glob makes coverage
-  #    structural: a new `.github/actions/<dir>/action.yml` is picked up with no
-  #    edit here and nothing to keep in sync.
+  #    Ungrouped, so each directory's updates are separately attributable.
   #
-  #    What it currently expands to, and why each matters:
-  #
-  #      setup-bun      `oven-sh/setup-bun` and `actions/cache` (as
-  #                     `actions/cache/restore` / `.../save`).
-  #      sign-manifest  `sigstore/cosign-installer`, which runs in the `sign`
-  #                     job - the only job in this repository holding
-  #                     `id-token: write`, and so the only one that can mint an
-  #                     OIDC token Fulcio will issue a signing certificate
-  #                     against. A disclosed vulnerability in that installer is
-  #                     a disclosed vulnerability in the release signer.
-  #      verify-build   no third-party `uses:`; matched, nothing to update.
-  #      verify-replace no third-party `uses:`; matched, nothing to update.
-  #
-  #    `*` is one level deep. A composite action nested deeper than
-  #    `.github/actions/<dir>/action.yml` would not be matched - none is today,
-  #    and that layout is the GitHub convention.
-  #
-  #    Kept OUT of the workflow group above, and ungrouped here, so each
-  #    directory's updates stay separately attributable: "did this ever produce
-  #    a pull request?" needs an answer per directory.
-  #
-  #    NOTE: Dependabot reads this file from the DEFAULT BRANCH only. Nothing
-  #    here takes effect, and `/network/updates` reports nothing about it, until
-  #    this is merged to `main`. That page is also the ONLY place that confirms
-  #    the glob matched: an expansion that matches nothing fails quietly.
+  #    Dependabot reads this file from the default branch only. The repository's
+  #    `/network/updates` page is the only place that confirms the glob matched;
+  #    a glob that matches nothing fails quietly.
   - package-ecosystem: "github-actions"
     directories:
       - "/.github/actions/*"

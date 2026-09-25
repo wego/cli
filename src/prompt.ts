@@ -1,9 +1,6 @@
 import type { Readable, Writable } from "node:stream";
 
-/**
- * The streams `confirmTty` reads/writes. Injectable so the flow is unit-testable
- * without touching the real process streams; defaults to `process.*`.
- */
+/** Injectable so the flow is unit-testable without the real process streams. */
 export interface PromptIo {
   stdin: Readable & { isTTY?: boolean };
   stdout: Pick<Writable, "write">;
@@ -44,9 +41,9 @@ export async function confirmTty(
       cleanup();
       resolve(chunk.toString());
     };
-    // EOF (Ctrl-D on empty stdin) or a stream error must resolve too — treated
-    // as "no" — otherwise the promise, and `skill install`'s confirm step,
-    // would hang forever waiting for a `data` event that never comes.
+    // EOF (Ctrl-D on empty stdin) or a stream error must resolve too, as "no",
+    // or the confirm step would hang forever waiting for a `data` event that
+    // never comes.
     const onDone = () => {
       cleanup();
       resolve("");

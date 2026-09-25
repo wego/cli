@@ -37,8 +37,8 @@ export function effectiveTelemetry(
   state: TelemetryState,
 ): { enabled: boolean; source: TelemetrySource } {
   if (mode === "off") return { enabled: false, source: "environment" };
-  // `log` builds the payload and sends nothing, so `enabled` — which answers
-  // "do events leave this machine" — is false; `mode` explains why.
+  // `log` builds the payload and sends nothing, so `enabled` (which answers "do
+  // events leave this machine") is false; `mode` explains why.
   if (mode === "log") return { enabled: false, source: "environment" };
   if (mode === "on") return { enabled: true, source: "environment" };
   return state.enabled
@@ -46,7 +46,6 @@ export function effectiveTelemetry(
     : { enabled: false, source: "setting" };
 }
 
-/** JSON on stdout, like every other command. */
 export async function telemetry(
   args: readonly string[],
   deps: TelemetryCommandDeps,

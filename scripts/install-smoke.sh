@@ -1,5 +1,5 @@
 #!/bin/sh
-# The cross-repo install contract, executed rather than restated.
+# Runs the cross-repo install contract end to end.
 #
 #   install-smoke.sh <install-url> <ring> <expected-version>
 #
@@ -8,24 +8,20 @@
 #
 #     "${XDG_CONFIG_HOME:-$HOME/.config}/$BIN_NAME/install.json"
 #
-# while this CLI reads it back from `<config root>/wego/install.json`
-# (`src/config.ts`, `CONFIG_SCOPE`). `$BIN_NAME` defaults to the flavor, the
-# literal `wego`, so the two meet — but nothing anywhere executes both halves.
-# `install.test.ts` over in wego-ai drives the script against a stub store and
-# never runs a CLI; `config.test.ts` here pins a hardcoded copy of the
-# installer's formula and never runs the script. Two matching statements of a
-# contract are not the contract, and when the CLI's scope rule last moved the
-# installer kept writing the old path: the record went invisible, `update`
-# refused, and every test in both repositories stayed green.
+# while this CLI reads it from `<config root>/wego/install.json`
+# (`src/config.ts`, `CONFIG_SCOPE`). `$BIN_NAME` defaults to `wego`, so the two
+# meet, but no unit test runs both halves: wego-ai's `install.test.ts` never
+# runs a CLI, and `config.test.ts` here pins a copy of the installer's formula
+# without running the script. When the CLI's scope rule once moved, the
+# installer kept writing the old path, `update` refused, and every test in both
+# repositories stayed green.
 #
-# So this installs for real, from the real route, and asserts the record lands
-# where the binary that was just installed actually looks — then makes that
-# binary say so itself, which is what stops the check passing on a file nobody
-# reads.
+# So this installs from the real route, asserts the record lands where the
+# installed binary looks, and has that binary confirm it reads the record.
 #
-# Everything is confined to a temp HOME and a temp XDG_CONFIG_HOME: the run
-# never touches the runner's own config, and `WEGO_CLI_INSTALL_SKILL=0` keeps it
-# away from the agent skill, which lives under $HOME and is shared.
+# Everything is confined to a temp HOME and XDG_CONFIG_HOME so the runner's own
+# config is untouched; `WEGO_CLI_INSTALL_SKILL=0` keeps it away from the shared
+# agent skill under $HOME.
 set -eu
 
 URL="${1:-}"
@@ -52,20 +48,18 @@ WEGO_CLI_INSTALL_SKILL=0 \
   sh -c "curl -fsSL '$URL?ring=$RING' | sh" \
   || fail "the install script exited non-zero"
 
-# 1. The command name is the installer's own default. A differently-named binary
-#    would file its record under that name and read from `wego/`, so asserting the
-#    default here is asserting the premise the whole contract rests on.
+# 1. The command name is the installer's default. A differently-named binary
+#    would file its record under that name, so the contract depends on this.
 [ -x "$bindir/wego" ] || fail "no executable at $bindir/wego — the installer did not use its default command name"
 
-# 2. The record landed where THIS binary reads it. The assertion the two
-#    repositories cannot make on their own.
+# 2. The record landed where this binary reads it.
 [ -f "$record" ] || {
   echo "what the installer did write:" >&2
   find "$cfg" -name 'install.json' >&2 || true
   fail "no ring record at $record"
 }
 
-# 3. It names the ring that was asked for, not some other one.
+# 3. It names the ring that was asked for.
 grep -q "\"ring\"[[:space:]]*:[[:space:]]*\"$RING\"" "$record" \
   || fail "the record at $record does not name ring $RING: $(cat "$record")"
 
@@ -74,9 +68,9 @@ got=$(XDG_CONFIG_HOME="$cfg" "$bindir/wego" version) \
   || fail "the installed binary could not report its version"
 [ "$got" = "$EXPECTED" ] || fail "installed version is '$got', expected '$EXPECTED'"
 
-# 5. And the binary READS that record back and agrees about the ring. Without
-#    this the check would pass on a record written somewhere plausible that the
-#    binary never consults — which is precisely the failure mode being tested.
+# 5. The binary reads that record back and agrees about the ring. Without this
+#    the check would pass on a record in a plausible place the binary never
+#    consults, which is the failure being tested.
 out=$(XDG_CONFIG_HOME="$cfg" "$bindir/wego" update --check 2>&1) \
   || fail "\`update --check\` exited non-zero from the installed binary: $out"
 printf '%s\n' "$out" | grep -q "ring $RING" \

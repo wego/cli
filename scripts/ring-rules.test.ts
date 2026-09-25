@@ -12,10 +12,10 @@ import {
   ringForVersion,
 } from "./ring-rules";
 
-// The mutations this suite kills (foundations#74 rung 4, mirroring rung 2's note):
+// The mutations this suite kills:
 //   - DEFAULT_RING flipped off `stable` -> "defaults to stable" fails.
 //   - either half of the crossed-pair check removed -> a "refuses" case fails.
-//   - the asset name made ring- or flavor-dependent -> "one filename" fails.
+//   - the asset name made ring-dependent -> "one filename" fails.
 
 describe("the ring set", () => {
   it("is exactly edge, next, stable", () => {
@@ -37,8 +37,6 @@ describe("resolveRing", () => {
     expect(resolveRing("stable")).toBe("stable");
   });
 
-  // Refuse, never fall back to the default: an unknown ring is a caller mistake,
-  // and guessing one serves bytes from a pointer nobody asked for.
   it("refuses an unknown ring rather than guessing", () => {
     expect(resolveRing("latest")).toBeNull();
     expect(resolveRing("prod")).toBeNull();
@@ -111,10 +109,8 @@ describe("ringAcceptsVersion (the crossed-pair refusal)", () => {
 });
 
 describe("one filename on every prefix", () => {
-  // The loop that used to wrap these ran the same ring-independent assertion
-  // once per ring: `assetName` takes a PLATFORM and no ring, which is the
-  // property being claimed, so iterating rings tested the same thing three times
-  // and read as though it were testing three things.
+  // No loop over rings: `assetName` takes a platform and no ring, which is the
+  // property being claimed.
   it("names the same wego-* asset on every ring", () => {
     expect(RELEASE_ASSET_BASENAME).toBe("wego");
     expect(assetName("linux-x64")).toBe("wego-linux-x64");

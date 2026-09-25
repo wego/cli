@@ -3,10 +3,8 @@ description: >-
   Sign SHA256SUMS.txt with keyless cosign in the bundle format the publish gate
   reads. Fail here if the bundle is not that format.
 
-# One definition for both publishing lanes (`edge-cli.yml`, `release-cli.yml`).
-# The two lanes used to carry copies of this call, and the copies drifted twice:
-# edge run 32930712877 and release run 32977203696 both died on a missing
-# `--new-bundle-format`. Edge signs on every merge, so this copy is rehearsed
+# One definition for both publishing lanes (`edge-cli.yml`, `release-cli.yml`),
+# so the two cannot drift. Edge signs on every merge, so this step is exercised
 # before every release.
 #
 # A composite action runs inline in the caller and does not change the Fulcio

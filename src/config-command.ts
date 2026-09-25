@@ -9,15 +9,13 @@ import {
 import { usage, usageErrorLabel } from "./usage";
 
 /**
- * `wego config list|set|unset` — the effective-config surface for the travel
- * preferences in `settings.json` (issue #1386).
+ * `wego config list|set|unset`: the travel preferences in `settings.json`
+ * (issue #1386). Named `config-command.ts` because `config.ts` is the
+ * endpoint and env loader.
  *
- * Named `config-command.ts` because `config.ts` is the endpoint/env loader.
- *
- * `list` exists for the same reason `git config --list --show-origin` does:
- * without it, a settings file trades a silent server default for a silent local
- * file, which is worse — support becomes "works on my machine". So every value
- * is printed with the layer that decided it.
+ * `list` prints every value with the layer that decided it, like
+ * `git config --list --show-origin`, so a local settings file never changes
+ * results invisibly.
  */
 
 export const CONFIG_USAGE = usage({
@@ -43,18 +41,17 @@ export interface EffectiveSetting {
 export interface ConfigCommandDeps {
   log: (message: string) => void;
   error: (message: string) => void;
-  /** Where the file lives, printed so support never has to guess. */
   settingsPath: string;
   loadSettings: () => Promise<UserSettings>;
   saveSettings: (settings: UserSettings) => Promise<void>;
-  /** The market decoded from the id_token at login, i.e. the `account` rung.
+  /** The market decoded from the id_token at login (the `account` source).
    *  `undefined` when logged out or when the token carried no country_code. */
   accountMarket: () => Promise<string | undefined>;
 }
 
-/** Resolve all three for reporting. Only `site` has an `account` rung — the API
- *  cannot derive a market itself (see `apps/api/src/site-code.ts`), so nothing
- *  else has a middle layer. */
+/** Only `site` has an `account` layer: the API cannot derive a market itself
+ *  (see `apps/api/src/site-code.ts`), and the id_token carries no currency or
+ *  locale. */
 export function effectiveSettings(
   settings: UserSettings,
   accountMarket: string | undefined,
@@ -70,8 +67,8 @@ export function effectiveSettings(
   };
 }
 
-/** The one three-rung value: the stored setting wins, else the market decoded
- *  from the id_token, else the API's US floor. */
+/** The stored setting wins, else the market decoded from the id_token, else the
+ *  API's US floor. */
 function effectiveSite(
   setting: string | undefined,
   accountMarket: string | undefined,
@@ -87,7 +84,6 @@ function isSettingsKey(value: string): value is SettingsKey {
   return (SETTINGS_KEYS as readonly string[]).includes(value);
 }
 
-/** JSON on stdout, like every other data command. */
 async function report(deps: ConfigCommandDeps): Promise<number> {
   const settings = await deps.loadSettings();
   const effective = effectiveSettings(settings, await deps.accountMarket());
@@ -100,8 +96,8 @@ function usageError(deps: ConfigCommandDeps, message: string): number {
   return EXIT.USAGE;
 }
 
-/** An unexpected trailing token: an option if it looks like a flag, an argument
- *  otherwise — the same wording split `telemetry` uses. */
+/** An option if it looks like a flag, an argument otherwise: the same wording
+ *  `telemetry` uses. */
 function unexpected(deps: ConfigCommandDeps, token: string): number {
   return usageError(deps, `${usageErrorLabel(token)}: ${token}`);
 }
@@ -139,7 +135,7 @@ async function runSet(
   if (args[3] !== undefined) return unexpected(deps, args[3]);
   let value: string;
   try {
-    // Validate against the SAME rules the API applies, so a value accepted here
+    // Validate against the same rules the API applies, so a value accepted here
     // can never come back as a 400 on the next search.
     value = parseSettingValue(key, raw);
   } catch (err) {

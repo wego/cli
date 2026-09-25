@@ -39,23 +39,18 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
 
-      # The pull request TITLE is the release contract, not the commit messages:
-      # pull requests here are squashed, the squash subject comes from the title,
-      # and release-please reads that subject to compute the next version. A
-      # mistyped type produces no release at all, silently.
+      # The PR title is the release contract, not the commit messages: PRs are
+      # squashed, the squash subject comes from the title, and release-please reads
+      # that subject to compute the next version. A mistyped type silently produces
+      # no release. `.husky/commit-msg` runs the same check locally but cannot see
+      # the title, so it is enforced here.
       #
-      # `.husky/commit-msg` runs the same file locally, but cannot see the title -
-      # it is edited here, after every local hook. This step is where it is enforced.
-      #
-      # The title goes through the environment, never into the `run:` string. It is
+      # The title goes through `env:`, never into the `run:` string: it is
       # attacker-controlled text on a public repository.
-      # Bots are skipped, not trusted: `.github/dependabot.yml` now sets
-      # `commit-message.prefix: chore` with `include: scope`, so Dependabot
-      # titles arrive as `chore(deps): ...` rather than the unconfigured
-      # `Bump <dep> from <a> to <b>` this gate rejects. The skip stays anyway,
-      # on its own second reason: gating a bot's title would fail the required
-      # check on a pull request no human can retitle. release-please already
-      # titles its own `chore(cli): release X.Y.Z`, so nothing is lost.
+      #
+      # Bots are skipped: gating a bot's title would fail the required check on a
+      # PR no human can retitle. Dependabot (configured in `dependabot.yml`) and
+      # release-please already write Conventional Commit titles.
       - name: Pull request title is a Conventional Commit
         if: github.event_name == 'pull_request' && github.event.pull_request.user.type != 'Bot'
         env:
@@ -65,18 +60,15 @@ jobs:
       - name: Lint & format check (biome check)
         run: bun run lint
 
-      # No separate generate step. `bun run typecheck` regenerates
-      # `src/api-types.d.ts` itself, so this lane, the release lane and a
-      # developer's terminal all compile against the same freshly generated
-      # types - one source of truth, in package.json.
+      # No separate generate step: `bun run typecheck` regenerates
+      # `src/api-types.d.ts` itself, so CI, the release lane and a local terminal
+      # compile against the same types.
       #
-      # This matters because the file is generated from `contract/openapi.json`
-      # and is not committed: without it, Checks A and C in `src/api-contract.ts`
-      # have nothing to compare against, and every comparison resolves to `never`
-      # rather than failing loudly. `postinstall` writes it during `bun install`,
-      # but a cache hit, a changed install flag or a future `--ignore-scripts`
-      # can skip that - which is a local-only mystery when the script does not
-      # own the generation. `scripts/ci-contract-drift.test.ts` asserts it does.
+      # The file is generated from `contract/openapi.json` and not committed.
+      # Without it, the checks in `src/api-contract.ts` resolve to `never` instead
+      # of failing. `postinstall` also writes it, but a cache hit or
+      # `--ignore-scripts` can skip that. `scripts/ci-contract-drift.test.ts`
+      # asserts typecheck owns the generation.
       - name: Typecheck
         run: bun run typecheck
 
@@ -85,24 +77,21 @@ jobs:
       - name: Unit tests
         run: bun run test
 
-      # The CLI vendors the API's contract at `contract/openapi.json`, because the
-      # API lives in another repository and there is no path to read it from. A
-      # vendored file goes stale silently, so this step says so out loud.
+      # The CLI vendors the API's contract at `contract/openapi.json` because the
+      # API lives in another repository. This step warns when the vendored copy is
+      # stale.
       #
-      # WARNING ONLY, BY DESIGN. `ci-cli` is the required check on `main`, and the
-      # API deploys on its own cadence: a gate here would block every CLI pull
-      # request opened after an unrelated API release, for a contract the author
-      # never touched. The reminder belongs to whoever reads it, not to the merge
-      # button. A separate release-time check exercises the released CLI against
-      # the live API, and that is what actually catches a break.
+      # Warning only. `ci-cli` is the required check on `main` and the API deploys
+      # on its own schedule, so a gate here would block every CLI PR after an
+      # unrelated API release. A release-time check runs the released CLI against
+      # the live API and catches real breaks.
       #
-      # `servers` is dropped from both sides before the comparison: it names the
-      # host the document was served from, which is not drift.
+      # `servers` is dropped from both sides: it names the serving host, which is
+      # not drift.
       #
-      # Both `continue-on-error` and an explicit `exit 0` on every path, under
-      # an explicit `set +e`. Either alone is enough; the pair is what stops a
-      # later edit from turning a reminder into a veto by accident.
-      # `scripts/ci-contract-drift.test.ts` asserts it.
+      # Both `continue-on-error` and `exit 0` on every path, under `set +e`. Either
+      # is enough alone; the pair stops a later edit from making this a blocker by
+      # accident. `scripts/ci-contract-drift.test.ts` asserts it.
       - name: Contract drift (warning only)
         continue-on-error: true
         run: |
@@ -132,50 +121,39 @@ jobs:
           diff -u "$RUNNER_TEMP/committed.norm.json" "$RUNNER_TEMP/live.norm.json" | head -200 || true
           exit 0
 
-      # `scripts/` carries four shell scripts that drive real installs and updates on
-      # other people's machines, and `.husky/` now carries the hooks. CodeRabbit runs
-      # shellcheck too, but as a review comment on a pull request that can still be
-      # merged. Here it blocks. shellcheck ships on the runner image, so there is
-      # nothing to install and nothing to pin.
+      # The shell scripts in `scripts/` drive real installs and updates on users'
+      # machines, and `.husky/` holds the hooks. CodeRabbit also runs shellcheck,
+      # but only as a review comment; here it blocks. shellcheck ships on the
+      # runner image, so there is nothing to install or pin.
       #
-      # The hooks have no extension and no shebang - husky supplies `sh -e` - so the
+      # The hooks have no extension and no shebang (husky supplies `sh -e`), so the
       # shell has to be named.
       #
-      # `--severity=warning` because the runner image's shellcheck is older than a
-      # current local one and reports `info` notes it does not: the first run of this
-      # step failed on three SC2015 notes in `install-smoke.sh`, `update-smoke.sh` and
-      # `upgrade-path.sh` that shellcheck 0.11 does not raise at all. A gate whose
-      # verdict depends on which shellcheck you happen to have is not a gate. Warnings
-      # and errors are real defects and still block; `info` and `style` notes are
-      # CodeRabbit's to raise on the pull request.
+      # `--severity=warning` because the runner's older shellcheck raises `info`
+      # notes (such as SC2015) that current versions do not, and the verdict should
+      # not depend on the version. Warnings and errors still block; `info` and
+      # `style` notes are left to CodeRabbit.
       - name: Shell scripts (shellcheck)
         run: |
           shellcheck --severity=warning scripts/*.sh
           find .husky -maxdepth 1 -type f -print0 | xargs -0 shellcheck --severity=warning --shell=sh
 
-      # The workflow files themselves, typechecked. actionlint resolves every
-      # `${{ }}` expression against the contexts GitHub actually supplies, so it
-      # catches the class this repository used to assert by hand: a
-      # `needs.<job>.outputs.<name>` naming an output the producing job does not
-      # declare, or read from a job with no `needs:` edge to it. Both evaluate to
-      # the EMPTY STRING rather than erroring - in an `if:` that makes the
-      # condition permanently false and the step it guards silently stops running,
-      # green, with nothing in the log to notice.
+      # actionlint resolves every `${{ }}` expression against the contexts GitHub
+      # supplies. It catches, for example, a `needs.<job>.outputs.<name>` that the
+      # job does not declare or that has no `needs:` edge. Those evaluate to the
+      # empty string instead of erroring, so an `if:` using one is always false and
+      # its step silently never runs.
       #
-      # `scripts/workflow-contexts.test.ts` carried those two checks until this
-      # step existed. actionlint gives the same verdict with a type and a
-      # file:line, and a great deal else besides, so the test now keeps only the
-      # half actionlint cannot reach: composite actions, which it parses as
-      # malformed workflows rather than as actions.
+      # actionlint does not read composite actions;
+      # `scripts/workflow-contexts.test.ts` covers those.
       #
-      # Pinned by version AND checksum, on the same reasoning as the gitleaks step
-      # below: this is a required check, so an unpinned download lets someone
-      # else's release red the branch on rules unrelated to the change. Re-take
-      # the digest from the same published file when the version moves:
+      # Pinned by version and checksum: this is a required check, so an unpinned
+      # download would let an upstream release fail the branch. Take the digest
+      # from the published file when the version moves:
       # https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_checksums.txt
       #
-      # It shells out to shellcheck for every `run:` body, which the step above
-      # does not reach - that one reads `scripts/*.sh` and the hooks.
+      # It also runs shellcheck on every `run:` body, which the step above does
+      # not cover.
       - name: Workflows (actionlint)
         env:
           ACTIONLINT_VERSION: 1.7.12
@@ -189,21 +167,17 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
 
-      # `.husky/pre-commit` scans staged changes before a commit exists, which is the
-      # only moment a secret can still be un-leaked. This is the other half: whatever
-      # arrived without the hook - `--no-verify`, a clone that never ran `bun install`,
-      # a commit authored in the GitHub UI - is caught here, and blocks.
+      # `.husky/pre-commit` scans staged changes before a commit exists. This step
+      # catches what arrived without the hook (`--no-verify`, a clone that never ran
+      # `bun install`, a commit made in the GitHub UI), and blocks.
       #
-      # Scans every ref, the same way .gitleaks.toml documents, because the
-      # .gitleaksignore baseline from #73 is keyed to commit:file:rule:line and only
-      # matches a history scan. Both config files are picked up from the repository
-      # root automatically.
+      # Scans every ref because the `.gitleaksignore` baseline is keyed to
+      # commit:file:rule:line and only matches a history scan. Both config files
+      # are picked up from the repository root.
       #
-      # The binary is pinned by version AND by checksum: an unpinned download is a
-      # supply-chain hole in the job that is supposed to be closing one. The digest
-      # below is the one gitleaks publishes for that asset, taken from
+      # Pinned by version and checksum. Take the digest from the published file
+      # when the version moves:
       # https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
-      # - re-take it from the same file when the version moves.
       - name: Scan every ref for secrets (gitleaks)
         env:
           GITLEAKS_VERSION: 8.30.1
@@ -217,33 +191,26 @@ jobs:
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" git --log-opts=--all --redact --no-banner .
 
-      # GitHub's dependency graph does not resolve `bun.lock`. The SBOM for this
-      # repository lists 16 packages - the manifest plus the pinned Actions - where
-      # `bun.lock` resolves 100, so Dependabot's 0 open alerts describe under a tenth
-      # of what installs, not a clean tree. `bun audit` reads the lockfile, and is the
-      # only control in this repository that sees the other 91.
+      # GitHub's dependency graph does not resolve `bun.lock`, so Dependabot alerts
+      # miss the transitive tree. `bun audit` reads the lockfile and is the only
+      # check here that sees it.
       #
-      # No `|| true`, no `continue-on-error`: `ci-cli` is the required check on `main`
-      # and has no path filter, so a finding blocks the merge by design, and a job that
-      # goes green while reporting findings is filtered out of everyone's notifications
-      # inside a fortnight. Running on push to `main` as well as on pull requests
-      # re-audits the whole tree on every merge, which is what stands in for a scheduled
-      # scan. `edge-cli.yml` is deliberately left alone: it fires on the same push event,
-      # so it would audit the same commit concurrently.
+      # No `|| true` or `continue-on-error`: a finding blocks the merge on purpose,
+      # since a job that stays green while reporting findings gets ignored. Running
+      # on push to `main` re-audits on every merge, in place of a scheduled scan.
+      # Not repeated in `edge-cli.yml`, which runs on the same push.
       - name: Audit the installed dependency tree (bun.lock)
         run: bun audit --audit-level=high
 
       # The compiled `wego` binary against a local fake API (`integration/`). The
-      # unit tests above run the source; this runs what `bun build --compile` makes
-      # of it, which is what ships. Hermetic: the fake is a `Bun.serve` on loopback
-      # and every other request is refused, so a red here is this change, never the
-      # network.
+      # unit tests run the source; this runs what `bun build --compile` ships. The
+      # fake is on loopback and every other request is refused, so a failure here
+      # is the change, not the network.
       #
-      # A step of `ci-cli`, not a job of its own, so the one required check on
-      # `main` already blocks on it and no ruleset change is needed. linux-x64 only:
-      # the suite compiles the host binary when `WEGO_INTEGRATION_BINARY` is unset.
-      # The other four targets run in `release-cli.yml`, against the binaries that
-      # release built.
+      # A step, not a job, so the one required check on `main` covers it without a
+      # ruleset change. linux-x64 only: the suite compiles the host binary when
+      # `WEGO_INTEGRATION_BINARY` is unset. The other four targets run in
+      # `release-cli.yml` against the binaries that release built.
       - name: Integration tests (compiled binary, fake API)
         env:
           # The suite drives a production build. Do not post CI runs as product usage.

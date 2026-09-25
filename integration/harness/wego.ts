@@ -4,8 +4,8 @@
  *
  * The environment is built from nothing rather than copied from the suite's, so a
  * developer's `WEGO_*` exports, `.env.local` or real `~/.config/wego/` cannot reach
- * a scenario. Every endpoint points at the fake; telemetry, the update notice and
- * the background skill sync are off unless a scenario turns one on.
+ * a scenario. Every endpoint points at the fake; telemetry and the update notice
+ * are off unless a scenario turns one on.
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -44,7 +44,7 @@ export interface StoredCredentials {
 }
 
 /** Start a scenario already logged in, as a previous `wego login` would have left
- *  it. `login.test.ts` is where the login itself is driven. */
+ *  it. `auth.test.ts` and `login-more.test.ts` drive the login itself. */
 export function signIn(
   home: Home,
   creds: StoredCredentials = {
@@ -115,9 +115,9 @@ function environment(opts: RunOptions): Record<string, string> {
     WEGO_CLI_CLIENT_ID: TEST_CLIENT_ID,
     WEGO_CLI_TELEMETRY: "0",
     WEGO_CLI_NO_UPDATE_NOTICE: "1",
-    // Nothing leaves the machine. A release binary bakes a real analytics key,
-    // and a scenario that turns telemetry on must not send an event from CI, so
-    // every request that is not to loopback goes to a proxy that is not there.
+    // A release binary bakes a real analytics key, and a scenario that turns
+    // telemetry on must not send an event from CI, so every request that is not
+    // to loopback goes to a proxy that is not there.
     HTTPS_PROXY: DEAD_PROXY,
     HTTP_PROXY: DEAD_PROXY,
     NO_PROXY: "127.0.0.1,localhost",

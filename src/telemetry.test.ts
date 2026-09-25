@@ -355,7 +355,7 @@ describe("resolveSubcommand", () => {
 
   it("does not mistake a value-flag's value for the subcommand", () => {
     // The real dispatcher requires the subcommand first, so this is only
-    // reachable on a usage error — but reading "NYC" as the subcommand would be
+    // reachable on a usage error, but reading "NYC" as the subcommand would be
     // wrong either way.
     expect(
       resolveSubcommand("flights", ["--sort", "price_asc", "search"]),
@@ -491,7 +491,7 @@ describe("extractFlagValues", () => {
   it.each([
     ["--stops", "0,1"],
   ])("records %p by name only, since its value is not a scalar", (flag, value) => {
-    // Typing these as count/enum made every real use record `invalid`.
+    // Typed as count or enum, every real use would record `invalid`.
     expect(extractFlagValues([flag, value])).toEqual({});
     expect(extractFlagNames([flag, value])).toEqual([flag]);
   });

@@ -1,26 +1,21 @@
 /**
- * The immutable publish half shared by the two Blob publishers -
- * `upload-release-blob.ts` (the flavor channels) and `publish-edge-blob.ts` (the
- * edge ring, foundations#74 rung 5).
+ * The immutable publish step shared by the two Blob publishers,
+ * `upload-release-blob.ts` (next/stable) and `publish-edge-blob.ts` (edge).
  *
  * Both write `dist/*` to a per-version prefix that is never overwritten, then
- * advance their own moving pointer by server-side copy. The pointer POLICY
- * differs (which prefix, which versions may land on it) and stays in each
- * publisher; this phase does not differ at all, so it lives once. Extracted when
- * SonarQube flagged the second copy as duplicated new code.
+ * advance their own moving pointer by server-side copy. The pointer policy
+ * (which prefix, which versions may land on it) differs and stays in each
+ * publisher; this step is identical, so it lives here.
  *
  * Dependency-injected (`put` / `openFile` / `log`) so the loop unit-tests without
  * network, a real Blob store, or a `dist/` on disk.
  */
 import { list, put } from "@vercel/blob";
 
-/** `deps` for {@link putImmutableAssets} - injected so tests supply fakes. */
 export interface ImmutableUploadDeps {
-  /** `@vercel/blob`'s `put`, injectable for tests. */
   put: typeof put;
-  /** Open a local path as the upload body (`Bun.file` in production). */
+  /** `Bun.file` in production. */
   openFile: (path: string) => Blob;
-  /** Progress line. */
   log: (message: string) => void;
 }
 
@@ -28,10 +23,9 @@ export interface ImmutableUploadDeps {
  * Whether a `put` rejection means "this blob is already published".
  *
  * Immutable-conflict signatures differ across `@vercel/blob` versions: the SDK
- * may surface an already-published blob as "already exists" OR as a
- * precondition/ETag failure (`allowOverwrite: false`). Any of them means the
- * object is already there, which an idempotent resume must treat as success;
- * anything else is a real fault and is re-thrown by the caller.
+ * may report an already-published blob as "already exists" or as a
+ * precondition/ETag failure (`allowOverwrite: false`). An idempotent resume
+ * treats any of them as success; anything else is re-thrown by the caller.
  */
 export function isAlreadyPublished(err: unknown): boolean {
   return (
@@ -49,7 +43,7 @@ export function isAlreadyPublished(err: unknown): boolean {
  * a one-year cache) because a published version must never be swapped, and
  * `multipart` because the binaries are 60-95 MB and must be chunked rather than
  * buffered whole. A rejection that {@link isAlreadyPublished} recognizes is a
- * resume, not a failure - `list()` lags a just-written blob, so `present` alone
+ * resume, not a failure: `list()` lags a just-written blob, so `present` alone
  * cannot decide it.
  */
 export async function putImmutableAssets(args: {
@@ -96,14 +90,13 @@ export async function putImmutableAssets(args: {
  * The store origin for `prefix`, recovering it by re-listing when the publish
  * phase could not learn one.
  *
- * {@link putImmutableAssets} discovers the origin from the first upload it
- * performs, so it returns `""` on the one path where it uploads nothing new:
- * every `put` rejected as already-published while the caller's `list()` had not
- * yet surfaced those blobs (read-after-write lag on a resumed run). The origin is
- * then interpolated into the manifest URL the consistency barrier reads, and an
- * empty one silently makes that URL relative - which fails, but as five rounds of
- * "read-after-write lag?" retries naming the wrong cause. Re-listing after the
- * uploads settles it, and a still-empty result is reported as what it is.
+ * {@link putImmutableAssets} learns the origin from its first upload, so it
+ * returns `""` when it uploads nothing new: every `put` rejected as
+ * already-published while the caller's `list()` had not yet shown those blobs
+ * (read-after-write lag on a resumed run). An empty origin makes the manifest
+ * URL the consistency barrier reads relative, which fails with retries that
+ * blame the wrong cause. Re-listing after the uploads recovers it, and a
+ * still-empty result is reported as such.
  */
 export async function resolveStoreOrigin(args: {
   storeOrigin: string;

@@ -4,19 +4,17 @@ name: Release badge
 #
 # GitHub gives "Latest" to every new full release at creation. release-please
 # creates the release minutes before publication and days before a promote, so the
-# badge can name a build that `cli/stable` does not serve. On 2026-09-16 it named
-# v1.3.0 for 90 minutes while `cli/stable` served v1.2.7.
+# badge can name a build that `cli/stable` does not serve.
 #
 # Rule:
 #   the release `cli/stable` serves      full release, "Latest"
 #   every release created after it       prerelease
 #   older releases                        not changed
 #
-# This is a reconciler, not a step in each lane. The badge depends on one fact, and
-# one place evaluates it. It re-reads the ring on every run and does not trust the
-# event.
+# This is a reconciler, not a step in each lane, so one place decides the badge.
+# It re-reads the ring on every run and does not trust the event.
 #
-# Isolation. This workflow writes no ring: no `environment:`, no store token, no
+# This workflow writes no ring: no `environment:`, no store token, no
 # `id-token`. A `workflow_run` conclusion does not propagate to the run that
 # triggered it, so this cannot block a release, a promote or a rollback. Its
 # concurrency group is its own. Do not move it to `ring-stable`. A failure here

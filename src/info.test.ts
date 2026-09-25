@@ -8,10 +8,9 @@ import {
 
 /**
  * The `wego info` parsers (issue #1326), tested directly because they are pure.
- * Everything they reject is a request that never happens, which is the point of
- * validating client-side: both upstreams behind these commands answer a bad key
- * with an empty list rather than an error, so a typo that reached the wire would
- * come back looking like a real "nothing found".
+ * They validate client-side because both upstreams behind these commands answer
+ * a bad key with an empty list rather than an error, so a typo that reached the
+ * wire would come back looking like a real "nothing found".
  *
  * What a caller observes from the commands themselves (exit codes, the JSON on
  * stdout, the query on the wire, stored preferences) is
@@ -195,7 +194,7 @@ describe("parseAirportsNearArgs", () => {
   });
 
   it("rejects an EMPTY coordinate component rather than reading it as 0", () => {
-    // `Number("")` is 0, a legal coordinate — so a split-and-Number check accepts
+    // `Number("")` is 0, a legal coordinate, so a split-and-Number check accepts
     // `51.47,` as longitude 0 and answers about a point in the sea. The API cannot
     // catch it either (0 is in range), so the strict shape check is the only guard.
     for (const bad of ["1.35,", ",103.8", ",", "51.47, ", " ,103.8"]) {

@@ -53,19 +53,18 @@ permissions:
 jobs:
   build:
     name: Build edge binaries
-    # This lane has no `workflow_dispatch`. `publish` holds
-    # `BLOB_READ_WRITE_TOKEN`, so the trigger let any collaborator start a job
-    # holding the store token. Re-run the failed push run instead.
+    # No `workflow_dispatch`: `publish` holds `BLOB_READ_WRITE_TOKEN`, and a manual
+    # trigger would let any collaborator start a job holding the store token.
+    # Re-run the failed push run instead.
     #
-    # An allow-list job is the wrong shape here. This lane publishes unattended on
-    # every qualifying merge, so a gate would have to be conditional on
-    # `github.event_name` and would end up inside the job that already holds the
-    # token. `promote-cli.yml` and `rollback-cli.yml` keep their `approve` jobs
-    # because those lanes are dispatch-only.
+    # An allow-list job does not fit here. This lane publishes unattended on every
+    # qualifying merge, so a gate would have to depend on `github.event_name` and
+    # would end up in the job that holds the token. `promote-cli.yml` and
+    # `rollback-cli.yml` have `approve` jobs because they are dispatch-only.
     #
-    # The ref guard below is kept as insurance: with only the `push` trigger,
-    # `github.ref` is always `refs/heads/main`. `sign` and `publish` need this job,
-    # so one guard covers all three jobs.
+    # The ref guard is insurance: with only the `push` trigger, `github.ref` is
+    # always `refs/heads/main`. `sign` and `publish` need this job, so one guard
+    # covers all three.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -205,13 +204,13 @@ jobs:
     # produce a record clients accept.
     #
     # `edge` is this lane's own environment and admits `main` only. It is not a
-    # weaker credential: the same `BLOB_READ_WRITE_TOKEN` value sits in all four lane
-    # environments and still has write access to the whole store. The split changes
-    # who can reach it and from which ref, not what it can do.
+    # weaker credential: the same `BLOB_READ_WRITE_TOKEN` is in all four lane
+    # environments with write access to the whole store. The split limits who can
+    # reach it and from which ref, not what it can do.
     #
-    # No required reviewers, deliberately. This job runs on every qualifying merge,
-    # and the artifacts it consumes carry `retention-days: 1`, so an approval delay
-    # past a day would not delay a publish, it would fail one.
+    # No required reviewers: this job runs on every qualifying merge, and its
+    # artifacts have `retention-days: 1`, so an approval waiting past a day would
+    # fail the publish.
     environment:
       name: edge
     permissions:

@@ -1,17 +1,15 @@
 /**
  * `verify-published.sh`, driven end to end against a fake Blob base.
  *
- * The script is the release path's last gate before a channel pointer moves, and
- * its one interesting decision — WHICH native asset to check — used to be the
- * hardcoded prod name. That made it asymmetric: a staging-only asset set was
- * refused outright, while a prod-only set passed with the staging half never
- * looked at. The cases below pin both directions.
+ * The script is the release path's last gate before a ring pointer moves. Its one
+ * real decision is which native assets to check: a hardcoded name would refuse a
+ * set that names its native differently, and ignore any second native.
  *
  * The harness is two PATH stubs and a temp dir, because the real script wants a
  * Linux release runner: `curl` becomes a copy out of a local `serve/` dir, the
  * "native binary" is a shell script that prints a version, and `sha256sum` is
- * shimmed to `shasum -a 256` only on hosts that lack it (macOS). Nothing else is
- * faked — the awk, the manifest parsing and the control flow are the shipped ones.
+ * shimmed to `shasum -a 256` only on hosts that lack it (macOS). The awk, the
+ * manifest parsing and the control flow are the shipped ones.
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import {
@@ -107,19 +105,14 @@ async function run(assets: Assets, mode: "all" | "native") {
   return { code: await proc.exited, stdout, stderr };
 }
 
-// A release publishes ONE `wego-*` family into every directory it verifies (#74
-// rung 7), so this is the shape both call sites (`all` on cli/<tag>, `native` on
-// the ring) actually see. It must keep passing.
+// The shape both call sites (`all` on cli/<tag>, `native` on the ring) see.
 const RELEASE_SET: Assets = {
   "wego-linux-x64": nativeBinary(VERSION),
   "wego-darwin-arm64": "mach-o pretend bytes",
 };
 
-// A manifest whose native asset is NOT named `wego-linux-x64`. The retired flavor
-// axis used to supply this case for free with its second binary family; it is
-// written out explicitly now, because the property under test never needed it: the
-// script must run whatever `*-linux-x64` the manifest lists, and hardcoding a name
-// is exactly the bug that made this guard asymmetric before.
+// A native not named `wego-linux-x64`: the script must run whatever `*-linux-x64`
+// the manifest lists, not a hardcoded name.
 const RENAMED_NATIVE = "mywego-linux-x64";
 
 describe("verify-published.sh derives the native asset from the manifest", () => {
@@ -137,8 +130,6 @@ describe("verify-published.sh derives the native asset from the manifest", () =>
   });
 
   test("a set whose native is NOT named wego-linux-x64 still passes", async () => {
-    // The name comes from the manifest. A hardcoded `wego-linux-x64` would refuse
-    // this set outright.
     const { code, stdout } = await run(
       { [RENAMED_NATIVE]: nativeBinary(VERSION) },
       "native",
@@ -148,8 +139,7 @@ describe("verify-published.sh derives the native asset from the manifest", () =>
   });
 
   test("EVERY listed native is really checked, not just the first", async () => {
-    // The other half of the asymmetry: a hardcoded name passed a set silently, so a
-    // bad second native alongside a good first one was caught by nothing.
+    // A bad second native alongside a good first one must not pass.
     const { code, stderr } = await run(
       {
         "wego-linux-x64": nativeBinary(VERSION),

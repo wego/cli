@@ -1,36 +1,23 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 #
-# Written for THIS repository, not copied from wego-ai. Three things differ, and
-# each one is load-bearing:
+# Written for this repository, not copied from wego-ai. Three choices matter:
 #
-#  1. Every `knowledge_base` scope is pinned `local`. The default is `auto`,
-#     which resolves to GLOBAL for a private repo and local for a public one -
-#     so `auto` silently re-expands to org-wide the moment anyone flips this
-#     repo private for an afternoon. This repository went PUBLIC on 2026-09-17,
-#     so `auto` would resolve local today and the pin looks redundant. It is
-#     not: it is what stops a temporary flip back to private from quietly
-#     widening the scope, and that flip would leave no trace in this file.
-#     Pinned `local`, nothing wego-ai knows can reach a comment here. See the
-#     block at the end.
-#  2. `request_changes_workflow` is OFF. Branch protection on `main` requires
-#     ONE approving review and code-owner review. CODEOWNERS covers only the
-#     release path (workflows, actions, `src/release-signing/`, `scripts/`,
-#     `package.json`, `bun.lock`, the release-please files), so a pull request
-#     touching only the other ~20k source lines under `src/` needs no code
-#     owner at all. With the approval workflow on, a contributor could resolve
-#     CodeRabbit's threads and merge that with no human approval whatsoever.
-#     The bot must never be the only reviewer.
-#  3. No wego-ai internals appear anywhere in this file. It is published the
-#     moment the repository is - path names and review instructions included.
+#  1. Every `knowledge_base` scope is pinned `local`. The default, `auto`,
+#     resolves to global for a private repo and local for a public one, so a
+#     temporary switch to private would silently widen it to org-wide. Pinned,
+#     nothing from wego-ai can reach a comment here. See the block at the end.
+#  2. `request_changes_workflow` is off. Branch protection on `main` requires
+#     one approving review plus code-owner review, but CODEOWNERS covers only
+#     the release path, so a PR touching only other `src/` files needs no code
+#     owner. With the approval workflow on, a contributor could resolve
+#     CodeRabbit's threads and merge with no human approval. The bot must never
+#     be the only reviewer.
+#  3. No wego-ai internals appear in this file. It is public.
 language: en-US
-# HARD LIMIT: 250 characters. Over it, the schema rejects the value and the
-# WHOLE file fails to parse - CodeRabbit then silently falls back to the
-# Organization UI settings, and every path_instruction, path_filter and
-# knowledge_base scope below is ignored with no error anywhere but a warning
-# inside a review comment. That is exactly what happened between 2026-09-17 and
-# 2026-09-18, when this value was 347 characters. It is 221 today; keep the
-# headroom, and put anything longer in a path_instruction, whose own cap is far
-# larger (CodeRabbit's docs give it as 20,000 characters).
+# Hard limit: 250 characters. Over it, the whole file fails schema validation
+# and CodeRabbit silently falls back to the organization UI settings, ignoring
+# every path_instruction, path_filter and knowledge_base scope below. Put
+# anything longer in a path_instruction (cap about 20,000 characters).
 tone_instructions: >
   Be direct and concise. Focus on correctness, the stdout JSON contract, the
   OAuth/PKCE surface, and how a binary is installed, verified, replaced and
@@ -40,9 +27,9 @@ early_access: true
 
 reviews:
   profile: assertive
-  # Deliberately false - see note 2 in the header. CodeRabbit reviews; humans
-  # approve. If you want a merge gate from it, require its CHECK in branch
-  # protection instead, which cannot be satisfied by resolving threads.
+  # See note 2 in the header. CodeRabbit reviews; humans approve. For a merge
+  # gate, require its check in branch protection instead, which resolving
+  # threads cannot satisfy.
   request_changes_workflow: false
   high_level_summary: true
   high_level_summary_placeholder: "@coderabbitai summary"
@@ -50,27 +37,20 @@ reviews:
   review_status: true
   collapse_walkthrough: true
   auto_review:
-    # Note this is aspirational until the repo has stars: on the free OSS tier,
-    # public repositories under 10 stars get MANUAL triggers only. This repo
-    # went public on 2026-09-17 with 0 stars, so that rule now APPLIES and the
-    # review is summoned with `@coderabbitai review`; this flag does nothing
-    # until the tenth star. It is set correctly so that it starts working on
-    # its own.
+    # On the free OSS tier, public repositories under 10 stars get manual
+    # triggers only (`@coderabbitai review`), so this has no effect until then.
+    # It is set so that auto review starts on its own.
     enabled: true
     drafts: false
-    # Re-review is manual: comment `@coderabbitai review`. With the approval
-    # workflow off there is no auto-approve loop to worry about here, but the
-    # churn is still not worth it - ask for the re-review by hand on anything
-    # that touches the release path.
+    # Re-review is manual: comment `@coderabbitai review`. Ask for it by hand
+    # on anything that touches the release path.
     auto_incremental_review: false
     ignore_usernames:
-      # A lockfile bump has no prose to review. `bun.lock` is CODEOWNERS-gated
-      # anyway, so a release signer reads it either way.
+      # Dependency bumps have no prose to review, and CODEOWNERS already puts
+      # `bun.lock` in front of a release signer.
       - "dependabot[bot]"
-      # release-please's PRs are a generated CHANGELOG plus a version bump.
-      # This is the App that actually opens them (`release-please.yml` mints an
-      # installation token from `vars.RELEASE_PLEASE_APP_ID`); every
-      # `chore(cli): release X.Y.Z` PR in this repo is authored by it.
+      # The App that opens release-please's PRs (a generated CHANGELOG and a
+      # version bump); `release-please.yml` mints its token.
       - "wego-cli-release[bot]"
     ignore_title_keywords:
       - "wip"
@@ -79,17 +59,13 @@ reviews:
     docstrings:
       mode: "off"
     title:
-      # `error`, not `warning`: this title is the release contract. Pull requests
-      # are squashed, the squash subject is the title, and release-please reads it
-      # to compute the next version - a mistyped type ships nothing and says
-      # nothing.
+      # `error`, not `warning`: the title is the release contract. PRs are
+      # squashed, the squash subject is the title, and release-please reads it
+      # to compute the next version, so a mistyped type silently ships nothing.
       #
-      # This is the SECOND check on the same string, and deliberately so. The
-      # deterministic half is a `ci-cli` step running
-      # `scripts/commit-convention.ts`, which is inside the required check and
-      # cannot be skipped. What that regex cannot judge is whether the subject is
-      # imperative, and whether the scope names the area the diff actually
-      # touches. That is what this one is for.
+      # `ci-cli` runs `scripts/commit-convention.ts` as the deterministic check.
+      # This one judges what a regex cannot: whether the subject is imperative
+      # and whether the scope matches the area the diff touches.
       mode: error
       requirements: >
         Conventional Commits: `type(scope): subject`. Type is one of feat, fix,
@@ -101,58 +77,45 @@ reviews:
         to what a published ring serves carries `!` before the colon. Subject
         is imperative and lowercase.
   tools:
-    # `bun run lint` is biome, and it is a required check on `main` via
-    # `ci-cli`. A second biome pass here only duplicates a comment the build
-    # already fails on.
+    # `bun run lint` is biome, a required check via `ci-cli`, so a second
+    # biome pass here would only duplicate it.
     biome:
       enabled: false
-    # Nothing else is listed because every other tool defaults to enabled, and
-    # four of them earn their keep here: `zizmor` (a GitHub Actions security
-    # analyzer; nothing in `.github/` runs it, so this is the only place it
-    # runs - `.husky/pre-commit` calls it too, but only if you happen to have
-    # it installed), `actionlint`, `skillspector` (scans AI agent skills - i.e.
-    # `skills/wego/SKILL.md`, which ships inside the binary), and `presidio` for
-    # sensitive identifiers on a repo that is now public.
+    # Every other tool defaults to enabled. Useful here: `zizmor` (GitHub
+    # Actions security; CI does not run it, and `.husky/pre-commit` runs it only
+    # if installed), `actionlint`, `skillspector` (for `skills/wego/SKILL.md`,
+    # which ships in the binary), and `presidio` (sensitive identifiers in a
+    # public repo).
     #
-    # `gitleaks` and `shellcheck` also default on, and both now have a blocking
-    # counterpart in `ci-cli`: gitleaks over every ref, shellcheck over
-    # `scripts/*.sh` and the husky hooks. Leave them enabled anyway - what
-    # CodeRabbit adds is a comment on the line, which a failing job does not.
+    # `gitleaks` and `shellcheck` also run as blocking steps in `ci-cli`. Keep
+    # them on here too: CodeRabbit comments on the line, which a failing job
+    # does not.
     #
-    # Do NOT add `github-checks: timeout_ms:` here. It is not in schema.v2 and
-    # is silently ignored; `enabled` is the only key that tool accepts.
+    # Do not add `github-checks: timeout_ms:`. It is not in schema.v2 and is
+    # silently ignored; `enabled` is the only key that tool accepts.
   finishing_touches:
-    # House style is rationale-in-comments, hand-written. A bot that volunteers
-    # docstrings fights the reviewer.
+    # Comments here are hand-written rationale; generated docstrings do not fit.
     docstrings:
       enabled: false
-    # The test suites here ARE the enforcement layer (bin-contract, help-shape,
-    # env-example, plugin-conformance, assert-self-update, workflow-shape,
-    # workflow-lanes, workflow-contexts, release-platform-coverage). A
-    # generated stub cannot honour a contract it has not read.
+    # The test suites encode specific contracts. A generated test stub would
+    # not know them.
     unit_tests:
       enabled: false
 
   path_filters:
-    # `bun.lock` selects the code that executes beside the signing identity and
-    # the blob token - which is exactly why CODEOWNERS puts it behind a release
-    # signer. Review by a human who holds those rights is the control; a bot
-    # cannot attest to a lockfile's provenance, and its comments here would be
-    # noise on top of the gate that actually matters.
+    # `bun.lock` decides the code that runs beside the signing identity and the
+    # blob token, so CODEOWNERS puts it behind a release signer. That human
+    # review is the control; bot comments on a lockfile would be noise.
     - "!bun.lock"
 
-    # NOT excluded, deliberately: `package.json`. It is CODEOWNERS-gated for the
-    # same reason as `bun.lock`, but unlike the lockfile its `dependencies` are
-    # COMPILED INTO THE SHIPPED BINARY by `bun build --compile`, then hashed and
-    # signed - so the malicious bytes would genuinely be the release and no job
-    # isolation reaches them. A single added dependency is exactly the diff a
-    # reviewer should see, and it is one line of readable prose. Keep it in.
+    # `package.json` is kept in on purpose. Its `dependencies` are compiled into
+    # the shipped binary, so an added dependency is exactly the diff a reviewer
+    # should see.
     #
-    # NOT excluded, deliberately: `src/api-types.d.ts`. It is generated
-    # (`api-types:generate`) and biome already ignores it, but `src/api-wire.ts`
-    # type-imports it at line 1. path_filters ALSO drive CodeRabbit's
-    # sparse-checkout, so dropping it from the clone would leave every review
-    # under `src/` type-blind. It is handled with an instruction below instead.
+    # `src/api-types.d.ts` is kept in on purpose. It is generated, but
+    # `src/api-wire.ts` imports its types, and path_filters also drive
+    # CodeRabbit's sparse checkout, so excluding it would leave reviews under
+    # `src/` without types. An instruction below covers it instead.
 
   path_instructions:
     # -- The CLI itself ------------------------------------------------------
@@ -179,13 +142,11 @@ reviews:
 
     # -- Installing, updating and removing the binary ------------------------
     #
-    # The highest-consequence code in the repository that is NOT CODEOWNERS
-    # gated. `update.ts` overwrites the running executable with bytes fetched
-    # over the network; `uninstall.ts` unlinks it; `ring-follow.ts` decides
-    # WHERE those bytes come from. A defect here does not fail a build - it
-    # ships a binary that can be replaced by the wrong bytes, or one that can
-    # never be replaced again, and a binary that cannot take an update cannot
-    # take the fix either.
+    # The highest-risk code not gated by CODEOWNERS. `update.ts` overwrites the
+    # running executable with downloaded bytes, `uninstall.ts` deletes it, and
+    # `ring-follow.ts` decides where the bytes come from. A defect here does not
+    # fail a build; it ships a binary that takes the wrong bytes, or one that
+    # can never update again, including to a fix.
     - path: "src/{update,uninstall,ring-follow}.ts"
       instructions: |
         This is the self-update path: it replaces, or deletes, the binary the
@@ -445,23 +406,18 @@ reviews:
         that field is capped at 250 characters.
 
 knowledge_base:
-  # The isolation boundary. `opt_out: false` keeps learnings and code
-  # guidelines, both of which are useful; the SCOPES below are what stop
-  # anything from wego-ai or any other private repository reaching a comment
-  # on a pull request here.
+  # `opt_out: false` keeps learnings and code guidelines. The scopes below stop
+  # anything from wego-ai or another private repository reaching a comment
+  # here.
   #
-  # `local` restricts context to this repository only. The default, `auto`,
-  # would resolve to `global` (org-wide) while this repository is private, and
-  # to `local` once it is public - a distinction that depends on live
-  # visibility, which is not a thing to hang a disclosure boundary on. This
-  # repository has been PUBLIC since 2026-09-17, so `auto` would resolve local
-  # right now and agree with the pin. That agreement is a coincidence of
-  # today's visibility, not a guarantee, which is the whole reason to pin.
+  # `local` limits context to this repository. The default, `auto`, depends on
+  # the repository's current visibility (global while private, local while
+  # public), which is not a safe basis for a disclosure boundary.
   #
-  # If you ever want the harder guarantee, `opt_out: true` disables every
-  # knowledge-base feature that retains data - including Multi-Repo Analysis
-  # and Automatic Repository Linking, which are NOT governed by these scopes -
-  # and deletes what is already stored. The cost is losing learnings entirely.
+  # For a stronger guarantee, `opt_out: true` disables every knowledge-base
+  # feature that retains data, including Multi-Repo Analysis and Automatic
+  # Repository Linking (which these scopes do not govern), and deletes stored
+  # data. The cost is losing learnings.
   opt_out: false
   learnings:
     scope: local

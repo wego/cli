@@ -8,11 +8,9 @@ import {
 } from "./commands";
 
 /**
- * The pure halves of the commands: the parsers that turn argv into API-call
- * arguments and the rung resolution behind `--site`. What a command prints, the
- * exit code it returns and what reaches the wire are the integration tier's
- * (`integration/places.test.ts`, `flights.test.ts`, `feedback.test.ts`,
- * `auth.test.ts`, `login-more.test.ts`), which drives the compiled binary.
+ * Only the pure halves of the commands: the argv parsers and the rung
+ * resolution behind `--site`. Output, exit codes and what reaches the wire are
+ * tested against the compiled binary in `integration/`.
  */
 
 describe("parseLoginArgs", () => {
@@ -35,13 +33,6 @@ describe("parseLoginArgs", () => {
     });
   });
 });
-// --- flights results filter flags (issue #1117) ------------------------------
-//
-// TEST-FIRST reproduction of the CLI gap: the departure-time / alliance /
-// booking-type / stopover / view filters the API implements were unreachable
-// from the CLI (`--departure-blocks morning` => "Unknown option"). These assert
-// each new flag parses, validates client-side, and serializes to the exact API
-// wire param — plus a CLI<->OpenAPI parity guardrail over the whole route.
 
 describe("parseFlightResultsArgs – issue #1117 filter flags", () => {
   it("accepts the new list/single flags (no longer 'Unknown option')", () => {
@@ -108,8 +99,6 @@ describe("parseFlightResultsArgs – issue #1117 filter flags", () => {
     ]);
     expect(query.departureRange).toBe("359-360");
   });
-
-  // ── The arrival-clock and return-leg flags (issue #84) ────────────────────
 
   it("parses each of the four leg/clock range flags into its own field", () => {
     const { query } = parseFlightResultsArgs([
@@ -291,10 +280,8 @@ describe("parseFlightResultsArgs – issue #1117 filter flags", () => {
     ).toThrow(/minutes of the day/);
   });
 
-  // CLI-2: all four former tokenizers now run through one `tokenizeFlagSets`,
-  // so the unknown-flag error is one unified format — `Unknown option: --x`
-  // followed by that command's usage (flights results used to print the bare
-  // "Unknown option" with no usage; now it appends the scoped usage).
+  // Every parser shares `tokenizeFlagSets`, so an unknown flag always gets
+  // `Unknown option: --x` followed by that command's usage.
   it("unknown flag → unified 'Unknown option' + that command's usage", () => {
     expect(() => parseFlightResultsArgs(["s1msr", "--bogus"])).toThrow(
       /Unknown option: --bogus\nUsage: wego flights results/,
@@ -303,13 +290,10 @@ describe("parseFlightResultsArgs – issue #1117 filter flags", () => {
 });
 
 describe("flights results – CLI<->OpenAPI parity guardrail (issue #1117)", () => {
-  // The full set of query params the API documents on
-  // GET /v1/flights/searches/:id/results — a mirror of
-  // apps/api/src/flights/schema.ts `pollFlightsQuerySchema`. The apps are
-  // self-contained (the CLI shares no code with the API), so this list is the
-  // contract's local checkpoint: when the API grows a results query param, add
-  // it here AND wire a CLI flag for it (or exempt it below) — otherwise this
-  // test fails, flagging the CLI drift.
+  // The query params the API documents on GET /v1/flights/searches/:id/results
+  // (its `pollFlightsQuerySchema`). The CLI shares no code with the API, so when
+  // the API adds a param, add it here and wire a CLI flag (or exempt it below),
+  // or this test fails.
   const DOCUMENTED_RESULTS_PARAMS = new Set([
     "page",
     "pageSize",
@@ -342,9 +326,8 @@ describe("flights results – CLI<->OpenAPI parity guardrail (issue #1117)", () 
     "locale",
     "view",
   ]);
-  // Documented params intentionally NOT surfaced as a CLI flag. `view` has a
-  // single legal value since #1308 (`card`, the default), so a flag could only
-  // ever restate the default — and the CLI omits the param entirely.
+  // `view` has one legal value (`card`, the default), so a flag could only
+  // restate it; the CLI omits the param.
   const EXEMPT_RESULTS_PARAMS = new Set<string>(["view"]);
 
   it("every documented results query param is reachable from a CLI flag", async () => {
@@ -411,10 +394,8 @@ describe("flights results – CLI<->OpenAPI parity guardrail (issue #1117)", () 
       "en",
     ]);
 
-    // Serialize through the real wire serializer, capturing the built URL. The
-    // fetch is INJECTED (#1341) rather than patched onto the global: this test
-    // exists to prove every documented param can reach the wire, and a patch that
-    // leaked past its `finally` would silently change what every later suite sees.
+    // The fetch is injected rather than patched onto the global: a patch that
+    // leaked past its `finally` would silently change what later suites see.
     let seen: URL | undefined;
     const http = ((url: string | URL) => {
       seen = new URL(String(url));
@@ -464,8 +445,7 @@ describe("resolveCliSite", () => {
   });
 
   it("prefers the stored setting over the account market (source: setting)", () => {
-    // The whole point of issue #1386: an account in one market must not pin a
-    // user who buys from another.
+    // An account in one market must not pin a user who buys from another.
     expect(resolveCliSite(undefined, "SA", "AE")).toEqual({
       siteCode: "SA",
       source: "setting",

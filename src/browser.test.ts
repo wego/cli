@@ -6,8 +6,7 @@ const URL_WITH_AMP =
 
 describe("openBrowser", () => {
   it("spawns the platform opener without throwing (best-effort)", () => {
-    // A fake spawn keeps the test from launching a real browser tab on the
-    // dev's machine (the whole point of injecting it).
+    // A fake spawn keeps the test from opening a real browser tab.
     const child = { on: () => child, unref: () => {} };
     const spawnFn: SpawnFn = () => child;
     expect(() =>

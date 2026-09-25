@@ -36,15 +36,14 @@ afterEach(() => {
 });
 
 /**
- * A tripwire, not a fake (#1341).
+ * A tripwire, not a fake.
  *
- * Every test here injects its own `HttpFetch` into the call under test, so nothing
- * in this file should ever reach a socket. The one thing that could go wrong
- * silently is FORGETTING to pass the dep: the call then uses the real `fetch`,
- * leaves the machine, and — measured while writing this — comes back as a `401`
- * from the production API, which reads as a bug in the code under test rather than
- * as a missing argument. So the global is replaced by something that throws and
- * names the mistake, and restored afterwards so no other suite inherits it.
+ * Every test here injects its own `HttpFetch`, so nothing in this file should
+ * reach a socket. If a test forgets to pass the dep, the call uses the real
+ * `fetch` and comes back as a `401` from the production API, which looks like a
+ * bug in the code under test rather than a missing argument. So the global is
+ * replaced by something that throws and names the mistake, and restored
+ * afterwards so no other suite inherits it.
  */
 const realFetch = globalThis.fetch;
 beforeAll(() => {
@@ -81,7 +80,6 @@ describe("USER_AGENT", () => {
 });
 
 describe("client build headers", () => {
-  /** Capture the headers of one `apps/api` call. */
   async function call(): Promise<Headers> {
     let captured: Headers | undefined;
     const http = ((_url: string, init: RequestInit) => {
@@ -214,7 +212,6 @@ describe("utcOffsetOf", () => {
 });
 
 describe("analytics headers", () => {
-  /** Capture the headers of one `apps/api` call. */
   async function callWith(headers: {
     sessionId?: string;
     clientId?: string;
@@ -422,9 +419,9 @@ describe("fetchPlaces", () => {
   });
 });
 
-/** The trip-shaped envelope the results read used to answer with. Kept as the
- *  `fetchFlightTrip` fixture (its `results[0]` IS a trip body) and as the negative
- *  case for a results read (#1308 retired that projection). */
+/** A trip-shaped envelope. Used as the `fetchFlightTrip` fixture (its
+ *  `results[0]` is a trip body) and as the negative case for a results read,
+ *  which no longer serves this projection. */
 const FLIGHTS_RESULT = {
   searchId: "s1msr",
   currencyCode: "USD",
@@ -453,8 +450,7 @@ const FLIGHTS_RESULT = {
   ],
 };
 
-/** A results body: lean list cards with NO `fares[]` — the only projection the
- *  results read answers with since #1308. */
+/** A results body: lean list cards with no `fares[]`. */
 const FLIGHTS_CARD_RESULT = {
   searchId: "s1msr",
   currencyCode: "USD",
@@ -587,11 +583,9 @@ describe("createFlightSearch", () => {
     expect(out).toEqual({ searchId: "s1legacy" });
   });
 
-  // #1300 D3 — these two used to assert the opposite. A cross-field `.refine`
-  // made a half-populated site pair fail the WHOLE response, so a well-formed
-  // create died on metadata the CLI only prints. No type can see a predicate, so
-  // no gate reported it either. The invariant belongs in `apps/api`, where a
-  // mistake is one redeploy from fixed; here the property is tolerance.
+  // A half-populated site pair must not fail the whole response: the CLI only
+  // prints these fields. Pairing invariants belong in `apps/api` (see the
+  // module header of `api.ts`).
   it("accepts a half-populated site pair (siteCode without siteCodeSource)", async () => {
     const http = (() =>
       Promise.resolve(
@@ -634,10 +628,8 @@ describe("createFlightSearch", () => {
   });
 
   it("accepts a siteCodeSource value the old closed enum rejected", async () => {
-    // The failure D3 is really about: `apps/api` adding a third source would have
-    // made zod reject the value, and rejecting one value rejects the whole
-    // response — so `flights search` would die on a field it only prints. Every
-    // installed binary carries its enum compiled in and would never see the fix.
+    // A closed enum would reject a source the API adds, failing the whole
+    // response over a field the CLI only prints, in every installed binary.
     const http = (() =>
       Promise.resolve(
         Response.json(
@@ -704,7 +696,7 @@ describe("createHotelSearch (site-pair atomicity)", () => {
     expect(out).toEqual({ searchId: "h1legacy" });
   });
 
-  // #1300 D3, hotels half — same story as flights: tolerance, not atomicity.
+  // Same as flights: tolerance, not atomicity.
   it("accepts a half-populated site pair (siteCodeSource without siteCode)", async () => {
     const http = (() =>
       Promise.resolve(
@@ -820,7 +812,6 @@ describe("fetchFlightResults", () => {
 
   it("serializes the departure/alliance/booking-type/stopover params to their exact API keys (issue #1117)", async () => {
     let seen: URL | undefined;
-    // The results read answers with the card projection (no fares[]) since #1308.
     const http = ((url: string) => {
       seen = new URL(url);
       return Promise.resolve(Response.json(FLIGHTS_CARD_RESULT));
@@ -841,8 +832,7 @@ describe("fetchFlightResults", () => {
       undefined,
       http,
     );
-    // Golden: each CLI field maps to the exact kebab-case wire param the API
-    // documents (apps/api flights/schema.ts pollFlightsQuerySchema).
+    // Each CLI field maps to the exact kebab-case wire param the API documents.
     expect(seen?.searchParams.get("outbound-departure-blocks")).toBe(
       "morning,night",
     );
@@ -851,7 +841,7 @@ describe("fetchFlightResults", () => {
     expect(seen?.searchParams.get("booking-types")).toBe("wego");
     expect(seen?.searchParams.get("stopover-airports")).toBe("DOH");
     expect(seen?.searchParams.get("aircraft")).toBe("388,789");
-    // No `view` on the wire: the CLI has no projection to choose (issue #1308).
+    // No `view` on the wire: the results read has only one projection.
     expect(seen?.searchParams.has("view")).toBe(false);
   });
 
@@ -933,8 +923,6 @@ describe("fetchFlightResults", () => {
     const http = (() =>
       Promise.resolve(Response.json(FLIGHTS_CARD_RESULT))) as HttpFetch;
 
-    // A card response has no `fares[]`, so the trip schema would throw on it. The
-    // results read parses with the card schema unconditionally now.
     const out = await fetchFlightResults(
       "https://api.wego.com",
       "tok",
@@ -947,15 +935,12 @@ describe("fetchFlightResults", () => {
     const card = out.results[0] as { tripId: string; price: { scope: string } };
     expect(card.tripId).toBe("s1msr:T1");
     expect(card.price.scope).toBe("party");
-    // The card body carries no fares — confirm nothing tried to require them.
     expect("fares" in out.results[0]).toBe(false);
   });
 
   it("parses a card whose price scope the old z.literal rejected (#1300 D3)", async () => {
-    // `scope` was `z.literal("party")`. The API changing that label — or adding a
-    // per-person scope — would have failed the WHOLE results read on a string the
-    // CLI does not branch on, it only prints. Every installed binary carries the
-    // literal compiled in and would never see a fix.
+    // A closed `scope` would fail the whole results read on a new label the CLI
+    // only prints, in every installed binary.
     const [firstCard] = FLIGHTS_CARD_RESULT.results;
     const http = (() =>
       Promise.resolve(
@@ -980,9 +965,8 @@ describe("fetchFlightResults", () => {
   });
 
   it("rejects a trip-shaped results body (the retired projection) as an unexpected body", async () => {
-    // If a deployed API ever answered the results read with the pre-#1308 trip
-    // envelope again, the CLI must FAIL rather than print a page whose price
-    // summary it would then have to invent.
+    // If the API answered the results read with the trip envelope, the CLI must
+    // fail rather than print a page whose price summary it would have to invent.
     const http = (() =>
       Promise.resolve(Response.json(FLIGHTS_RESULT))) as HttpFetch;
 
@@ -1022,22 +1006,17 @@ describe("fetchFlightTrip", () => {
     expect(seen?.searchParams.get("currency")).toBe("SGD");
     expect(seen?.pathname).toBe("/v1/flights/trips/s1msr%3AT1");
     expect(seen?.searchParams.get("searchId")).toBe("s1msr");
-    // No `--view` given → no `view` on the wire, so the default read's query
-    // string is byte-identical to what it was before the flag existed. Sending
-    // `view=default` explicitly would work too, and would make every existing
-    // recording key miss.
+    // No `--view` given, so no `view` on the wire.
     expect(seen?.searchParams.has("view")).toBe(false);
   });
 
   it("puts `--view detail` on the wire and parses the detail variant", async () => {
-    // The `?view=` half of the flag, at the layer that owns the query string.
-    // `parseFlightTripArgs` owns the parse/validate half, and
+    // `parseFlightTripArgs` owns the parse/validate half of the flag, and
     // `integration/flights.test.ts` drives `--view` through the compiled binary.
     let seen: URL | undefined;
-    // The DETAIL shape, which is not the default trip: `legs[]` instead of
-    // `outbound`/`return`, and a `provider` OBJECT instead of a flat
-    // `providerCode`. A body like this used to make the CLI throw a parse fault,
-    // because `CleanTripSchema` requires that flat field.
+    // The detail shape differs from the default trip: `legs[]` instead of
+    // `outbound`/`return`, and a `provider` object instead of the flat
+    // `providerCode` that `CleanTripSchema` requires.
     const detailBody = {
       tripId: "s1msr:T1",
       stops: 0,
@@ -1076,12 +1055,7 @@ describe("fetchFlightTrip", () => {
   });
 });
 
-// --- issue #1110: the error layer reads the problem body + headers ------------
-//
-// Before the fix, a non-401/404 failure threw a bare `Error("<label> failed:
-// <status> <statusText>")` — the RFC 9457 body (`code`/`detail`/`trace_id`), the
-// `x-trace-id` header, and `Retry-After` were all discarded, and no read was ever
-// retried. These tests pin the new typed `ApiHttpError` + bounded GET retry.
+// --- the error layer reads the problem body + headers -----------------------
 
 /** A full `application/problem+json` error response, like the one `apps/api`
  *  sends (RFC 9457 body + `x-trace-id` header, plus `Retry-After` on 429/503). */
@@ -1129,7 +1103,7 @@ describe("ApiHttpError (issue #1110)", () => {
     expect(err.code).toBe("bad_gateway");
     expect(err.detail).toBe("The flights service failed.");
     expect(err.traceId).toBe("trace-502");
-    // message keeps the historical "<label> failed: <status>" prefix
+    // Callers match on the "<label> failed: <status>" prefix.
     expect(err.message).toContain("GET /v1/user failed: 502");
   });
 
@@ -1158,8 +1132,8 @@ describe("ApiHttpError (issue #1110)", () => {
   });
 
   it("captures Retry-After seconds from the header (parsed regardless of status)", async () => {
-    // Use a non-retryable status so the parse assertion doesn't actually wait out
-    // the Retry-After delay — header parsing in readApiError is status-agnostic.
+    // A non-retryable status, so the test does not wait out the Retry-After
+    // delay; header parsing does not depend on the status.
     const http = (() =>
       Promise.resolve(
         problemResponse(400, "validation_failed", "bad", { retryAfter: "7" }),
@@ -1197,8 +1171,7 @@ describe("ApiHttpError (issue #1110)", () => {
 
   it("does not flag an empty body under a JSON content-type (bare 429)", async () => {
     // A proxy commonly returns a bare 429/503 with a JSON content-type header but
-    // no payload. That's nothing to parse — not a malformed body — so it must not
-    // set bodyParseError (which would misreport a healthy rate-limit as corrupt).
+    // no payload. Flagging it would misreport a healthy rate limit as corrupt.
     const http = (() =>
       Promise.resolve(
         new Response("", {
@@ -1225,7 +1198,7 @@ describe("ApiHttpError (issue #1110)", () => {
       if (calls === 1) {
         return Promise.resolve(
           problemResponse(503, "upstream_unavailable", "try again", {
-            retryAfter: "0", // 0s → retry is instant in the test
+            retryAfter: "0", // so the retry is instant in the test
           }),
         );
       }
@@ -1241,7 +1214,7 @@ describe("ApiHttpError (issue #1110)", () => {
       http,
     );
     expect(id).toEqual({ sub: "user-1" });
-    expect(calls).toBe(2); // one retry
+    expect(calls).toBe(2);
   });
 
   it("gives up after the bounded retry budget (2 attempts) on a persistent 503", async () => {
@@ -1261,7 +1234,7 @@ describe("ApiHttpError (issue #1110)", () => {
       http,
     ).catch((e) => e)) as ApiHttpError;
     expect(err).toBeInstanceOf(ApiHttpError);
-    expect(calls).toBe(2); // initial + one retry, no infinite loop
+    expect(calls).toBe(2);
   });
 
   it("never auto-retries a POST create (would risk a duplicate search)", async () => {
@@ -1287,15 +1260,14 @@ describe("ApiHttpError (issue #1110)", () => {
     ).catch((e) => e)) as ApiHttpError;
     expect(err).toBeInstanceOf(ApiHttpError);
     expect(err.status).toBe(503);
-    expect(calls).toBe(1); // single-shot – no retry on a non-idempotent create
+    expect(calls).toBe(1);
   });
 });
 
 describe("sendFeedback (#1300 D3)", () => {
   it("accepts an acknowledgement status the old z.literal rejected", async () => {
-    // `status` was `z.literal("received")`. A fire-and-forget acknowledgement is
-    // the last place a new status value should make a command fail, and nothing
-    // branches on it — the CLI prints the envelope.
+    // Nothing branches on `status`; the CLI only prints the envelope, so a new
+    // value must not make the command fail.
     const http = (() =>
       Promise.resolve(
         Response.json({ status: "queued" }, { status: 202 }),
@@ -1314,7 +1286,7 @@ describe("sendFeedback (#1300 D3)", () => {
 });
 
 describe("the wego info calls build the wire query (moved here in #1341)", () => {
-  /** Capture the URL one call produced, answering with a body its schema accepts. */
+  /** Answers with a body the call's schema accepts. */
   function urlFor(body: unknown): { seen: () => URL; http: HttpFetch } {
     let seen: URL | undefined;
     return {
@@ -1380,10 +1352,9 @@ describe("the wego info calls build the wire query (moved here in #1341)", () =>
   };
 
   it("holidays: the country rides in the path, and --from/--to become fromDate/toDate", async () => {
-    // The rename is the whole reason this assertion exists: `from`/`to` already mean
-    // PLACE CODES on the flights operations, so the country-keyed read had to take
-    // `fromDate`/`toDate` on the wire while the CLI keeps the shorter flags. A CLI
-    // that sent `from=2026-08-01` would be answered by a validation error.
+    // `from`/`to` mean place codes on the flights operations, so this read takes
+    // `fromDate`/`toDate` on the wire while the CLI keeps the shorter flags.
+    // Sending `from=2026-08-01` would get a validation error.
     const { seen, http } = urlFor(HOLIDAYS);
     await fetchHolidays(
       "https://api.wego.com",
@@ -1454,7 +1425,7 @@ describe("the wego info calls build the wire query (moved here in #1341)", () =>
     );
     expect(seen().searchParams.get("place")).toBe("LON");
     expect(seen().searchParams.has("latitude")).toBe(false);
-    // Repeated params, matching the API's array parsing — not a CSV.
+    // Repeated params, matching the API's array parsing, not a CSV.
     expect(seen().searchParams.getAll("types")).toEqual(["airport", "city"]);
   });
 
@@ -1475,11 +1446,9 @@ describe("the wego info calls build the wire query (moved here in #1341)", () =>
 
 describe("fetchHotelResults response tolerance (moved here in #1341)", () => {
   it("drops a malformed snapshotCandidateCount instead of surfacing or throwing", async () => {
-    // The settle counter is `.int().nonnegative().optional().catch(undefined)`, so a
-    // negative, fractional, non-numeric or null value degrades to undefined and the
-    // caller falls back to item-presence. Asserted here because it is the RESPONSE
-    // SCHEMA's behaviour: `integration/hotels.test.ts` drives the settle through
-    // the binary, against contract-valid answers that never carry a malformed count.
+    // Asserted here because it is the response schema's behaviour:
+    // `integration/hotels.test.ts` drives the settle through the binary against
+    // contract-valid answers, which never carry a malformed count.
     for (const bad of [-1, 2.5, "not-a-number", null] as unknown[]) {
       const http = (() =>
         Promise.resolve(
@@ -1525,7 +1494,6 @@ describe("fetchHotelResults response tolerance (moved here in #1341)", () => {
 });
 
 describe("fetchFlightResults response tolerance (moved here in #1341)", () => {
-  /** The card envelope - the only projection this read serves since #1308. */
   const body = (count: unknown) => ({
     searchId: "s1msr",
     currencyCode: "USD",
@@ -1553,10 +1521,8 @@ describe("fetchFlightResults response tolerance (moved here in #1341)", () => {
   };
 
   it("drops a malformed snapshotFareCount", async () => {
-    // `.int().nonnegative().optional().catch(undefined)`: a negative, fractional,
-    // non-numeric or null count degrades to undefined so the settle falls back to
-    // item-presence instead of converging on a bogus number or throwing. The
-    // fallback itself is `settle`'s, in `search-engine.test.ts`; the parse is asserted here.
+    // The settle's item-presence fallback is tested in `search-engine.test.ts`;
+    // only the parse is asserted here.
     for (const bad of [-1, 2.5, "not-a-number", null] as unknown[]) {
       const page = await read(body(bad));
       expect(page.metadata?.snapshotFareCount).toBeUndefined();
@@ -1576,7 +1542,6 @@ describe("fetchHotelReviews builds the wire query", () => {
     metadata: { totalCandidates: 49 },
   };
 
-  /** Capture the URL the call produced. */
   function urlFor(): { seen: () => URL; http: HttpFetch } {
     let seen: URL | undefined;
     return {
@@ -1590,8 +1555,8 @@ describe("fetchHotelReviews builds the wire query", () => {
 
   it("puts the hotel in the path and every flag under its published name", async () => {
     // `integration/hotels.test.ts` asserts what reaches the wire from argv; this
-    // pins the serialization at the layer that writes it. One request legitimately carries both
-    // spellings: kebab for the net-new knob, camel for the mirrored one.
+    // pins the serialization at the layer that writes it. One request carries
+    // both spellings: kebab for the reviews-only knob, camel for the mirrored one.
     const { seen, http } = urlFor();
     await fetchHotelReviews(
       "https://api.wego.com",
@@ -1636,7 +1601,6 @@ describe("fetchSearchLink builds the wire query", () => {
     expires: false,
   };
 
-  /** Capture the URL the call produced. */
   function urlFor(): { seen: () => URL; http: HttpFetch } {
     let seen: URL | undefined;
     return {
@@ -1650,8 +1614,9 @@ describe("fetchSearchLink builds the wire query", () => {
 
   it("puts the whole search context on the wire under its published names", async () => {
     // `integration/flights.test.ts` asserts what reaches the wire from argv; the
-    // KEY names are asserted here too, at the layer that writes them. `applyFlightLinkQuery` is shared with
-    // `booking-link`, so a rename would silently move both.
+    // key names are asserted here too, at the layer that writes them.
+    // `applyFlightLinkQuery` is shared with `booking-link`, so a rename would
+    // silently move both.
     const { seen, http } = urlFor();
     await fetchSearchLink(
       "https://api.wego.com",

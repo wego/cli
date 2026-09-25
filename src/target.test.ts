@@ -17,22 +17,17 @@ import {
 import { maybeSendTelemetry, type TelemetryDeps } from "./telemetry";
 
 /**
- * The **target** axis — the acceptance test for foundations#74 rung 2.
+ * One build can point at a different backend at run time, prod unless told
+ * otherwise, and a non-prod run is both visible and sends no telemetry. A prod
+ * build's baked config is what every bundle assertion starts from, because a
+ * published binary must need no rebuild to be retargeted.
  *
- * The rung's claim, in one sentence: *one* build can point at a different backend
- * at run time, prod unless told otherwise, and a non-prod run is both visible and
- * silent. Everything ring-shaped above it (rungs 3-7) assumes that a published
- * binary needs no rebuild to be retargeted, so this suite tests the premise
- * rather than the plumbing: a **prod** build's baked config is what every bundle
- * assertion starts from.
+ * Two mutations, and where each one is caught:
  *
- * Two mutations the ladder names explicitly, and where each one dies:
- *
- *  - **staging as the default** → "prod when nothing says otherwise" and "prod is
+ *  - staging as the default: "prod when nothing says otherwise" and "prod is
  *    the default in a loaded config" both fail.
- *  - **removing the telemetry condition** → "a staging run sends nothing" fails,
- *    and "a prod run does send" is the guard that keeps it from passing
- *    vacuously.
+ *  - removing the telemetry condition: "a staging run sends nothing" fails,
+ *    and "a prod run does send" keeps it from passing vacuously.
  */
 
 /** A prod release's baked bundle. Deliberately carries NO staging values: the
@@ -54,7 +49,7 @@ function argv(...args: string[]): string[] {
 }
 
 /** A config as a real run would build it: baked prod bundle, an XDG root so the
- *  credentials path is assertable, and argv passed explicitly — never
+ *  credentials path is assertable, and argv passed explicitly, never
  *  `process.argv`, which under `bun test` carries the test runner's own flags. */
 function config(over: { argv?: string[]; env?: Record<string, string> } = {}) {
   return loadCliConfig(
@@ -84,7 +79,7 @@ describe("the target axis", () => {
     expect(resolveTarget(argv("--target=staging"), undefined).target).toBe(
       "staging",
     );
-    // A global switch, so it must work after the subcommand too — that is where
+    // A global switch, so it must work after the subcommand too: that is where
     // a person actually types it.
     expect(
       resolveTarget(argv("flights", "search", "--target", "staging"), undefined)
@@ -113,8 +108,7 @@ describe("the target axis", () => {
   });
 
   it("refuses an unknown value rather than falling back to prod", () => {
-    // The whole point of the axis: a typo must be loud. A silent fallback would
-    // send a tester's traffic to production.
+    // A silent fallback would send a tester's traffic to production.
     expect(() => resolveTarget(argv("--target", "stagng"), undefined)).toThrow(
       /--target must be one of prod\|staging; got "stagng"/,
     );
@@ -138,8 +132,7 @@ describe("the target axis", () => {
     expect(stripTargetFlag(argv("places", "dubai"))).toEqual(
       argv("places", "dubai"),
     );
-    // The separated form spans two entries, so the drop has to carry one bit to
-    // the next iteration. These isolate that bit: a value identical to a real
+    // The separated form spans two entries. A value identical to a real
     // positional must lose only the one after the flag, and a flag at the very
     // end of argv has no value to drop.
     expect(
@@ -166,8 +159,8 @@ describe("one binary, every backend", () => {
   });
 
   it("swaps the whole auth bundle on a PROD build, with no rebuild", () => {
-    // The rung's premise. This build baked prod endpoints only; naming staging
-    // still moves authorize, token AND api together.
+    // This build baked prod endpoints only; naming staging still moves
+    // authorize, token and api together.
     const c = config({ argv: argv("--target", "staging", "whoami") });
     expect(c.target).toBe("staging");
     expect(new URL(c.authorizeUrl).host).toBe(STAGING_AUTH_HOST);
@@ -200,11 +193,9 @@ describe("one binary, every backend", () => {
   });
 
   it("reaches an API on this machine through WEGO_API_URL, with no target of its own", () => {
-    // This is the whole replacement for the retired `local` target, so it is
-    // tested at the shapes a developer actually has: the plain `bun dev` port,
-    // portless's `api.localhost`, and a linked worktree's branch-prefixed name
-    // under the same suffix — over plaintext `http`, which is the case a rule
-    // that knew only `localhost` would have rejected.
+    // The shapes a developer actually has: the plain `bun dev` port, portless's
+    // `api.localhost`, and a linked worktree's branch-prefixed name under the
+    // same suffix, over plaintext `http`.
     for (const url of [
       "http://localhost:3001",
       "http://127.0.0.1:4321",
@@ -226,7 +217,7 @@ describe("one binary, every backend", () => {
   });
 
   it("agrees with .env.local.example about the staging endpoints", () => {
-    // Two copies of a public literal, so they get a guard rather than a promise.
+    // Two copies of a public literal, so a test keeps them in sync.
     const example = readFileSync(
       join(import.meta.dir, "..", ".env.local.example"),
       "utf8",
@@ -270,7 +261,7 @@ describe("a non-prod target is visible", () => {
     expect(text).toContain("--target");
     expect(text).toContain(STAGING_API_URL);
     expect(text).toContain(STAGING_AUTH_HOST);
-    // The promise the axis makes, written down where a person reads it.
+    // A reader is told that telemetry is off for this target.
     expect(text).toContain("suppressed");
   });
 

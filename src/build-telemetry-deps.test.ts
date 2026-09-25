@@ -14,9 +14,8 @@ import {
 import { TELEMETRY_SENDER_COMMAND } from "./telemetry";
 
 /**
- * Wiring guard for telemetry. `telemetry.test.ts` covers the send DECISION against
- * injected deps; this covers the other half — that the real deps read and write the
- * right paths. A mis-wired dep here fails silently: a `loadState` that always threw
+ * Wiring guard for telemetry. `telemetry.test.ts` covers the send decision against
+ * injected deps; this checks that the real deps read and write the right paths. A mis-wired dep here fails silently: a `loadState` that always threw
  * would look exactly like "no state yet", so a stored opt-out would stop being
  * honored with no error anywhere.
  *
@@ -106,9 +105,9 @@ describe("buildTelemetryDeps (real wiring)", () => {
   });
 
   it("does NOT fall back to the pre-run uid for `logout`", async () => {
-    // Verified leak: without this, the inline sender (Windows, or a deleted
-    // binary) reports the pre-logout account while the detached child reports
-    // nobody — one command, two identities depending on the platform.
+    // Otherwise the inline sender (Windows, or a deleted binary) reports the
+    // pre-logout account while the detached child reports nobody: one command,
+    // two identities depending on the platform.
     const argv = process.argv;
     process.argv = ["/usr/local/bin/wego", "wego", "logout"];
     try {
@@ -192,7 +191,7 @@ describe("readTelemetrySnapshot (real wiring)", () => {
   it("carries an id_token the API would still accept", async () => {
     const exp = Math.floor((Date.now() - 60_000) / 1000);
     const idToken = `h.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.s`;
-    // Through the real dep first, so the flavor dir exists to write into.
+    // Through the real dep first, so the config dir exists to write into.
     await buildTelemetryDeps(0, 1).persistDeviceId("dev-1");
     await writeFile(
       defaultCredentialsPath(process.env, "wego"),
@@ -203,7 +202,7 @@ describe("readTelemetrySnapshot (real wiring)", () => {
 
   it("withholds one past the API's tolerance, which would ride every request of this process", async () => {
     const exp = Math.floor((Date.now() - 25 * 60 * 60 * 1000) / 1000);
-    // Through the real dep first, so the flavor dir exists to write into.
+    // Through the real dep first, so the config dir exists to write into.
     await buildTelemetryDeps(0, 1).persistDeviceId("dev-1");
     await writeFile(
       defaultCredentialsPath(process.env, "wego"),
@@ -216,7 +215,7 @@ describe("readTelemetrySnapshot (real wiring)", () => {
   });
 
   it("reports the opt-out, so the client-id header can honor it", async () => {
-    // Through the real dep first, so the flavor dir exists to write into.
+    // Through the real dep first, so the config dir exists to write into.
     await buildTelemetryDeps(0, 1).persistDeviceId("dev-1");
     await writeFile(
       defaultTelemetryPath(process.env, "wego"),
@@ -226,8 +225,8 @@ describe("readTelemetrySnapshot (real wiring)", () => {
   });
 
   it("honors the WEGO_CLI_TELEMETRY env opt-out, which wins over the file", async () => {
-    // Verified leak: reading only the file sent the device id to the API after
-    // the user opted out with the env var the docs call authoritative.
+    // Reading only the file would send the device id to the API after the user
+    // opted out with the env var, which the docs call authoritative.
     await buildTelemetryDeps(0, 1).persistDeviceId("dev-1");
     const previous = process.env.WEGO_CLI_TELEMETRY;
     try {

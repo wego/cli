@@ -16,7 +16,6 @@ on:
     # Monday 07:00 UTC, so a rotation is found with the working week ahead.
     - cron: '0 7 * * 1'
   workflow_dispatch:
-  # Also on a pull request that changes the pin or the checker.
   pull_request:
     paths:
       - 'src/release-signing/sigstore-roots.ts'

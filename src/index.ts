@@ -123,25 +123,20 @@ import {
 } from "./version-notice";
 
 /**
- * `wego` CLI entrypoint (issue #883, M1 client side).
- *
- * A public + PKCE OAuth client: `wego login` authenticates with auth.wego.com
- * over a loopback redirect, then any `wego` command (e.g. `wego whoami`) calls
- * `apps/api` as the logged-in user. An LLM agent simply shells out to the same
- * commands and reuses the user's stored session.
+ * `wego` CLI entrypoint. A public PKCE OAuth client: `wego login` authenticates
+ * over a loopback redirect, then every command calls the API as the logged-in
+ * user. An agent shells out to the same commands and reuses the stored session.
  */
 
-// Baked at build time: `bun build --env 'WEGO_BUILD_*'` (build-release.ts sets it
-// from the release tag) inlines this static read, so `version` always matches the
-// published release. Unset when run from source (`bun run`) → the -dev fallback.
+// Baked at build time: `bun build --env 'WEGO_BUILD_*'` (set by build-release.ts
+// from the release tag) inlines this static read. Unset when run from source.
 const VERSION = process.env.WEGO_BUILD_VERSION ?? "0.0.0-dev";
 
-// There is NO baked channel base. Which ring an install follows is a record on the
-// machine (`ring-follow.ts`), read by `update` and by the new-version notice alike
-// (foundations#74 rung 3: a missing record refuses rather than guesses). A build
-// argument here is what let the two drift, so nothing bakes one any more.
+// No channel base is baked: which ring an install follows is a record on the
+// machine (`ring-follow.ts`), read by both `update` and the new-version notice so
+// the two cannot drift.
 const BUILD_API_URL = process.env.WEGO_BUILD_API_URL;
-// Write-only PostHog key, baked like VERSION; absent ⇒ telemetry stays silent.
+// Write-only PostHog key; absent means telemetry stays silent.
 const POSTHOG_KEY = process.env.WEGO_BUILD_POSTHOG_PROJECT_KEY || undefined;
 
 // Closest we get to process start, for the telemetry event's `duration_ms`.
@@ -197,7 +192,7 @@ export interface RunDeps {
   skill: (args: string[]) => Promise<number>;
   update: (args: string[]) => Promise<number>;
   uninstall: (args: string[]) => Promise<number>;
-  /** `wego config` — local preferences only, so it takes no `CliConfig`. */
+  /** Local preferences only, so it takes no `CliConfig`. */
   config: (args: string[]) => Promise<number>;
   telemetry: (args: string[]) => Promise<number>;
   /** The hidden subcommand the detached child runs, through the same seam. */
@@ -235,10 +230,9 @@ function configFor(deps: RunDeps, args: string[]): CliConfig {
 }
 
 export async function run(rawArgv: string[], deps: RunDeps): Promise<number> {
-  // `--target` is a GLOBAL switch, already resolved by `loadConfig`, so it is
-  // removed before any dispatch: every command parser below rejects arguments it
-  // does not know, which is behaviour worth keeping rather than punching a hole
-  // in once per parser.
+  // `--target` is a global switch already resolved by `loadConfig`. It is removed
+  // before dispatch because every command parser rejects arguments it does not
+  // know, and that is better than an exception in each parser.
   const argv = stripTargetFlag(rawArgv);
   const command = argv[2];
   const args = argv.slice(3);
@@ -269,22 +263,16 @@ export async function run(rawArgv: string[], deps: RunDeps): Promise<number> {
       return deps.hotels(configFor(deps, args), args);
     case "feedback":
       return deps.feedback(configFor(deps, args), args);
+    // These five need no endpoints or credentials, so they get no CLI config.
     case "skill":
-      // `skill` manages the local agent SKILL.md; it needs no CLI config (no
-      // endpoints, no credentials), so it isn't handed one.
       return deps.skill(argv.slice(3));
     case "update":
-      // `update` self-replaces the binary from its baked release channel; like
-      // `skill` it needs no OAuth config (no endpoints, no credentials).
       return deps.update(argv.slice(3));
     case "uninstall":
-      // `uninstall` self-deletes the binary + local footprint; no OAuth config.
       return deps.uninstall(argv.slice(3));
     case "config":
-      // Local preferences only (no endpoints, no network) — like `telemetry`.
       return deps.config(argv.slice(3));
     case "telemetry":
-      // Local setting only; no OAuth config.
       return deps.telemetry(argv.slice(3));
     // Hidden: the detached child, deliberately absent from `helpText`.
     case TELEMETRY_SENDER_COMMAND:
@@ -312,26 +300,14 @@ export async function run(rawArgv: string[], deps: RunDeps): Promise<number> {
       deps.io.error(
         `Unknown command: ${command}\n\n${helpText(programName())}`,
       );
-      // An unknown command is a usage error — bad args before any network call —
-      // so it takes the stable USAGE (2) class like every other usage-shaped
-      // failure in this PR, not the generic exit 1.
+      // A usage error like every other bad-argument failure, not the generic 1.
       return EXIT.USAGE;
   }
 }
 
-/** The `skill` command's dependency bundle. Factored out of `buildRealDeps` so
- *  the background refresh can build the same wiring with silenced io and a
- *  tighter fetch deadline, instead of duplicating it.
- *
- *  `timeoutMs` overrides `skill-remote.ts`'s 5s default: on the foreground
- *  `skill install` a slow-but-alive remote is worth waiting for, but on the
- *  background refresh it is pure added latency on someone else's command, so
- *  that caller gives up sooner. Giving up there means **leaving the installed
- *  file alone**, not falling back to the embedded copy — that caller also sets
- *  `requireRemote`, because the installed body may be newer than this binary's
- *  embed and a fallback would silently downgrade it. The two settings are why a
- *  short deadline is safe here: the cost of timing out is a skipped refresh, not
- *  a worse skill. */
+/** The `skill` command's dependency bundle, shared by `skill` and `uninstall`'s
+ *  skill-removal step. `extra` carries the unattended-caller policies described
+ *  on `SkillDeps`. */
 function buildSkillDeps(
   io: CommandIo,
   extra: {
@@ -340,18 +316,13 @@ function buildSkillDeps(
     refreshOnly?: boolean;
   } = {},
 ) {
-  // ONE read of the record for both uses below. The ring the marker CLAIMS and the
-  // ring the body was FETCHED FROM are then the same fact by construction — they
-  // were two facts before (#1751), and the cross-channel guard compared the
-  // recorded one while the fetch obeyed a baked URL, so it could never see the
-  // disagreement it exists to catch.
   const ring = recordedRing();
   return {
     ...io,
     skills: SKILLS,
     version: VERSION,
-    // Stamped into the ownership marker, so a second channel's background refresh
-    // can tell this skill is not its to maintain (`skill-refresh.ts`).
+    // Stamped into the ownership marker, so another channel's install can tell
+    // this skill is not its to maintain.
     ring,
     homedir: () => homedir(),
     cwd: () => process.cwd(),
@@ -363,13 +334,9 @@ function buildSkillDeps(
   };
 }
 
-/** The ring this install follows, or `undefined` when the record is absent,
- *  unreadable or malformed (a pre-ring install, or a from-source run).
- *
- *  Sync and unmemoized because both callers are on the hot path and want it
- *  before any async work; the file is two short lines and is read at most twice
- *  per command. Deliberately NOT a refusal like `update`'s: knowing no ring
- *  disables the cross-channel guard, which is the behaviour that predates rings. */
+/** `undefined` when the record is absent, unreadable or malformed (a pre-ring
+ *  install, or a from-source run). Not a refusal like `update`'s: knowing no
+ *  ring just disables the cross-channel guard. */
 function recordedRing(): string | undefined {
   try {
     return parseInstallRecord(readFileSync(defaultInstallRecordPath(), "utf8"))
@@ -379,57 +346,45 @@ function recordedRing(): string | undefined {
   }
 }
 
-/** Real wiring for the proactive new-version notice (see `version-notice.ts` for
- *  why each guard exists). The file IS the record: its content is the version the
- *  channel last advertised, its mtime is the throttle stamp — no schema, matching
- *  the skill ownership marker. */
-/** The installer's record for THIS binary, read fresh. Absent, unreadable and
- *  malformed all collapse to `null` - the one condition both callers treat as "no
- *  recorded channel", and both REFUSE on it rather than substituting a ring
- *  (foundations#74 rung 3).
- *
- *  One reader, deliberately: a second copy of this read is free to drift from the
- *  first while still looking correct, which is the failure this file already had
- *  once with a baked base on one side and the record on the other. */
+/** The installer's record for this binary, read fresh. Absent, unreadable and
+ *  malformed all collapse to `null`, which both callers refuse on rather than
+ *  substitute a ring. One reader for both, so the two cannot drift apart. */
 async function readOwnInstallRecord() {
   return parseInstallRecord(
     await readFile(defaultInstallRecordPath(), "utf8").catch(() => null),
   );
 }
 
+/** Real wiring for the new-version notice (`version-notice.ts` explains each
+ *  guard). */
 export function buildVersionNoticeDeps(): VersionNoticeDeps {
   const statePath = defaultUpdateCheckPath();
   return {
     command: process.argv[2],
     fromSource: runningFromSource(),
     version: VERSION,
-    // The command the user types. A renamed install (`WEGO_CLI_BIN`) still has to
-    // be told to run its own name, so the notice's `… update -y` hint names a
-    // command that exists on the machine.
+    // A renamed install (`WEGO_CLI_BIN`) must be told to run its own name, so
+    // the notice's `… update -y` hint names a command that exists.
     invokedAs: programName(),
-    // The ring this install FOLLOWS, read the same way `update` reads it and from
-    // the same path, so the notice and `update` can never name different rings.
-    // Read from the one constant config scope, for the reason the `update` wiring
-    // states: the record describes where the BINARY came from, not which auth host
-    // `--target` picked.
+    // Same reader and path as `update`, so the two never name different rings.
+    // The record describes where the binary came from, so it does not move with
+    // `--target`.
     readInstallRecord: readOwnInstallRecord,
     env: process.env,
     now: Date.now(),
     fetch,
     readState: async () => {
-      // Opened rather than `stat`ed by path: `claimWindow` is the only writer and
-      // it never replaces the file, but a handle keeps this honest if that ever
-      // changes.
+      // Opened rather than `stat`ed by path so this stays correct if
+      // `claimWindow` ever starts replacing the file.
       let handle: Awaited<ReturnType<typeof open>> | undefined;
       try {
         handle = await open(statePath, "r");
-        // The mtime IS the record. The file's content is deliberately unused and
-        // deliberately never written: an answer stored here is half of a
-        // comparison whose other half changes on every update and reinstall.
+        // The mtime is the whole record. The content is never written: a stored
+        // answer would be half of a comparison whose other half changes on every
+        // update and reinstall.
         return { checkedAt: (await handle.stat()).mtimeMs };
       } catch {
-        // Absent or unreadable — "we don't know", which the caller turns into a
-        // fresh check rather than a guess.
+        // Absent or unreadable: the caller does a fresh check rather than guess.
         return null;
       } finally {
         await handle?.close().catch(() => {});
@@ -438,17 +393,15 @@ export function buildVersionNoticeDeps(): VersionNoticeDeps {
     claimWindow: async () => {
       try {
         await ensureOwnerDir(dirname(statePath));
-        // Append rather than write: create-if-absent without truncating, and the
-        // only writer there is. The file stays empty by design - its mtime is the
-        // entire record.
+        // Append creates the file if absent without truncating. It stays empty;
+        // the mtime is the record.
         await appendFile(statePath, "", { mode: 0o600 });
         const now = new Date();
         await utimes(statePath, now, now);
         return true;
       } catch {
-        // Report the failure rather than swallowing it: an unstampable path means
-        // the throttle would not hold, so the caller skips the network read
-        // instead of re-fetching on every command.
+        // An unstampable path means the throttle would not hold, so the caller
+        // skips the network read instead of re-fetching on every command.
         return false;
       }
     },
@@ -460,36 +413,30 @@ export function buildRealDeps(): RunDeps {
     log: (m) => console.log(m),
     error: (m) => console.error(m),
   };
-  // Shared by the `skill` command and `uninstall`'s skill-removal step.
   const skillDeps = buildSkillDeps(io);
-  // The credentials path the same way `loadCliConfig` derives it, but without
-  // requiring the full (baked) config — so `uninstall` runs from source too.
-  // `resolveConfigScope`, not the bare config scope: on a non-prod target the store is
-  // keyed by the issuing auth host too, and this derivation has to land on the
-  // same file the command itself reads.
+  // Derived like `loadCliConfig` does, but without requiring the full baked
+  // config, so `uninstall` runs from source too. `resolveConfigScope` because on
+  // a non-prod target the store is also keyed by the auth host, and this must
+  // land on the same file the command reads.
   const configScope = resolveConfigScope();
   const credentialsPath =
     process.env.WEGO_CREDENTIALS_PATH?.trim() ||
     defaultCredentialsPath(process.env, configScope);
   const telemetryPath = defaultTelemetryPath();
   const settingsPath = defaultSettingsPath();
-  // Which ring this install came from (foundations#74 rung 3). Config-scoped, not
-  // `configScope`: the record describes where the BINARY came from, so it must
-  // not move when a `--target` picks a different auth host.
+  // Not keyed by `configScope`: the record describes where the binary came from,
+  // so it must not move when `--target` picks a different auth host.
   const installRecordPath = defaultInstallRecordPath();
-  // Memoized: a single command resolves preferences at two or three points (the
-  // query merge, the site rung, the currency hint), and they must all see the
-  // SAME file — a re-read mid-command could otherwise price the create and its
-  // follow-up read differently, which is the bug this file exists to prevent.
-  // Also keeps a broken file to ONE parse error rather than one per read.
+  // Memoized: one command resolves preferences at several points, and a re-read
+  // mid-command could price the create and its follow-up read differently. Also
+  // keeps a broken file to one parse error.
   let settingsOnce: Promise<UserSettings> | undefined;
   const loadSettings = (): Promise<UserSettings> =>
     (settingsOnce ??= loadUserSettings(settingsPath));
-  // The trace of WHY a refresh failed. In its own file, not credentials.json,
-  // which logout / re-login delete — the record must outlive the re-login that
-  // would otherwise erase the only evidence (investigation #1360).
-  // Scoped with the credentials it explains: a staging refresh failure recorded
-  // into the prod store would read as a prod outage.
+  // Why a token refresh failed. Its own file, not credentials.json, because
+  // logout and re-login delete that and would erase the only evidence. Scoped
+  // like the credentials: a staging failure in the prod store would read as a
+  // prod outage.
   const authFailurePath = defaultAuthFailurePath(process.env, configScope);
   const authed = {
     loadCredentials,
@@ -577,9 +524,6 @@ export function buildRealDeps(): RunDeps {
         version: VERSION,
         fromSource: runningFromSource(),
         installRecordPath,
-        // The installer's record, read fresh per run. Absent / unreadable /
-        // malformed all arrive as `null`, which `update` refuses on — nothing
-        // here substitutes a default ring.
         readInstallRecord: readOwnInstallRecord,
         installUrl: BUILD_API_URL
           ? `${BUILD_API_URL.replace(/\/+$/, "")}/install`
@@ -603,18 +547,16 @@ export function buildRealDeps(): RunDeps {
         rename: (from, to) => rename(from, to),
         rm: (path) => rm(path, { force: true }),
         clearQuarantine: async (path) => {
-          // Best-effort: no-op when the xattr / tool is absent (Linux, or a file
-          // that was never quarantined) — a failure here must not fail the update.
+          // Best-effort: the xattr or the tool may be absent (Linux, or a file
+          // never quarantined), and that must not fail the update.
           await $`xattr -d com.apple.quarantine ${path}`.quiet().nothrow();
         },
         confirm: confirmTty,
-        // Re-install the skill from the binary that just replaced this one, so
-        // the SKILL.md on disk matches the build serving it. Runs the NEW
-        // binary (`execPath` post-swap), not this process, because the embedded
-        // body it must write is the new one. `--owned-only` refreshes the
-        // folders this machine already has and creates none; `-y` because there
-        // is no one to prompt. Output is discarded: `update` already printed the
-        // one line it owns, and stdout is a JSON contract for the agent funnels.
+        // Runs the new binary (`execPath` after the swap), not this process,
+        // because the embedded body to write is the new one. `--owned-only`
+        // creates no new folders; `-y` because there is no one to prompt.
+        // Output is discarded: `update` already printed its line, and stdout is
+        // a JSON contract for the agent funnels.
         spawnSkillInstall: async (execPath) => {
           await Bun.spawn(
             [execPath, "skill", "install", "--owned-only", "-y"],
@@ -625,14 +567,13 @@ export function buildRealDeps(): RunDeps {
             },
           ).exited;
         },
-        // The real pinned Sigstore anchors a signed build record must chain to.
         trustedRootsPem: FULCIO_ROOTS_PEM,
-        // Per-run-unique sibling of the binary (same dir ⇒ same filesystem ⇒
-        // atomic rename; unique ⇒ no concurrent-run collision).
+        // Same dir as the binary, so the rename is atomic (same filesystem);
+        // unique per run, so concurrent runs cannot collide.
         tempPath: `${process.execPath}.${crypto.randomUUID()}.tmp`,
         sweepTemps: async () => {
-          // Remove `<binary>.<uuid>.tmp` leftovers from an interrupted run
-          // (SIGINT skips the in-flow cleanup). Best-effort — never fail here.
+          // Leftovers from an interrupted run (SIGINT skips the in-flow
+          // cleanup). Best-effort.
           try {
             const dir = dirname(process.execPath);
             const prefix = `${basename(process.execPath)}.`;
@@ -666,7 +607,7 @@ export function buildRealDeps(): RunDeps {
         rm: (path) => rm(path, { force: true }),
         removeCredentials: () => clearCredentials(credentialsPath),
         removeSkill: async () => {
-          // Reuse the skill command's own uninstall (marker-guarded, -y).
+          // Reuses the skill command's marker-guarded uninstall.
           await skill(["uninstall", "-y"], skillDeps);
         },
         confirm: confirmTty,
@@ -678,12 +619,12 @@ export function buildRealDeps(): RunDeps {
         loadSettings,
         saveSettings: async (next) => {
           await saveUserSettings(settingsPath, next);
-          // Keep the memo honest: the report printed right after the write must
-          // show what was just stored, not the pre-write read.
+          // The report printed after the write must show what was stored, not
+          // the memoized pre-write read.
           settingsOnce = Promise.resolve(next);
         },
-        // The `account` rung, read from the id_token's market at login. No
-        // network call — `config` works logged out, it just has one rung fewer.
+        // The `account` rung, from the id_token's market stored at login. No
+        // network call, so `config` works logged out with one rung fewer.
         accountMarket: async () =>
           (await loadCredentials(credentialsPath))?.market,
       }),
@@ -695,7 +636,7 @@ export function buildRealDeps(): RunDeps {
         loadState: () => loadTelemetryState(telemetryPath),
         setEnabled: (enabled) => setTelemetryEnabled(telemetryPath, enabled),
       }),
-    // The child re-derives the baked key AND the identity here, so argv carries
+    // The child derives the key and the identity itself, so argv carries
     // neither the key nor a forgeable distinct_id.
     sendTelemetry: (args) =>
       runTelemetrySender(args, {
@@ -754,14 +695,11 @@ async function resolveTelemetryIdentity(): Promise<{
   return { distinctId: uid ?? device, deviceId: device };
 }
 
-/** Real wiring for the post-command telemetry emit. */
-/** The three local paths telemetry reads, derived once. */
 function telemetryPaths(): { telemetryPath: string; credentialsPath: string } {
   return {
-    // The machine id is per MACHINE, not per backend, so it stays on the bare
-    // install scope: keying it by target too would mint a new device per target
-    // and inflate device counts. The credentials are the opposite — see
-    // `resolveConfigScope`.
+    // The machine id is per machine, not per backend: keying it by target would
+    // mint a new device per target and inflate device counts. The credentials
+    // are keyed by target (see `resolveConfigScope`).
     telemetryPath: defaultTelemetryPath(),
     credentialsPath:
       process.env.WEGO_CREDENTIALS_PATH?.trim() ||
@@ -797,13 +735,13 @@ export async function readTelemetrySnapshot(): Promise<{
 }
 
 /** The device id follows the telemetry opt-out; the session id deliberately does
- *  not (docs/telemetry.md). Pure and exported so the consent rule is testable. */
+ *  not. Pure and exported so the consent rule is testable. */
 export function resolveAnalyticsHeaders(
   snapshot: { deviceId?: string; telemetryEnabled: boolean },
   sessionId: string | undefined,
 ): AnalyticsHeaders {
   return {
-    // Guarded on both, so "only well-formed uuids leave" is structural, not luck.
+    // Both checked, so only well-formed uuids are ever sent.
     sessionId: isUuid(sessionId) ? sessionId : undefined,
     clientId:
       snapshot.telemetryEnabled && isUuid(snapshot.deviceId)
@@ -842,11 +780,9 @@ export function buildTelemetryDeps(
     },
     persistDeviceId: (deviceId) => persistDeviceId(telemetryPath, deviceId),
     // The uid falls back to the pre-run read so `uninstall` stays attributable
-    // after it deletes the credentials — but NEVER for `logout`, whose whole
-    // purpose is to end the session. Without that exception the inline sender
-    // (Windows, or a deleted binary) reports the pre-logout account while the
-    // detached child re-resolves and reports nobody: one command, two identities
-    // depending on the platform.
+    // after it deletes the credentials, but never for `logout`. Otherwise the
+    // inline sender (Windows, or a deleted binary) would report the pre-logout
+    // account while the detached child reports nobody.
     readUid: async () => {
       const live = uidFromAccessToken(
         (await loadCredentials(credentialsPath))?.accessToken,
@@ -882,65 +818,50 @@ export function buildTelemetryDeps(
 }
 
 if (import.meta.main) {
-  // Ctrl-C during an in-flight request should exit cleanly with the conventional
-  // 128+SIGINT code and a one-line notice on stderr — not die with an empty
-  // stdout/stderr (QA-002).
+  // Ctrl-C exits with the conventional 128+SIGINT code and a one-line notice,
+  // rather than dying with empty stdout and stderr.
   process.on("SIGINT", () => {
     process.stderr.write("Interrupted.\n");
     process.exit(EXIT.SIGINT);
   });
-  // From-source runs: load apps/cli/.env.local (relative to this module, not
-  // cwd) so the live-source `wego` is configured from any shell/cwd without
-  // direnv. No-op for compiled binaries (no sibling file) — baked config wins.
+  // From-source runs load `.env.local` relative to this module, not cwd, so they
+  // work from any directory without direnv. A no-op for compiled binaries.
   loadSourceEnvLocal();
-  // The target is resolved BEFORE anything derives a path from it, and a bad
-  // value stops here: every later caller (`buildRealDeps`, `telemetryPaths`,
-  // `loadConfig`) resolves it again, and a throw from any of them would surface
-  // as an unhandled rejection instead of a usage error. After
+  // A bad target stops here as a usage error. Every later caller
+  // (`buildRealDeps`, `telemetryPaths`, `loadConfig`) resolves it again, and a
+  // throw from them would surface as an unhandled rejection. After
   // `loadSourceEnvLocal`, so a `WEGO_TARGET` in `.env.local` counts.
   try {
-    // `resolveConfigScope`, not `resolveCliTarget`: it resolves the target AND
-    // the endpoint bundle, so a bundle that throws is caught here rather than
-    // inside `buildRealDeps`.
+    // `resolveConfigScope` rather than `resolveCliTarget` because it also
+    // resolves the endpoint bundle, so a bundle that throws is caught here too.
     resolveConfigScope();
   } catch (err) {
     console.error(formatCliError(err, programName()));
     process.exit(EXIT.USAGE);
   }
-  // Read before the command, so `uninstall` — which deletes both files — still
-  // reports which machine and account it came from. Measured at 0.037ms, inside
-  // the duration_ms window and deliberately not worth engineering out.
+  // Read before the command so `uninstall`, which deletes both files, still
+  // reports which machine and account it came from. Costs about 0.04ms.
   const snapshot = await readTelemetrySnapshot();
-  // Resolved HERE and nowhere else; see `shouldResolveSession`.
+  // Resolved here and nowhere else; see `shouldResolveSession`.
   const sessionId = shouldResolveSession(process.argv, process.env)
     ? (await resolveSession({ path: defaultSessionPath() })).id
     : undefined;
   setAnalyticsHeaders(resolveAnalyticsHeaders(snapshot, sessionId));
-  // Names the caller, so it follows the telemetry opt-out (docs/telemetry.md).
+  // Names the caller, so it follows the telemetry opt-out.
   setIdentityAssertion(snapshot.idToken, snapshot.telemetryEnabled);
   run(process.argv, buildRealDeps())
     .then(async (code) => {
-      // Two best-effort background steps, both AFTER the real command has produced
-      // its output (so neither adds latency to the funnel) and neither affecting
-      // `code`: the once-a-day refresh of an already-installed agent skill — the
-      // consume side of the out-of-band skill channel — and the proactive
-      // new-version notice. Concurrently, because they share no path and each owns
-      // a 2s network deadline; sequentially the tail would be twice as long.
+      // The new-version notice runs after the command has produced its output and
+      // never affects `code`.
       //
-      // The try/catch is the thing that makes "never affects the exit code" TRUE
-      // rather than merely intended. Both functions promise not to throw, but that
-      // promise is kept inside two other modules, and `Promise.all` is fail-fast:
-      // one rejection here would skip `process.exit(code)` entirely and fall to the
-      // outer `.catch`, which reports an unrelated error and exits non-zero —
-      // turning a succeeded command, whose JSON is already on stdout, into a
-      // failure. The eager `build*Deps()` calls are inside the guard for the same
-      // reason: they run synchronously here, and both derive a path from
-      // `homedir()`.
+      // The try/catch is what guarantees that: `maybeNotifyNewVersion` promises
+      // not to throw, but a rejection here would skip `process.exit(code)` and
+      // fall to the outer `.catch`, turning a succeeded command (its JSON already
+      // on stdout) into a failure. `buildVersionNoticeDeps()` is inside the guard
+      // for the same reason: it runs synchronously and derives a path.
       //
-      // Both are skipped in the detached telemetry sender: that child is not a
-      // user command, so it must neither refresh a skill nor print a notice.
-      // duration_ms is captured BEFORE the background work, which would otherwise
-      // add its network time to the number on the run that refreshes or checks.
+      // Skipped in the detached telemetry sender, which is not a user command.
+      // duration_ms is captured first so the notice's network time is not counted.
       const durationMs = Date.now() - STARTED_AT;
       let noticeMessage: string | undefined;
       try {
@@ -951,11 +872,9 @@ if (import.meta.main) {
       } catch {
         /* Background work never changes what the real command reported. */
       }
-      // Only on success, and only ever to stderr. stdout is a JSON contract for the
-      // agent funnels; and on a FAILURE stderr must stay the single actionable line
-      // the error taxonomy promises (`error-report.ts`, `AGENTS.md`, `SKILL.md`) —
-      // appending an upgrade hint under an error would give an agent two lines to
-      // interpret where the contract says one, right when it is recovering.
+      // Only on success, and only to stderr. stdout is a JSON contract for the
+      // agent funnels, and on a failure stderr must stay the single actionable
+      // line the error contract promises (`error-report.ts`).
       if (code === EXIT.OK && noticeMessage) {
         process.stderr.write(`${noticeMessage}\n`);
       }
@@ -963,10 +882,8 @@ if (import.meta.main) {
       process.exit(code);
     })
     .catch(async (err) => {
-      // A rejection here would otherwise surface as an unhandled promise
-      // rejection (noisy stack, nonstandard exit). Print an actionable message
-      // (code/detail/trace_id/next action) and exit with the stable failure
-      // class so callers/scripts can branch on it.
+      // Otherwise an unhandled rejection (noisy stack, nonstandard exit). Exit
+      // with the stable failure class so scripts can branch on it.
       console.error(formatCliError(err, programName()));
       const code = exitCodeForError(err);
       // A failed command is what the exit-code breakdown exists for.

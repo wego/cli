@@ -1,61 +1,48 @@
 /**
- * THE GATE: a released binary must be able to update itself.
+ * Release gate: a released binary must be able to update itself.
  *
  * Usage:
  *   bun run scripts/assert-self-update.ts <binary> <installUrl> <ring> [--expect <version>] [--expect-unchanged] [--force-replace]
  *
- * wego/cli v1.2.0 shipped a binary that could not `wego update` at all. Its
- * update path set no user agent, so Bun's default `Bun/<version>` went out -
- * which is the exact string `apps/api`'s legacy bridge pin keys on. Every
- * install was redirected to the frozen bridge `cli/cli-v1.1.0/`, whose record
- * it cannot verify, and refused it: exit 6, `not vouched for`. Machines that
- * reached 1.2.0 were frozen there and had to reinstall (wego/cli#25).
+ * wego/cli v1.2.0 shipped a binary that could not `wego update`: its update path
+ * set no user agent, so Bun's default `Bun/<version>` went out, which is the
+ * string `apps/api`'s legacy bridge pin keys on. Every install was redirected to
+ * the frozen bridge `cli/cli-v1.1.0/`, whose record it could not verify, and
+ * refused with exit 6. Machines on 1.2.0 had to reinstall (wego/cli#25). Every
+ * release and promote check passed, because they only verified machines
+ * arriving at the new version (SMOKE 3 updates the predecessor onto it).
  *
- * EVERY CHECK IN THE RELEASE AND PROMOTE LANES PASSED. They verified machines
- * ARRIVING at the new version - SMOKE 3 updates the PREDECESSOR onto it - and
- * nothing ever ran `wego update` FROM the binary being shipped.
+ * So this asserts the outcome by running the real update against the real
+ * route, which covers the pin, record verification, manifest coverage, hash
+ * comparison, URL composition, the replace step and exit codes, rather than
+ * checking one property such as the user agent.
  *
- * So this asserts the OUTCOME, not a property that implies it. A guard that
- * checked "the user agent is not Bun-shaped" would have caught that one bug and
- * almost nothing else. Running the real thing against the real route covers the
- * pin, record verification, manifest coverage, hash comparison, URL
- * composition, the replace step and exit codes - including the next failure,
- * which will not look like the last one.
- *
- * `--force-replace` EXISTS BECAUSE A RELEASE NEVER RAN THE REPLACE CODE IT WAS
- * SHIPPING. Without `--force` the gate's binary and the ring it follows hold the
+ * `--force-replace`: without `--force`, the gate's binary and the ring hold the
  * same bytes, so `update` reports "already up to date" and returns before
- * `downloadAndReplace` — the fetch, the checksum, the chmod, the quarantine clear
- * and the atomic rename all go unrun. SMOKE 3 does drive a real swap, but with
- * the PREDECESSOR's code, so the shipping build's replace half first executed one
- * full release later — on a consumer's machine, or on the next release's SMOKE 3,
- * whichever came first. Either way, after publication. `--force` makes the
- * same-bytes case do the whole replace anyway, and the bytes landing identical is
- * then itself an assertion: the ring is serving what this run built.
+ * `downloadAndReplace` (fetch, checksum, chmod, quarantine clear, atomic
+ * rename). SMOKE 3 does a real swap but with the predecessor's code, so the
+ * shipping build's replace code would first run after publication. `--force`
+ * runs the whole replace on identical bytes, and the bytes staying identical
+ * then asserts the ring is serving what this run built.
  *
- * TWO LEGS, ONE CLAIM. linux-x64 runs in the release job; darwin-arm64 runs in
- * `replace-macos`, because the replace code is compiled per platform and one line
- * of it — `if (os === "darwin") await deps.clearQuarantine(tmp)` — is unreachable
- * from any Linux runner, at any release, early or late.
+ * linux-x64 runs in the release job; darwin-arm64 runs in `replace-macos`,
+ * because the replace code is compiled per platform and
+ * `if (os === "darwin") await deps.clearQuarantine(tmp)` cannot run on Linux.
  *
- * WHAT IT DOES NOT COVER, so nobody reads more into a green run than it earns:
- *   - Other platforms. CI executes linux-x64 and darwin-arm64, both through
- *     `--force-replace`; darwin-x64, linux-arm64 and Windows are built, published
- *     and never run. A deliberate line, not an oversight: darwin-x64 is Intel
- *     hardware whose runner image is being retired, and Windows reaches no replace
- *     path at all (`update` refuses — a running .exe cannot be swapped), so its
- *     gate would assert the refusal and the download link it prints instead.
- *     Narrower than the 3c soak waiver's gap, not gone.
+ * Not covered:
+ *   - Other platforms. darwin-x64, linux-arm64 and Windows are built and
+ *     published but never run. darwin-x64's Intel runner image is being
+ *     retired, and Windows has no replace path (`update` refuses because a
+ *     running .exe cannot be swapped).
  *   - A user's pre-existing install state: odd config, permissions, a
  *     half-written binary.
- *   - A regression that only appears on the NEXT release rather than this one.
+ *   - A regression that only appears on the next release rather than this one.
  */
 import { chmod, copyFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** Everything the lane needs to know from one run, as data. Pure so the
- *  interpretation is unit-testable without spawning a 100 MB binary. */
+/** Pure so the interpretation is unit-testable without spawning the binary. */
 export function interpretUpdate(r: {
   code: number;
   stdout: string;
@@ -63,15 +50,10 @@ export function interpretUpdate(r: {
 }): { ok: true } | { ok: false; reason: string } {
   if (r.code === 0) return { ok: true };
   const detail = (r.stderr || r.stdout).trim().split("\n")[0] ?? "(no output)";
-  // Exit 6 is EXIT.PERMANENT, which is what a record that does not verify
-  // returns - the shape v1.2.0 shipped. Named because it is the one failure a
-  // reader of a red run is most likely to misdiagnose as a network blip.
-  //
-  // The hint no longer points at the legacy bridge. Since wego/cli#29 the
-  // bridge's `cli-v1.1.0` record VERIFIES, so being served it is not a way to
-  // reach exit 6 any more - a binary that gets the bridge downgrades onto it
-  // instead. What is left here is a genuine identity or signature failure, so
-  // the message says to read the SAN rather than to suspect the agent.
+  // Exit 6 is EXIT.PERMANENT, returned for a record that does not verify.
+  // Called out because it is easy to misdiagnose as a network blip. The
+  // bridge's `cli-v1.1.0` record verifies (wego/cli#29), so exit 6 here means a
+  // genuine identity or signature failure: the hint points at the SAN.
   const hint =
     r.code === 6
       ? " This is the fail-closed refusal: the binary fetched a signed record it does not accept. Read the SAN the message names and compare it with `identitiesForRing` - a tag shape that matches no rule is wego/cli#29 all over again."
@@ -86,35 +68,29 @@ export function interpretUpdate(r: {
  * True when `update` short-circuited because it does not consider itself an
  * installed release binary.
  *
- * `update.ts:364` returns EXIT.OK for `fromSource || version === DEV_VERSION`,
+ * `src/update.ts` returns EXIT.OK for `fromSource || version === DEV_VERSION`,
  * so a binary compiled without `WEGO_BUILD_VERSION` passes an exit-code check
- * having done nothing at all - the same shape of hole this gate exists to
- * close, one level up. Detected explicitly rather than left to the version
+ * having done nothing. Detected explicitly rather than left to the version
  * assertion, so the failure names its own cause.
  */
 export function refusedAsUnreleased(stdout: string): boolean {
   return /Self-update applies to installed release binaries/i.test(stdout);
 }
 
-/** True when the run reports the binary was already current. */
 export function reportedUnchanged(stdout: string): boolean {
   return /already up to date|up to date/i.test(stdout);
 }
 
 /**
- * True when the run reports it actually swapped the binary — `downloadAndReplace`
- * ran to completion.
+ * True when `downloadAndReplace` ran to completion.
  *
- * The claim `--force-replace` makes. Asserted on the MESSAGE and not on the exit
- * code because "already up to date" also exits 0: a `--force` that failed to
- * reach the replace path would otherwise pass while proving exactly what this
- * leg exists to stop being unproven.
+ * Asserted on the message, not the exit code, because "already up to date" also
+ * exits 0: a `--force` that never reached the replace path would otherwise pass.
  */
 export function reportedReplaced(stdout: string): boolean {
   return /\bUpdated\b[^\n]*\bfrom ring\b/i.test(stdout);
 }
 
-/** Lowercase hex sha256 of a file, for the before/after comparison below. */
 async function sha256(path: string): Promise<string> {
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(await Bun.file(path).bytes());
@@ -133,9 +109,8 @@ async function main(): Promise<void> {
   const expect = expectAt >= 0 ? rest[expectAt + 1] : undefined;
   const expectUnchanged = rest.includes("--expect-unchanged");
   const forceReplace = rest.includes("--force-replace");
-  // Opposite claims about the same run: one asserts `update` stopped before the
-  // replace, the other that it went all the way through it. A caller passing both
-  // has one of them wrong, and a silent precedence rule would decide which.
+  // Opposite claims about the same run. Refuse rather than let a silent
+  // precedence rule pick one.
   if (forceReplace && expectUnchanged) {
     console.error(
       "::error::--force-replace and --expect-unchanged are mutually exclusive: the first requires a real byte-swap, the second requires that none happened.",
@@ -146,10 +121,9 @@ async function main(): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "wego-selfupdate-"));
   const home = join(dir, "home");
   await mkdir(join(home, ".config", "wego"), { recursive: true });
-  // THE BINARY MUST BE NAMED `wego`. The config directory is derived from the
-  // name it is invoked as, so `wego-linux-x64` looks for `.config/wego-linux-x64/`,
-  // finds no install record, and exits without ever reaching the network - a
-  // green run that tested nothing.
+  // The binary must be named `wego`. The config directory is derived from the
+  // invoked name, so `wego-linux-x64` would look in `.config/wego-linux-x64/`,
+  // find no install record, and exit green without reaching the network.
   const bin = join(dir, "wego");
   await copyFile(binary, bin);
   await chmod(bin, 0o755);
@@ -172,8 +146,7 @@ async function main(): Promise<void> {
         : ""
     }`,
   );
-  // Read before the swap so the post-swap comparison below has something to be
-  // about; skipped otherwise, since hashing ~64 MB earns nothing without it.
+  // Only needed for the post-swap comparison; hashing ~64 MB is skipped otherwise.
   const before = forceReplace ? await sha256(bin) : "";
   const run = Bun.spawnSync(
     forceReplace ? [bin, "update", "-y", "--force"] : [bin, "update", "-y"],
@@ -206,9 +179,8 @@ async function main(): Promise<void> {
       );
       process.exit(1);
     }
-    // The swap landed; now say WHAT landed. The ring was published from the same
-    // dist/ this binary came out of, so identical bytes is the only correct
-    // outcome — anything else means the ring is not serving this build.
+    // The ring was published from the same dist/ as this binary, so identical
+    // bytes is the only correct outcome.
     const after = await sha256(bin);
     if (after !== before) {
       console.error(

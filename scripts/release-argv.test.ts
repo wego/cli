@@ -1,32 +1,21 @@
 /**
  * The routing decision on the lane that writes `cli/stable`.
  *
- * `computeAdvanceTargets` decides whether a run moves the pointer the entire
- * install base follows, moves the candidate ring, or moves nothing. Everything
- * downstream is HANDED that answer rather than re-deriving it - the crossed-pair
- * guard, the consistency barrier, the signed-record verify and the summary all
- * iterate `advanceTargets` - so a wrong answer here is not caught later, it is
- * faithfully executed by every gate in turn.
- *
- * Until now nothing could ask it anything. It closed over a module-level `argv`
- * and ended in `process.exit`, inside an 810-line module that runs its whole
- * publish at import - no `import.meta.main` guard, every statement top-level -
- * so the only way to exercise a routing decision was to start a publisher, and
- * the first refusal it reached would exit the test runner with it.
- * `release-argv.ts` is that decision with the exiting taken out.
+ * Everything downstream (the crossed-pair guard, the consistency barrier, the
+ * signed-record verify, the summary) iterates `advanceTargets` rather than
+ * re-deriving it, so a wrong answer here is not caught later.
  *
  * The mutations this suite kills:
- *   - `--freeze` routed to anything but `[]` -> it advances a pointer the
- *     operator explicitly asked it to leave alone.
- *   - the bare-publish default flipped to `stable` -> a fresh build lands in
+ *   - `--freeze` routed to anything but `[]`: it advances a pointer the
+ *     operator asked it to leave alone.
+ *   - the bare-publish default flipped to `stable`: a fresh build lands in
  *     front of the whole install base instead of the candidate ring.
- *   - `--to` defaulting to the LAST ring rather than `next`, or reading the flag
+ *   - `--to` defaulting to the last ring rather than `next`, or reading the flag
  *     rather than its value.
- *   - a bad ring falling through as `next` instead of refusing -> `--to stabel`
- *     silently advances the wrong pointer, which is the promote's entire job
- *     done wrong, green.
+ *   - a bad ring falling through as `next` instead of refusing: `--to stabel`
+ *     silently advances the wrong pointer.
  *   - the two `--` guards swapped, so a typo'd mode flag is reported as a bad
- *     tag and the operator is sent to the wrong end of the lane.
+ *     tag.
  */
 import { describe, expect, it } from "bun:test";
 import {
@@ -46,7 +35,6 @@ function ok<T>(v: T | { error: string }): T {
   return v;
 }
 
-/** The error side, for the refusal cases. */
 function err(v: unknown): string {
   if (!isArgvError(v)) throw new Error(`expected a refusal, got: ${String(v)}`);
   return v.error;
@@ -58,10 +46,9 @@ describe("parseMode", () => {
     expect(parseMode("--freeze")).toBe("freeze");
   });
 
-  // Total by design: the bare form is `upload-release-blob.ts v1.2.3`, so
-  // anything that is not one of the two flags has to be a publish. That is what
-  // makes `leadingFlagError` load-bearing rather than cosmetic - without it an
-  // unrecognised flag becomes the TAG.
+  // The bare form is `upload-release-blob.ts v1.2.3`, so anything that is not
+  // one of the two flags is a publish. That is why `leadingFlagError` matters:
+  // without it an unrecognised flag becomes the tag.
   it("reads everything else, including a typo, as a publish", () => {
     expect(parseMode("v1.2.3")).toBe("publish");
     expect(parseMode(undefined)).toBe("publish");
@@ -83,9 +70,8 @@ describe("leadingFlagError", () => {
     );
   });
 
-  // Only the MODE position. `--to` and `--require-serving` are legitimate flags
-  // further along, and a guard that scanned the whole argv would refuse every
-  // promote this lane exists to run.
+  // `--to` and `--require-serving` are legitimate flags further along, so a
+  // guard that scanned the whole argv would refuse every promote.
   it("looks only at the first argument", () => {
     expect(
       leadingFlagError(["--promote", "v1.2.3", "--to", "stable"]),
@@ -107,8 +93,6 @@ describe("tagPositionError", () => {
     ).toBeNull();
   });
 
-  // Named separately from the tag-shape guard so the operator reads "unknown
-  // flag" rather than "malformed version" for a flag they mistyped.
   it("refuses a stray flag where the tag belongs, naming both", () => {
     expect(err(tagPositionError(["--freeze", "--typo"], "freeze"))).toBe(
       'Unknown flag "--typo" after --freeze - expected a tag.',
@@ -130,18 +114,17 @@ describe("parsePromoteTarget", () => {
     ).toBe("stable");
   });
 
-  // Every ring is nameable here, `edge` included - the real guards are the tag
-  // gate, `--require-serving` and the byte-identity check, not this parser.
+  // `edge` included: the real guards are the tag gate, `--require-serving` and
+  // the byte-identity check, not this parser.
   it.each(["edge", "next", "stable"])("accepts the ring %s", (ring) => {
     expect(ok(parsePromoteTarget(["--promote", "v1.2.3", "--to", ring]))).toBe(
       ring,
     );
   });
 
-  // THE MUTATION THAT COSTS THE MOST: falling back to `next` on a bad value
-  // rather than refusing. `--to stabel` would then advance the candidate ring
-  // while the operator believed they had promoted to the install base, and every
-  // gate downstream would agree, because they are handed this answer.
+  // Falling back to `next` here would make `--to stabel` advance the candidate
+  // ring while the operator believed they had promoted to stable, and no
+  // downstream gate would notice.
   it("refuses an unknown ring rather than falling back to the default", () => {
     expect(
       err(parsePromoteTarget(["--promote", "v1.2.3", "--to", "stabel"])),
@@ -154,9 +137,6 @@ describe("parsePromoteTarget", () => {
     );
   });
 
-  // A trailing flag is not a ring. Without this `--to --require-serving next`
-  // would have to be caught by `isRing`, and it is - stated here so the case
-  // cannot regress into a fallback.
   it("refuses another flag as the ring", () => {
     expect(
       err(
@@ -172,8 +152,6 @@ describe("parsePromoteTarget", () => {
 });
 
 describe("parseRequireServing", () => {
-  // `null`, not an error: the flag is optional, and the publish and freeze modes
-  // never pass it at all.
   it("is null when the flag is absent", () => {
     expect(parseRequireServing(["--promote", "v1.2.3"])).toBeNull();
   });
@@ -228,10 +206,8 @@ describe("parseRequireServing", () => {
 });
 
 describe("computeAdvanceTargets", () => {
-  // THE WHOLE POINT OF --freeze. It publishes the immutable `cli/<tag>/` prefix
-  // and moves no pointer at all, which is how a release is staged before anyone
-  // is asked to receive it. Anything but `[]` here advances a ring the operator
-  // explicitly asked it not to.
+  // `--freeze` publishes the immutable `cli/<tag>/` prefix and moves no
+  // pointer, which is how a release is staged before anyone receives it.
   it("advances nothing on a freeze", () => {
     expect(ok(computeAdvanceTargets("freeze", ["--freeze", "v1.2.3"]))).toEqual(
       [],
@@ -240,19 +216,14 @@ describe("computeAdvanceTargets", () => {
 
   // A bare publish reproduces the release job's routing: the candidate ring, and
   // never the one the whole install base follows.
+  //
+  // There is deliberately no "ignores a stray --to" case for the publish branch:
+  // it never reads argv, and `upload-release-blob.ts` refuses that shape before
+  // the router is reached ("--to is only valid with --promote."). Such a case
+  // would suggest the router is the guard, when the upstream check is.
   it("advances only cli/next on a bare publish", () => {
     expect(ok(computeAdvanceTargets("publish", ["v1.2.3"]))).toEqual(["next"]);
   });
-
-  // A case feeding `["v1.2.3", "--to", "stable"]` to the publish branch used to
-  // sit here, titled "ignores a stray --to". It was removed, and the reason is
-  // worth stating so it does not come back: the publish branch returns `["next"]`
-  // WITHOUT reading argv, so that case exercised no branch the case above does
-  // not, and `upload-release-blob.ts` refuses the shape outright before the
-  // router is ever reached ("--to is only valid with --promote."). Its real cost
-  // was the title - it read as the router defending against a stray `--to`,
-  // which could talk a future reader into relaxing the upstream guard that is
-  // actually doing the work.
 
   it("advances the promote's target, defaulting to next", () => {
     expect(

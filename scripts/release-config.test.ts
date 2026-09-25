@@ -1,14 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { readReleaseEnvSpec } from "./release-config";
 
-// ONE bundle, not two (foundations#74 rung 7). The `wegostaging` flavor is gone:
-// every release build bakes the PROD endpoints, and `--target staging` swaps
-// the whole auth bundle at run time from `src/target.ts`. So there is no longer a
-// build-time flavor label a bundle could contradict, and the two guards that
-// enforced that label (flavor⟷host, and the channel path's flavor) went with it.
-// What this file still pins is everything that is a property of the BUNDLE rather
-// than of a flavor: required keys, HTTPS, no credentials, the Blob host pin on the
-// baked bases, and the PostHog key shape.
 const RELEASE_ENV: NodeJS.ProcessEnv = {
   WEGO_AUTH_AUTHORIZE_URL:
     "https://auth.wego.com/user-auth/v2/users/oauth/authorize",
@@ -59,18 +51,9 @@ describe("readReleaseEnvSpec", () => {
     );
   });
 
-  // NO CHANNEL BASE IS BAKED, and that is the point rather than an omission.
-  //
-  // `wego update` reads the ring the installer recorded (foundations#74 rung 3), and
-  // the new-version notice now reads the same record. A baked base made two sources
-  // of truth for "which channel is this install on" and drifted exactly as that
-  // invites: it still named `cli/latest` after rung 7 retired the prefix, so the
-  // notice would have compared against something that never advances again while
-  // `update` was correct.
-  //
-  // Asserted as ABSENCE, and against the env var being honoured at all - a spec that
-  // silently grew the field back would otherwise ship a binary that looks at a
-  // compiled-in URL again.
+  // `wego update` and the new-version notice read the ring the installer
+  // recorded. A baked channel base would be a second source of truth that can
+  // drift, so a leftover env var must be ignored, not honoured.
   it("bakes no channel base, even when the retired variable is set", () => {
     const spec = readReleaseEnvSpec({
       ...RELEASE_ENV,
@@ -84,11 +67,10 @@ describe("readReleaseEnvSpec", () => {
     );
   });
 
-  // The SKILL axis. The skill channel is gone from this repo - the body ships
-  // embedded in the binary and `update` re-runs `skill install --owned-only` - so
-  // no skill store address is baked under ANY name. A lingering
-  // `WEGO_CLI_SKILL_URL` or `WEGO_CLI_SKILL_ORIGIN` in the Environment (the
-  // likeliest thing to survive this change) must be inert rather than honoured.
+  // The skill ships embedded in the binary and `update` re-runs
+  // `skill install --owned-only`, so no skill store address is baked. A leftover
+  // `WEGO_CLI_SKILL_URL` or `WEGO_CLI_SKILL_ORIGIN` in the Environment must be
+  // ignored.
   it("bakes no skill store address, even when a retired variable is set", () => {
     const spec = readReleaseEnvSpec({
       ...RELEASE_ENV,
@@ -143,10 +125,9 @@ describe("readReleaseEnvSpec", () => {
   });
 
   describe("production-host pin (the baked auth/api endpoints)", () => {
-    // The published binary DEFAULTS to the prod target, and prod imposes no
-    // overrides - it uses these baked values verbatim. So a staging value here
-    // ships an install that talks to staging forever, and with one build there is
-    // no second flavor whose absence would make that visible.
+    // The published binary defaults to the prod target, which uses these baked
+    // values verbatim, so a staging value here ships an install that talks to
+    // staging.
     for (const key of [
       "WEGO_AUTH_AUTHORIZE_URL",
       "WEGO_AUTH_TOKEN_URL",
@@ -163,9 +144,8 @@ describe("readReleaseEnvSpec", () => {
     }
 
     it("rejects a lookalike host that merely CONTAINS wego.com", () => {
-      // The suffix match is on the registrable domain with its leading dot, so
-      // `wego.com.evil.test` and `notwego.com` are both outside it. A `includes()`
-      // spelling would accept the first, which is the whole point of pinning.
+      // The suffix match includes the leading dot, so `notwego.com` is outside
+      // it. An `includes()` check would accept `wego.com.evil.test`.
       for (const host of [
         "https://api.wego.com.evil.test",
         "https://notwego.com",

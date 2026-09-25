@@ -1,22 +1,21 @@
 /**
  * The smallest DER reader that reads an X.509 certificate (foundations#74 rung 9).
  *
- * `wego update` has to verify a **Sigstore** bundle before it trusts a downloaded
- * manifest, and verifying one means reading the Fulcio leaf certificate: its
- * subject-alternative name (which workflow signed), the Fulcio OIDC-issuer
- * extension (which provider asserted that), its public key, and the exact bytes its
- * issuer signed. None of that needs a general ASN.1 library — it needs four fields
- * out of a structure whose shape is fixed by RFC 5280.
+ * Verifying a Sigstore bundle means reading four fields of the Fulcio leaf
+ * certificate: the subject-alternative name (which workflow signed), the Fulcio
+ * OIDC-issuer extension (which provider asserted that), the public key, and the
+ * exact bytes its issuer signed. The structure is fixed by RFC 5280, so no general
+ * ASN.1 library is needed.
  *
  * Hand-rolled rather than a dependency because this runs inside the published
- * binary on a security path: a small reader whose every branch is tested here beats
- * a large one whose behaviour on malformed input we would be taking on trust. Every
- * function below is **total** — malformed input throws `DerError`, never returns a
- * partial or guessed value, and the caller turns a throw into a refusal.
+ * binary on a security path: a small reader with every branch tested beats a large
+ * one whose behaviour on malformed input we would take on trust. Every function is
+ * total: malformed input throws `DerError`, never a partial or guessed value, and
+ * the caller turns a throw into a refusal.
  *
- * Deliberately NOT a general decoder. It handles definite-length encodings only
- * (DER admits no other kind), rejects lengths that overrun the buffer, and knows
- * only the handful of tags a certificate uses.
+ * Not a general decoder: definite-length encodings only (DER admits no other
+ * kind), lengths that overrun the buffer are rejected, and only the tags a
+ * certificate uses are known.
  */
 
 export class DerError extends Error {
@@ -26,7 +25,7 @@ export class DerError extends Error {
   }
 }
 
-/** ASN.1 tags this reader knows, by their DER identifier octet. */
+/** By DER identifier octet. */
 export const TAG = {
   BOOLEAN: 0x01,
   INTEGER: 0x02,
@@ -41,27 +40,24 @@ export const TAG = {
   GENERALIZED_TIME: 0x18,
 } as const;
 
-/** One decoded TLV, with the slice of the ORIGINAL buffer it occupies. The
- *  `full` span matters as much as `content`: a certificate's signature covers the
- *  tbsCertificate's complete encoding, tag and length included, so re-encoding it
- *  would change the bytes being verified. */
+/** Slices of the original buffer, not copies. `full` matters as much as
+ *  `content`: a certificate's signature covers the tbsCertificate's complete
+ *  encoding, tag and length included, so re-encoding it would change the bytes
+ *  being verified. */
 export interface Tlv {
   tag: number;
-  /** The value octets. */
   content: Uint8Array<ArrayBuffer>;
-  /** Tag + length + value, as it appeared. */
+  /** Tag, length and value, as they appeared. */
   full: Uint8Array<ArrayBuffer>;
   /** Offset just past `full` in the parent buffer. */
   end: number;
 }
 
-/** Read the TLV starting at `offset`. */
 export function readTlv(buf: Uint8Array<ArrayBuffer>, offset = 0): Tlv {
   if (offset + 2 > buf.length) throw new DerError("truncated header");
   const tag = buf[offset];
-  // A high-tag-number form (0x1f in the low five bits) never appears in a
-  // certificate; refusing it keeps the reader's surface honest rather than
-  // silently mis-reading one.
+  // The high-tag-number form (0x1f in the low five bits) never appears in a
+  // certificate; refuse it rather than mis-read it.
   if ((tag & 0x1f) === 0x1f) throw new DerError("multi-byte tags unsupported");
   const first = buf[offset + 1];
   let lengthOfLength = 0;
@@ -94,7 +90,6 @@ export function readTlv(buf: Uint8Array<ArrayBuffer>, offset = 0): Tlv {
   };
 }
 
-/** Read the TLV at `offset`, requiring `tag`. */
 export function readTagged(
   buf: Uint8Array<ArrayBuffer>,
   tag: number,
@@ -109,23 +104,22 @@ export function readTagged(
   return tlv;
 }
 
-/** Every child TLV of a constructed value's content. */
 export function readChildren(content: Uint8Array<ArrayBuffer>): Tlv[] {
   const out: Tlv[] = [];
   let offset = 0;
   while (offset < content.length) {
     const tlv = readTlv(content, offset);
     out.push(tlv);
-    // A zero-width read would spin forever on a crafted input; DER has no
-    // zero-length TLV (the header alone is two octets), so this is unreachable
-    // except under a bug in readTlv — assert rather than trust it.
+    // A zero-width read would spin forever on crafted input. The header alone is
+    // two octets, so this is unreachable except under a bug in readTlv; assert
+    // rather than trust it.
     if (tlv.end <= offset) throw new DerError("non-advancing element");
     offset = tlv.end;
   }
   return out;
 }
 
-/** Decode an OBJECT IDENTIFIER's content octets to dotted-decimal. */
+/** OBJECT IDENTIFIER content octets to dotted-decimal. */
 export function decodeOid(content: Uint8Array<ArrayBuffer>): string {
   if (content.length === 0) throw new DerError("empty OID");
   const parts: number[] = [];
@@ -150,7 +144,6 @@ export function decodeOid(content: Uint8Array<ArrayBuffer>): string {
   return parts.join(".");
 }
 
-/** The dotted-decimal OID of an OID-tagged TLV. */
 export function oidOf(tlv: Tlv): string {
   if (tlv.tag !== TAG.OID) throw new DerError("not an OID");
   return decodeOid(tlv.content);
@@ -168,7 +161,7 @@ export function bitStringBytes(tlv: Tlv): Uint8Array<ArrayBuffer> {
   return tlv.content.subarray(1);
 }
 
-/** True for a context-specific constructed tag `[n]`. */
+/** A context-specific constructed tag `[n]`. */
 export function isContext(tlv: Tlv, n: number): boolean {
   return tlv.tag === (0xa0 | n);
 }

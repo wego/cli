@@ -85,19 +85,17 @@ import { type FlagLine, group, usage } from "./usage";
 import { FLIGHTS, HOTELS } from "./verticals";
 
 /**
- * The three commands, written against injectable dependencies so the flows are
- * unit-testable without a browser, a live AS, or the network. `index.ts` wires
- * the real implementations.
+ * Commands take injectable dependencies so the flows are unit-testable without
+ * a browser, a live AS, or the network. `index.ts` wires the real
+ * implementations.
  */
 
 /**
- * The command the user actually invoked — `wego` (prod), `wegostaging`
- * (staging), or a renamed binary — resolved once at module load (`process.execPath`
- * is stable for the process). Every user-facing command reference below (the
- * `*_USAGE` constants and the `re-run: … <cmd>` / `run \`<cmd> …\`` hints) is
- * built from this, so a `wegostaging` binary tells the user to run
- * `wegostaging …` instead of a hardcoded `wego …`. Comments/JSDoc keep the
- * literal `wego` — they document the concept, not what to type.
+ * The command the user invoked (`wego`, `wegostaging`, or a renamed binary),
+ * resolved once at module load. Every user-facing command reference (the
+ * `*_USAGE` constants and the "run `<cmd> …`" hints) is built from this, so a
+ * `wegostaging` binary tells the user to run `wegostaging …`. Comments keep the
+ * literal `wego`.
  */
 const PROG = programName();
 
@@ -106,15 +104,11 @@ export interface CommandIo {
   error: (message: string) => void;
 }
 
-/** True when `args`' first token is a help request — bare `help`, `-h`, or
- *  `--help` (issue #1119). This is the SAME set the `flights`/`hotels` group
- *  dispatchers match on their sub-command slot, so the leaf commands (which call
- *  this against their own arg list, before parsing flags) can't drift from the
- *  group level: `wego flights search help` behaves exactly like `wego flights
- *  search --help`. Each usage short-circuits to that level's usage on stdout with
- *  exit 0 — instead of falling into the parser's "unknown option"/"unknown
- *  sub-command" error path (stderr, exit 1). Only the FIRST token is checked: a
- *  `--help` appearing later (e.g. as a flag's value) is left to the normal parser. */
+/** Group dispatchers and leaf commands share this check (issue #1119), so
+ *  `wego flights search help` behaves like `wego flights search --help`: usage on
+ *  stdout with exit 0, not the parser's unknown-option error. Only the first
+ *  token is checked, so a later `--help` (e.g. a flag's value) goes to the
+ *  normal parser. */
 export function isHelpArg(args: string[]): boolean {
   return args[0] === "help" || args[0] === "-h" || args[0] === "--help";
 }
@@ -228,11 +222,10 @@ export async function login(
       codeChallenge,
     });
 
-    // Arm the loopback waiter (this is what sets `expectedState` + the settle
-    // handler inside startLoopback) BEFORE opening the browser. Otherwise a
-    // very fast redirect could hit the callback before we're ready to receive
-    // it — the callback would be dropped and login would hang until the full
-    // timeout despite succeeding in the browser.
+    // Arm the loopback waiter (which sets `expectedState` and the settle
+    // handler) BEFORE opening the browser. Otherwise a fast redirect could hit
+    // the callback before it is armed, and login would hang until the timeout
+    // despite succeeding in the browser.
     // The paste path runs alongside the loopback, never instead of it: a
     // forwarded port still completes the login by itself, and whichever
     // arrives first wins.
@@ -279,9 +272,8 @@ export async function login(
     deps.error(`Login failed: ${formatCliError(err, programName())}`);
     // Classify through the shared taxonomy so a network/timeout failure from the
     // token exchange (a TypeError/DOMException out of `exchangeCode`) reports its
-    // real class (7) instead of masquerading as a usage error. A setup/handshake
-    // failure with no typed class — bad loopback config, insecure AS URL,
-    // occupied redirect port, or a rejected exchange (plain `Error`) — is a
+    // real class (7). A setup failure with no typed class (bad loopback config,
+    // insecure AS URL, occupied redirect port, or a rejected exchange) is a
     // usage/config problem, so the generic fallback maps to USAGE rather than 1.
     const code = exitCodeForError(err);
     return code === EXIT.ERROR ? EXIT.USAGE : code;
@@ -293,8 +285,8 @@ export async function login(
   }
 }
 
-/** The credential + refresh dependencies shared by every authenticated command
- *  (`whoami`, `places`). Each command adds its own API-call dependency. */
+/** The credential and refresh dependencies shared by every authenticated
+ *  command. Each command adds its own API-call dependency. */
 export interface AuthedCommandDeps extends CommandIo {
   loadCredentials: typeof loadCredentials;
   saveCredentials: typeof saveCredentials;
@@ -310,20 +302,19 @@ export interface AuthedCommandDeps extends CommandIo {
   recordAuthFailure: (record: AuthFailureRecord) => Promise<void>;
 }
 
-/** Report a refresh failure to the user AND leave a local trace of it. Before
- *  #1367 the CLI did the first and not the second, so a silent logout was
- *  undiagnosable after the fact (investigation #1360, H5). The record write is
- *  best-effort: a failed diagnosis must not change the auth outcome. */
+/** Report a refresh failure to the user and leave a local trace of it, so a
+ *  silent logout can be diagnosed after the fact (investigation #1360, H5). The
+ *  record write is best-effort: a failed diagnosis must not change the auth
+ *  outcome. */
 async function reportRefreshFailure(
   deps: AuthedCommandDeps,
   err: unknown,
 ): Promise<void> {
   const message = `Not authenticated: ${errorMessage(err)}. Run \`${programName()} login\`.`;
   deps.error(message);
-  // The whole diagnosis is best-effort — the try wraps BOTH the record build and
-  // the write, so neither a synchronous throw in `buildAuthFailureRecord` (it runs
-  // as an argument, before any `.catch` could attach) nor a rejected write can
-  // escape past the caller's AUTH-exit return and flip the exit code.
+  // The try wraps both the record build and the write, so neither a synchronous
+  // throw in `buildAuthFailureRecord` (it runs as an argument, before any
+  // `.catch` could attach) nor a rejected write can flip the caller's exit code.
   try {
     await deps.recordAuthFailure(
       buildAuthFailureRecord(err, message, new Date()),
@@ -367,42 +358,29 @@ async function reactiveRefreshRetry<T>(
       value: await call(refreshed.accessToken, refreshed.market ?? prev.market),
     };
   } catch (retryErr) {
-    // A 401 that survives a *successful* refresh is a rejection, not an expired
-    // session — describeApiError explains the likely env mismatch (token issued
-    // for a different environment than WEGO_API_URL) instead of a bare "run
-    // login", and delegates every other failure to the taxonomy message. The
-    // stable exit class comes from exitCodeForError.
+    // A 401 that survives a successful refresh is a rejection, not an expired
+    // session, so describeApiError explains the likely env mismatch (token
+    // issued for a different environment than WEGO_API_URL) instead of a bare
+    // "run login".
     deps.error(describeApiError(retryErr, config.apiBaseUrl));
     return { ok: false, code: exitCodeForError(retryErr) };
   }
 }
 
-/**
- * Run `call` with a valid access token, handling the whole credential dance:
- * load stored credentials, proactively refresh a known-expired token, and on a
- * reactive 401 refresh once and retry. Any failure is reported via `deps.error`
- * with the user-facing message and the result is `{ ok: false, code }` carrying
- * the stable taxonomy exit class for the caller to propagate; a success returns
- * the call's value for the caller to print.
- *
- * Shared by `whoami` and `places` so the (security-sensitive) refresh/retry flow
- * lives in exactly one place.
- */
 /** How the CLI resolved the site code, for its own output. `setting` is
  *  `settings.json` (issue #1386) and `account` the per-user market derived from
- *  the id_token — two sources only a client can set. */
+ *  the id_token: two sources only a client can set. */
 export type CliSiteSource = "explicit" | "setting" | "account" | "default";
 
 /**
  * Resolve the effective `--site` the CLI sends: an explicit `--site` wins; else
  * the user's stored `site` setting; else the market decoded from the logged-in
- * user's id_token (`account`); else nothing (the API floors to US → `default`).
- * Returns `siteCode: undefined` for the default case so the API — not the CLI —
+ * user's id_token (`account`); else nothing (the API floors to US, `default`).
+ * Returns `siteCode: undefined` for the default case so the API, not the CLI,
  * owns the US floor.
  *
- * A stored setting deliberately BEATS the account market: a user whose account
- * says SG must be able to price in the market they actually buy from, which is
- * the whole point of the setting existing (issue #1386).
+ * A stored setting beats the account market: a user whose account says SG must
+ * be able to price in the market they actually buy from (issue #1386).
  */
 export function resolveCliSite(
   explicit: string | undefined,
@@ -415,37 +393,33 @@ export function resolveCliSite(
   return { source: "default" };
 }
 
-/** How the CLI resolved the pricing currency, for its own output. THREE rungs,
+/** How the CLI resolved the pricing currency, for its own output. Three rungs,
  *  not the site's four: the id_token carries no currency, so there is no
  *  `account` rung.
  *
- *  It labels the currency the CLI ASKED for — the API echoes that same value as
- *  `metadata.currencyCode`. A results read also carries a TOP-LEVEL
- *  `currencyCode`, which is what the prices actually came back in; the two agree
- *  unless upstream declined to reprice, so a `setting` beside a top-level USD
- *  means the stored currency was asked for and not honoured, never that USD came
- *  from the setting.
+ *  It labels the currency the CLI asked for, which the API echoes as
+ *  `metadata.currencyCode`. A results read also carries a top-level
+ *  `currencyCode`: what the prices actually came back in. The two agree unless
+ *  upstream declined to reprice, so `setting` beside a top-level USD means the
+ *  stored currency was asked for and not honoured.
  *
- *  Not the same field as the API's `metadata.currencyCodeSource`, which answers
- *  "did the API default this to USD" and can only say `explicit` | `default`.
- *  A stored currency is merged into the request before it is sent, so the API
- *  sees it as `explicit`; only the CLI can name the `setting` rung. This
- *  vocabulary is therefore a superset: `explicit` and `default` mean the same
- *  thing in both, and `setting` refines the API's `explicit`. The API's copy
- *  never reaches CLI output — `stripMetadataSources` drops it at print time, so
- *  this top-level field is the ONE answer a payload carries (#1534). */
+ *  Not the same field as the API's `metadata.currencyCodeSource`, which can only
+ *  say `explicit` | `default`. A stored currency is merged into the request
+ *  before it is sent, so the API sees it as `explicit`; only the CLI can name the
+ *  `setting` rung. `stripMetadataSources` drops the API's copy at print time, so
+ *  this top-level field is the only answer a payload carries (#1534). */
 export type CliCurrencySource = "explicit" | "setting" | "default";
 
 /**
  * Resolve the effective `--currency` the CLI sends: an explicit `--currency`
  * wins; else the user's stored `currency` setting; else nothing (the API applies
- * its USD default → `default`). Returns `currency: undefined` for the default
- * case so the API — not the CLI — owns the USD floor.
+ * its USD default, `default`). Returns `currency: undefined` for the default
+ * case so the API, not the CLI, owns the USD floor.
  *
- * Deliberately NOT `applyPreferences`, which merges the setting into the request
- * body and erases which rung it came from (issue #1400). The two search commands
- * resolve currency here instead, exactly as they resolve `site` through
- * {@link resolveCliSite}, so the source is still known when the output is built.
+ * Not `applyPreferences`, which merges the setting into the request body and
+ * erases which rung it came from (issue #1400). Resolving here, as `site` is
+ * resolved through {@link resolveCliSite}, keeps the source known when the
+ * output is built.
  */
 export function resolveCliCurrency(
   explicit: string | undefined,
@@ -462,20 +436,15 @@ export function resolveCliCurrency(
  *
  * The API publishes `currencyCodeSource` / `localeSource` inside `metadata` on
  * the priced reads (contract 0.6.0), and `siteCodeSource` on `info schedules`.
- * Each answers a narrower question — "did the API default this?" — in a
- * request-scoped vocabulary (`explicit` | `default`) the CLI's own labels
- * refine: a stored preference is merged into the request before it is sent, so
- * the API reports it as `explicit`, and only the CLI can say `setting`.
- * Forwarding a copy therefore puts two `*Source` fields with two meanings for
- * one knob in one payload, disagreeing by construction whenever a preference is
- * stored. So CLI output publishes exactly ONE `*Source` per knob, at top level,
- * in the CLI's own vocabulary, and the API's copies in `metadata` are dropped
- * at print time (#1400 established this for `localeSource`; #1534 extends it to
- * the rest).
+ * Each only answers "did the API default this?" (`explicit` | `default`): a
+ * stored preference is merged into the request before it is sent, so the API
+ * reports it as `explicit`, and only the CLI can say `setting`. Forwarding the
+ * API's copy would put two disagreeing `*Source` fields for one knob in one
+ * payload, so CLI output carries exactly one per knob, at top level, in the
+ * CLI's vocabulary (#1400, #1534).
  *
- * The echoes themselves (`currencyCode`, `locale`, `siteCode`) are KEPT. Only
- * the sources are withheld, and only when the payload actually carries
- * metadata; everything else passes through by reference.
+ * The echoes themselves (`currencyCode`, `locale`, `siteCode`) are kept. A
+ * payload with nothing to strip passes through by reference.
  */
 export function stripMetadataSources<T>(payload: T): T {
   const metadata = (payload as { metadata?: unknown }).metadata;
@@ -494,12 +463,11 @@ export function stripMetadataSources<T>(payload: T): T {
  * What every priced read prints on top of the API's body: the CLI's own
  * `currencyCodeSource`, and no `metadata.*Source` copies.
  *
- * The two `search`es already do this inside their vertical, where the create
- * needs the resolved value anyway (#1529). The other six priced reads have no
- * create to hang it on, so they call this at their emit point instead. The field
- * is emitted UNCONDITIONALLY, exactly as the searches emit it: it labels what the
- * CLI resolved and asked for, so unlike the site pair there is no API echo it
- * could be orphaned from.
+ * The two `search`es do this inside their vertical, where the create needs the
+ * resolved value anyway (#1529). The other priced reads call this at their emit
+ * point. The field is emitted unconditionally: it labels what the CLI resolved
+ * and asked for, so unlike the site pair there is no API echo it could be
+ * orphaned from.
  */
 export function withCurrencyProvenance<T>(
   payload: T,
@@ -510,17 +478,14 @@ export function withCurrencyProvenance<T>(
 
 /**
  * One stderr line telling the user that prices are in the API's default currency
- * and how to set their own — the discovery path for `settings.json`, which no
- * human would otherwise know exists (issue #1386).
+ * and how to set their own: the only discovery path for `settings.json`
+ * (issue #1386).
  *
- * Deliberately narrow: only after a **successful** search-creating command
- * (`flights search` / `hotels search` — the two places a market and a currency
- * are actually decided), and only while no `currency` is stored. `wego config set
- * currency USD` silences it for good, which also makes the USD choice explicit
- * rather than a default nobody chose. A failing command keeps stderr at the
+ * Only after a successful `flights search` / `hotels search` (where a market and
+ * a currency are decided), and only while no `currency` is stored. `wego config
+ * set currency USD` silences it for good. A failing command keeps stderr at the
  * single actionable line the exit taxonomy promises, and the exit code is never
- * touched — same rules as the new-version notice. Returns nothing for that
- * reason: the caller's own exit code is the only one there is.
+ * touched, the same rules as the new-version notice.
  */
 function noteCurrencyDefault(
   code: number,
@@ -535,10 +500,9 @@ function noteCurrencyDefault(
   );
 }
 
-/** Refresh at the (secure) token URL and persist the rotated set, returning the
- *  refreshed tokens (`refreshToken`/`market` carried forward from the prior set
- *  when the response omits them). Shared by the proactive + reactive refresh
- *  paths so the refresh/persist dance lives in one place. */
+/** Refresh and persist the rotated set, carrying `refreshToken`/`market`
+ *  forward from the prior set when the response omits them. Shared by the
+ *  proactive and reactive refresh paths. */
 async function refreshAndStore(
   config: CliConfig,
   deps: AuthedCommandDeps,
@@ -571,10 +535,10 @@ interface ActiveSession {
 
 /**
  * Load stored credentials and proactively refresh a known-expired token. On the
- * refresh-failure / not-logged-in paths it prints the friendly message and
- * returns `null`, and `withAccessToken` turns that into the `EXIT.AUTH` (3)
- * class. Kept separate from `withAccessToken` so that function's cognitive
- * complexity stays within the new-code gate.
+ * refresh-failure / not-logged-in paths it prints the message and returns
+ * `null`, which `withAccessToken` turns into `EXIT.AUTH`. Kept separate from
+ * `withAccessToken` so that function's cognitive complexity stays within the
+ * new-code gate.
  */
 async function loadActiveSession(
   config: CliConfig,
@@ -614,16 +578,22 @@ async function loadActiveSession(
   return session;
 }
 
+/**
+ * Run `call` with a valid access token: load stored credentials, proactively
+ * refresh a known-expired token, and on a reactive 401 refresh once and retry.
+ * Any failure is reported via `deps.error` and returned as `{ ok: false, code }`
+ * with the taxonomy exit class. Every authenticated command goes through here so
+ * the security-sensitive refresh/retry flow lives in one place.
+ */
 async function withAccessToken<T>(
   config: CliConfig,
   deps: AuthedCommandDeps,
   call: (accessToken: string, market: string | undefined) => Promise<T>,
 ): Promise<{ ok: true; value: T } | { ok: false; code: number }> {
-  // The API receives the access token as a Bearer credential — never plaintext.
+  // The API receives the access token as a Bearer credential, never plaintext.
   try {
     assertSecureUrl(config.apiBaseUrl, "WEGO_API_URL");
   } catch (err) {
-    // A misconfigured/insecure WEGO_API_URL is a usage/config error.
     deps.error(errorMessage(err));
     return { ok: false, code: EXIT.USAGE };
   }
@@ -690,9 +660,6 @@ export async function places(
   args: string[],
   deps: PlacesDeps,
 ): Promise<number> {
-  // `wego places --help`/`-h`/`help` prints usage on stdout with exit 0, like the
-  // flights/hotels leaves — instead of `--help` falling into the parser's
-  // "Unknown option" error path (stderr, exit 2) (CLI-3).
   if (isHelpArg(args)) {
     deps.log(PLACES_USAGE);
     return 0;
@@ -707,7 +674,7 @@ export async function places(
   }
   // Locale ONLY. Place resolution is deliberately market-neutral (the API pins
   // the upstream `site_code` to the wildcard), so a stored `site` must never
-  // reach it — that would narrow every lookup to one market.
+  // reach it: that would narrow every lookup to one market.
   const query = applyPreferences(parsed, await deps.loadSettings(), ["locale"]);
   const result = await withAccessToken(config, deps, (accessToken) =>
     deps.fetchPlaces(config.apiBaseUrl, accessToken, query),
@@ -828,9 +795,6 @@ export async function info(
   deps: InfoDeps,
 ): Promise<number> {
   const sub = args[0];
-  // `help`/`-h`/`--help` recognized BEFORE sub-command matching, so usage goes to
-  // stdout with exit 0 like a real command — the same rule the `flights` and
-  // `hotels` dispatchers follow (issue #1119).
   if (isHelpArg(args)) {
     deps.log(INFO_USAGE);
     return 0;
@@ -846,8 +810,8 @@ export async function info(
     case "airports-near":
       return infoAirportsNear(config, rest, deps);
     case "target":
-      // Purely local: no token, no network. It belongs in `info` for the same
-      // reason the other four do – it takes only what the user already said.
+      // Purely local: no token, no network. It belongs in `info` because, like
+      // the other four, it takes only what the user already said.
       return infoTarget(config, rest, deps);
     default:
       deps.error(
@@ -858,8 +822,7 @@ export async function info(
 }
 
 /** The shared leaf shape: parse argv (never touching the network on a usage
- *  error), call the API as the user, print JSON. Identical for all four, so it
- *  lives here once rather than four times. */
+ *  error), call the API as the user, print JSON. */
 async function runInfoLeaf<T extends { locale?: string }>(
   config: CliConfig,
   args: string[],
@@ -940,23 +903,17 @@ function infoSchedules(
     SCHEDULES_USAGE,
     parseSchedulesArgs,
     async (token, market, parsed, settings) => {
-      // Same `--site` resolution every market-sensitive command makes: explicit
-      // flag → the stored `site` setting → the account market from the id_token →
-      // nothing, and the API floors to US.
       const resolved = resolveCliSite(parsed.siteCode, settings.site, market);
       const res = await deps.fetchSchedules(
         config.apiBaseUrl,
         token,
         resolved.siteCode ? { ...parsed, siteCode: resolved.siteCode } : parsed,
       );
-      // Stamp the CLI's OWN four-value answer at TOP LEVEL and strip the API's
-      // request-scoped copy from metadata (#1534) — the one rule every knob
-      // follows. The API only sees whether a siteCode arrived, so it reports a
-      // market the CLI resolved from a stored setting or the account token as
-      // `explicit` — which breaks the promise that the output names the
-      // deciding layer. Only the CLI knows that layer, the same reason
-      // `verticals.ts` stamps its own source. The `metadata.siteCode` echo
-      // itself stays.
+      // Stamp the CLI's own site source at top level and strip the API's copy
+      // from metadata (#1534). The API only sees whether a siteCode arrived, so
+      // it reports a market the CLI resolved from a setting or the account
+      // token as `explicit`; only the CLI knows the deciding layer. The
+      // `metadata.siteCode` echo stays.
       return {
         ...stripMetadataSources(res),
         siteCodeSource: resolved.source,
@@ -982,21 +939,18 @@ function infoAirportsNear(
 }
 
 /**
- * `wego info target [--json]` — the resolved backend axis, on both surfaces the
- * rung owes: readable text, and one JSON object for a machine.
+ * `wego info target [--json]`: the resolved backend target, as JSON for a
+ * machine and aligned text for a person.
  *
  * No token and no network, so it answers logged out and against an unreachable
- * backend — which is exactly when someone asks it. It is also the only command
- * that reports `credentialsPath`, because "which store am I keyed to" is the
- * question a target swap raises.
+ * backend, which is when someone needs it. It is the only command that reports
+ * `credentialsPath`, because "which store am I keyed to" is the question a
+ * target swap raises.
  *
- * **stdout is the JSON object on every path**, because `info *` is one of the
- * groups `SKILL.md`'s operating contract promises an agent it may `JSON.parse`
- * unconditionally — a table there would throw for the caller that trusted us.
- * The aligned text is a convenience, so it goes to **stderr**, which is where
- * every other human line in this CLI already goes. `--json` therefore means "the
- * object and nothing else": it suppresses the decoration rather than choosing the
- * format, which is already decided.
+ * stdout is the JSON object on every path, because `SKILL.md` promises an agent
+ * it may `JSON.parse` any `info *` output unconditionally. The aligned text goes
+ * to stderr, like every other human line in this CLI. `--json` only suppresses
+ * that text.
  */
 function infoTarget(
   config: CliConfig,
@@ -1028,12 +982,10 @@ export interface FeedbackDeps extends AuthedCommandDeps {
 }
 
 /**
- * `wego feedback [--rating 1-5] [--category flights|hotels|other] [--message …]`
- * — send feedback about the CLI/API experience to the Wego team. Flag-first (so
- * an agent can call it), enum-validated client-side before any network call.
- * The API records it into a PostHog survey; this prints a short confirmation
- * (not JSON — feedback is a terminal action, not part of a value-threading
- * funnel).
+ * `wego feedback [--rating 1-5] [--category flights|hotels|other] [--message …]`:
+ * send feedback to the Wego team. Flag-first so an agent can call it. The API
+ * records it into a PostHog survey; this prints a short confirmation, not JSON,
+ * because feedback is a terminal action and nothing reads a value from it.
  */
 export async function feedback(
   config: CliConfig,
@@ -1076,12 +1028,12 @@ export interface FlightsDeps extends AuthedCommandDeps {
 }
 
 /**
- * `wego flights <sub> …` — the Book-on-Wego funnel, end to end. Five commands
+ * `wego flights <sub> …`: the Book-on-Wego funnel, end to end. Five commands
  * chain into one journey (mirroring roxana's: search → results → fare families →
- * booking); each step harvests one id from the previous step's output and hands
- * it to the next. `share` is the sixth and chains with nothing — it is stateless,
- * so it can be called at any point. The endpoints are `apps/api`'s
- * `/v1/flights/*` (items 12/13, issues #988 / #1014 / #1326).
+ * booking); each step takes one id from the previous step's output and hands
+ * it to the next. `experience` and `share` chain with nothing, so they can be
+ * called at any point. The endpoints are `apps/api`'s `/v1/flights/*`
+ * (issues #988 / #1014 / #1326).
  *
  *   search <from> <to> <date> [--return]   POST /v1/flights/searches (+ one read)
  *     → { searchId, siteCode, siteCodeSource, settled, results: [{ tripId, stops,
@@ -1089,8 +1041,8 @@ export interface FlightsDeps extends AuthedCommandDeps {
  *       — blocks to settled (#1084): `converged` or `budget_exhausted`, not the empty
  *       first snapshot. `siteCode`/`siteCodeSource` echo the market the API resolved.
  *   results <searchId>                     GET  …/searches/{searchId}/results
- *     → a fresher/deeper ranked page of the SAME lean cards — no `fares[]` on any
- *       row since #1308. A Book-on-Wego fare often arrives on a LATER read, so
+ *     → a fresher/deeper ranked page of the SAME lean cards, with no `fares[]` on
+ *       any row. A Book-on-Wego fare often arrives on a LATER read, so
  *       this is where you re-poll, and `price.hasWegoFare` is the card-level
  *       witness that tells you which trip to open before you fetch it.
  *   trip <tripId> --search <searchId>      GET  …/trips/{tripId}?searchId=…
@@ -1150,8 +1102,7 @@ export interface FlightsDeps extends AuthedCommandDeps {
  * default `wego flights search DXB CAI` sends city codes, so it needs them.
  *
  * `fares` and `booking-link` are Book-on-Wego (`kind:"wego"`) only — partner /
- * airline fares carry their own `handoffUrl`, which since #1308 is read from
- * `trip` rather than from a `search`/`results` page.
+ * airline fares carry their own `handoffUrl`, which is read from `trip`.
  * Every arg is parsed and validated before any network call.
  */
 export async function flights(
@@ -1160,10 +1111,6 @@ export async function flights(
   deps: FlightsDeps,
 ): Promise<number> {
   const sub = args[0];
-  // `help`/`-h`/`--help` is recognized BEFORE sub-command matching so it never
-  // falls into the `default:` "unknown sub-command" arm (issue #1119): usage
-  // goes to stdout with exit 0, like a real command, not an error. Shares the
-  // exact help condition with every leaf (`isHelpArg`) so the two can't drift.
   if (isHelpArg(args)) {
     deps.log(FLIGHTS_USAGE);
     return 0;
@@ -1225,9 +1172,7 @@ async function flightsFares(
       );
     } catch (err) {
       // A 404 (from the upstream 410/404, LV1) means the fare's search context
-      // expired. Point back at the flight search generally, NOT `wego flights
-      // search` — that subcommand does not exist yet (#988), so naming it would
-      // hand the user a command the dispatcher rejects.
+      // expired, so the fix is a fresh search, not a retry.
       if (err instanceof NotFoundError) {
         // Keep the type so the expired fare maps to EXIT.NOT_FOUND (4).
         throw new NotFoundError(
@@ -1299,13 +1244,11 @@ const SHARE_STR_FLAGS: ReadonlyArray<
 /** `--flag → pax-field` with the API's own `[min, max]` (apps/api
  *  flights/schema.ts `linkContextShape` + `createFlightsBodySchema`, which agree),
  *  so an out-of-range count is a usage error before any network call rather than a
- *  400 the caller reads as exit 6. Children and infants legitimately allow 0 - the
- *  API and the URL grammar both accept `0c:0i`.
+ *  400 the caller reads as exit 6. Children and infants allow 0: the API and the
+ *  URL grammar both accept `0c:0i`.
  *
- *  ONE table for every flights parser (`share`, `search`, `booking-link`). They
- *  each had their own before, which is how `booking-link` ended up with no upper
- *  cap at all and why the `--infants` cap of 8 had to be added twice by hand in
- *  this PR. A cap change now lands on all three or none. */
+ *  One table for every flights parser (`share`, `search`, `booking-link`), so a
+ *  cap change lands on all three or none. */
 const FLIGHT_PAX_FLAGS: ReadonlyArray<
   [string, "adults" | "children" | "infants", number, number]
 > = [
@@ -1317,7 +1260,7 @@ const FLIGHT_PAX_FLAGS: ReadonlyArray<
 type FlightPaxTarget = { adults?: number; children?: number; infants?: number };
 
 /** Caps and the `infants <= adults` relationship in one step, so no parser can
- *  take one without the other — `booking-link` had drifted from both. */
+ *  take one without the other. */
 function applyFlightPax(
   single: Map<string, string>,
   target: FlightPaxTarget,
@@ -1446,7 +1389,7 @@ const BOOKING_LINK_LIST_FLAGS = new Set(["--fare-option"]);
 const BOOKING_LINK_BOOL_FLAGS = new Set(["--from-city", "--to-city"]);
 
 /** `--flag → string-field` mappings for the optional booking-link args.
- *  (`--fare-option` is required, not optional — handled separately below.) */
+ *  `--fare-option` is required and handled separately. */
 const BOOKING_LINK_STR_FLAGS: ReadonlyArray<
   [string, "searchId" | "toDate" | "cabin" | "siteCode" | "currency" | "locale"]
 > = [
@@ -1560,8 +1503,6 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
 const MAX_PAGE = 100;
 const MAX_PAGE_SIZE = 50;
 
-/** Split a comma-separated list-flag value (`--types`, `--airlines`, …) into
- *  trimmed, non-empty parts. */
 function splitCsv(value: string): string[] {
   return value
     .split(",")
@@ -1571,9 +1512,8 @@ function splitCsv(value: string): string[] {
 
 /**
  * Turn `wego places` argv (everything after the command) into a `PlacesQuery`.
- * Deliberately tiny — the CLI uses plain `process.argv`, no arg-parsing library.
- * `--types` may be repeated and/or comma-separated (a `list` flag). Throws a
- * usage `Error` on a missing/extra query or a malformed flag.
+ * `--types` may be repeated and/or comma-separated. Throws a usage `Error` on a
+ * missing/extra query or a malformed flag.
  */
 export function parsePlacesArgs(args: string[]): PlacesQuery {
   const { positional, single, list } = tokenizeFlagSets(
@@ -1620,9 +1560,9 @@ const MAX_SCHEDULES_PAGE = 20;
  *  (the apps are self-contained, so this is a mirror, not an import). */
 const NEARBY_TYPES = new Set(["airport", "city", "state", "district", "hotel"]);
 
-/** A 2-letter ISO 3166-1 alpha-2 country code, uppercased. Validated locally so a
- *  typo costs exit 2 rather than a request — and because BOTH upstreams behind
- *  these commands answer an unknown country with an empty list, not an error. */
+/** Validated locally so a typo costs exit 2 rather than a request, and because
+ *  both upstreams behind these commands answer an unknown country with an empty
+ *  list, not an error. */
 function parseCountryCode(raw: string, label: string, usage: string): string {
   const code = raw.trim().toUpperCase();
   if (!/^[A-Z]{2}$/.test(code)) {
@@ -1633,7 +1573,6 @@ function parseCountryCode(raw: string, label: string, usage: string): string {
   return code;
 }
 
-/** A 3-letter city or airport code, uppercased. */
 function parsePlaceCode(raw: string, label: string, usage: string): string {
   const code = raw.trim().toUpperCase();
   if (!/^[A-Z]{3}$/.test(code)) {
@@ -1644,9 +1583,9 @@ function parsePlaceCode(raw: string, label: string, usage: string): string {
   return code;
 }
 
-/** An ISO `YYYY-MM-DD` date that is also a real calendar day — `2026-02-31`
- *  matches the pattern and is not a date, and the upstream would answer it with
- *  an empty list rather than an error. */
+/** An ISO `YYYY-MM-DD` date that is also a real calendar day: `2026-02-31`
+ *  matches the pattern, and the upstream would answer it with an empty list
+ *  rather than an error. */
 function parseIsoDate(raw: string, flag: string): string {
   const value = raw.trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -1662,7 +1601,6 @@ function parseIsoDate(raw: string, flag: string): string {
   return value;
 }
 
-/** Exactly one positional, or a usage error naming the extra. */
 function onlyPositional(positional: string[], usage: string): string {
   const first = positional[0];
   if (!first) throw new Error(usage);
@@ -1799,9 +1737,8 @@ export function parseAirportsNearArgs(args: string[]): NearbyPlacesQuery {
   );
   const location = onlyPositional(positional, AIRPORTS_NEAR_USAGE);
 
-  // Resolved BY SHAPE, the same idiom `hotels search` uses for its positional: a
-  // `lat,lng` pair is coordinates, anything else must be a 3-letter code. No flag
-  // needed, and no way to send a code where coordinates were meant.
+  // Resolved by shape, as `hotels search` does for its positional: a `lat,lng`
+  // pair is coordinates, anything else must be a 3-letter code.
   const query: NearbyPlacesQuery = nearbyLocationFields(location);
 
   const types = list.get("--types") ?? [];
@@ -1822,12 +1759,9 @@ export function parseAirportsNearArgs(args: string[]): NearbyPlacesQuery {
 }
 
 /**
- * `lat,lng` → coordinates; otherwise a place code. Mirrors `locationFields` (the
- * hotels positional) minus the hotelId branch, which has no meaning here — and
- * mirrors its **strictness** too: the shape is matched with a regex rather than
- * split-and-`Number`, because `Number("")` is `0`. A split-based check accepts
- * `51.47,` as latitude 51.47 / longitude 0 and sends the user a point in the sea,
- * which the API cannot reject either — 0 is a legal coordinate.
+ * `lat,lng` is matched with a regex rather than split-and-`Number`, because
+ * `Number("")` is `0`: a split-based check accepts `51.47,` as longitude 0, a
+ * legal coordinate the API cannot reject.
  */
 const LAT_LNG = /^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/;
 
@@ -1865,11 +1799,9 @@ const FEEDBACK_CATEGORIES = new Set(["flights", "hotels", "other"]);
 const MAX_FEEDBACK_MESSAGE = 2000;
 
 /**
- * Turn `wego feedback` argv into a `FeedbackBody`. Flag-only (no positionals);
- * enum-validates `--rating` (1-5) and `--category` before any network call, and
- * requires at least one of `--rating`/`--message` (a bare `--category` carries
- * no feedback — same rule the API enforces). Throws a usage `Error` on any
- * malformed/extra input.
+ * Turn `wego feedback` argv into a `FeedbackBody`. Requires at least one of
+ * `--rating`/`--message`, because a bare `--category` carries no feedback (the
+ * API enforces the same rule).
  */
 export function parseFeedbackArgs(args: string[]): FeedbackBody {
   const { positional, single } = tokenizeFlagSets(
@@ -1911,13 +1843,6 @@ export function parseFeedbackArgs(args: string[]): FeedbackBody {
   return body;
 }
 
-/** Parse a strictly-decimal integer CLI arg in `[min, max]`. Rejects non-decimal
- *  forms (`0x10`, `1e3`, padded/whitespace) that `Number()` would silently
- *  coerce. `min` defaults to 1 (positive); pass `min: 0` for counts that
- *  legitimately allow zero (e.g. `--children`/`--infants`, which the API accepts
- *  as `0c:0i`). `max` is an optional inclusive upper bound. The single
- *  whole-number parser for every CLI command (flights counts/pages included —
- *  the former `parseCount` was merged in, CLI-2). */
 /** The API's `infants <= adults` tightening, applied locally so it stays a usage
  *  error (exit 2) instead of a 400 read as exit 6. The defaults mirror the
  *  schema's, since an omitted flag is still a resolved count upstream. */
@@ -1927,11 +1852,10 @@ function assertInfantsWithinAdults(adults = 1, infants = 0): void {
   }
 }
 
-/** Parse a bounded DECIMAL flag value (`--min-guest-rating 8.5`), rejecting the
- *  three shapes a bare `Number()` would let through to a pointless request: a
+/** Parse a bounded decimal flag value (`--min-guest-rating 8.5`), rejecting a
  *  non-numeric string, a value outside the inclusive range, and the non-finite
- *  literals (`Infinity`, `NaN`) that `Number()` happily produces. Integer flags
- *  keep `parseIntArg`; this exists because a rating is genuinely fractional. */
+ *  literals (`Infinity`, `NaN`) that `Number()` produces. Integer flags use
+ *  `parseIntArg`; this exists because a rating is fractional. */
 function parseRangedFloatArg(
   raw: string,
   name: string,
@@ -1945,6 +1869,10 @@ function parseRangedFloatArg(
   return n;
 }
 
+/** Parse a strictly decimal integer in `[min, max]`, rejecting forms (`0x10`,
+ *  `1e3`, padded/whitespace) that `Number()` would silently coerce. `min: 0` is
+ *  for counts that allow zero (`--children`/`--infants`, which the API accepts
+ *  as `0c:0i`). The one whole-number parser for every command. */
 function parseIntArg(raw: string, name: string, max?: number, min = 1): number {
   if (!/^\d+$/.test(raw) || Number(raw) < min) {
     throw new Error(
@@ -2021,7 +1949,6 @@ function parseChildrenAges(raw: string): number[] {
   });
 }
 
-/** Apply the shared occupancy/site/currency/locale flags onto a search body. */
 function applyOccupancyFlags(
   body: HotelsSearchBody,
   flags: Map<string, string>,
@@ -2029,10 +1956,8 @@ function applyOccupancyFlags(
   const adults = flags.get("--adults");
   if (adults) body.adults = parseIntArg(adults, "--adults");
   const children = flags.get("--children");
-  // children legitimately allows 0 (the API schema is min-0); pass min=0 so an
-  // explicit `--children 0` forwards through instead of erroring as "positive".
-  // Cap at MAX_CHILDREN (matching flights' `--children` bound) so an over-count
-  // fails fast locally rather than 400-ing upstream (issue #1114).
+  // min=0 because the API schema allows `--children 0`. Capped at MAX_CHILDREN
+  // so an over-count fails locally rather than 400-ing upstream (issue #1114).
   if (children !== undefined)
     body.children = parseIntArg(children, "--children", MAX_CHILDREN, 0);
   // `--children-ages` is validated against `--children`: it requires an explicit
@@ -2144,16 +2069,15 @@ async function hotelsSearch(
     deps.error(errorMessage(err));
     return EXIT.USAGE;
   }
-  // ①+③ through the shared engine: create, block-to-settled on candidate-count
-  // convergence, stamp `settled` (issue #1084). The `HOTELS` vertical owns the
-  // per-vertical pieces (site resolution, the occupancy echo, the empty-page
-  // note); the create + settle-read run in SEPARATE authed calls (inside
-  // `runSearch`) so a mid-settle 401 never re-POSTs a second search.
-  // Only `locale` is merged here. `currency` and `site` are resolved INSIDE the
+  // The shared engine creates, blocks until settled on candidate-count
+  // convergence, and stamps `settled` (issue #1084). The create and the settle
+  // reads run in separate authed calls so a mid-settle 401 never re-POSTs a
+  // second search.
+  // Only `locale` is merged here. `currency` and `site` are resolved inside the
   // vertical, which owns both source stamps: merging a stored currency into the
-  // body first is what erased its rung before issue #1400. The vertical still
-  // derives the post-create read from the value it resolved, so the read cannot
-  // come back in a different unit than the search was priced in.
+  // body would erase its rung (issue #1400). The vertical derives the
+  // post-create read from the value it resolved, so the read cannot come back
+  // in a different currency than the search was priced in.
   const settings = await deps.loadSettings();
   const code = await runSearch(
     HOTELS,
@@ -2297,11 +2221,9 @@ async function hotelsShare(
 }
 
 /** Enum/bound guards for the hotels `results`/`details` flags, mirroring
- *  apps/api hotels/schema.ts (pollHotelsQuerySchema) so the SAME user typo that
- *  flights catches locally (`--page abc`, `--sort cheapest`) also
- *  fails here as a usage error (exit 2) BEFORE any network call, instead of
- *  round-tripping to the API's 400 `validation_failed` (exit 6). Page/page-size
- *  reuse the shared MAX_PAGE/MAX_PAGE_SIZE caps. */
+ *  apps/api hotels/schema.ts (pollHotelsQuerySchema), so a typo (`--page abc`,
+ *  `--sort cheapest`) is a usage error (exit 2) before any network call rather
+ *  than the API's 400 `validation_failed` (exit 6). */
 const HOTEL_SORTS = new Set([
   "relevance",
   "price_asc",
@@ -2312,25 +2234,20 @@ const HOTEL_SORTS = new Set([
   "distance_asc",
 ]);
 /** The guest cohorts `--guest-type` accepts, mirroring the published
- *  `HOTEL_GUEST_RATING_GROUPS`. Deliberately NOT the `hotels reviews`
- *  `--guest-type` vocabulary: that command reads a different upstream and spells
- *  the cohorts differently (`family_with_children`, `solo_traveller`, and an
+ *  `HOTEL_GUEST_RATING_GROUPS`. Not the `hotels reviews` `--guest-type`
+ *  vocabulary: that command reads a different upstream and spells the cohorts
+ *  differently (`family_with_children`, `solo_traveller`, and an
  *  `extended_group` with no counterpart here), so one shared set would accept a
- *  value this read cannot answer. Enum-checked locally for the same reason
- *  `--sort` is — a typo fails before the call, naming the four valid values. */
+ *  value this read cannot answer. */
 const HOTEL_GUEST_TYPES = new Set(["business", "couple", "family", "solo"]);
 /** The `default|detail` projection axis, shared by the three entity reads that
  *  publish it: `GET /v1/flights/trips/{tripId}`, `GET /v1/hotels/{hotelId}` and
- *  `…/reviews` (`apps/api/AGENTS.md` → Wire conventions). ONE constant, because
- *  three copies could drift into three different `--view` vocabularies for one
- *  published enum. Deliberately NOT used for the two `results` reads: their `view`
- *  is a one-value enum (`card`) since #1308, so a flag there would accept only the
- *  default it already sends. */
+ *  `…/reviews` (`apps/api/AGENTS.md`, Wire conventions). One constant so the
+ *  three cannot drift. Not used for the two `results` reads: their `view` is a
+ *  one-value enum (`card`), so a flag there would accept only the default. */
 const DETAIL_VIEWS = new Set(["default", "detail"]);
 const BOOL_FLAG_VALUES = new Set(["true", "false"]);
 
-/** Reject a single flag value outside `allowed`, mirroring how flights' `--sort`
- *  guards its value (same message shape) — a typo fails locally before any call. */
 function validateEnumValue(
   value: string,
   allowed: Set<string>,
@@ -2346,13 +2263,12 @@ function validateEnumValue(
  *  value unchanged when valid. `--page`/`--page-size` are int-parsed against the
  *  API caps; `--sort`/`--guest-type`/`--refundable`/`--deals-only` are enum-checked;
  *  `--min-guest-rating` is range-checked (0-10), so `abc`, `-1`, `11` and
- *  `Infinity` fail here rather than spending a request to be told the same thing.
- *  Any other flag (star/price/text filters) passes through untouched — the API
- *  validates those. `--min-review-score` is among them and takes the SAME 0-10
- *  range unchecked; that gap predates this flag and is left alone here rather
- *  than widened into an unrelated behaviour change.
+ *  `Infinity` fail without a request. Any other flag (star/price/text filters)
+ *  passes through for the API to validate, including `--min-review-score`,
+ *  whose 0-10 range is deliberately left unchecked here to avoid an unrelated
+ *  behaviour change.
  *
- *  The guest-type/min-guest-rating PAIRING rule stays with the API on purpose: it
+ *  The guest-type/min-guest-rating pairing rule stays with the API on purpose: it
  *  is cross-field, so a second copy here could drift from the one the API
  *  actually enforces, and the API already answers it with a 400 naming the
  *  missing half. */
@@ -2419,8 +2335,6 @@ async function hotelsResults(
   let wait = false;
   const query: HotelResultsQuery = {};
   try {
-    // `--wait` is a valueless bool; the value flags are the RESULTS_FLAG_TO_PARAM
-    // keys. `--wait=x` throws "takes no value" (handled by the shared tokenizer).
     const { positional, single, bools } = tokenizeFlagSets(
       args,
       HOTELS_RESULTS_USAGE,
@@ -2437,8 +2351,6 @@ async function hotelsResults(
       );
     }
     for (const [flag, value] of single) {
-      // Validate the guarded flags locally (page/page-size/sort/refundable)
-      // so the same typo flights catches exits 2 here too, not the API's 400 → 6.
       query[RESULTS_FLAG_TO_PARAM[flag]] = validateHotelResultsFlag(
         flag,
         value,
@@ -2448,16 +2360,12 @@ async function hotelsResults(
     deps.error(errorMessage(err));
     return EXIT.USAGE;
   }
-  // ②+③ through the shared engine: `--wait` runs the SAME count-convergence
-  // settle `hotels search` uses (so both paths share one recipe, symmetric with
-  // flights — CLI-5); a bare read is a single snapshot stamped `unsettled`
-  // (issue #1084). The `HOTELS` vertical owns the 404-translation + empty-page
-  // note.
-  // The read that used to silently revert to the API's USD default: it now
-  // inherits the stored currency, so a page read carries the same unit the
-  // search was created in (issue #1386). `site` cannot change on a read, so no
-  // site pair is emitted here - but the currency rung still decided this page's
-  // unit, so it is reported the way the two `search`es report theirs (#1400).
+  // `--wait` runs the same count-convergence settle as `hotels search`; a bare
+  // read is a single snapshot stamped `unsettled` (issue #1084).
+  // The read inherits the stored currency so it matches the currency the search
+  // was created in rather than the API's USD default (issue #1386). `site`
+  // cannot change on a read, so no site pair is emitted, but the currency rung
+  // is reported as the `search`es report theirs (#1400).
   const settings = await deps.loadSettings();
   const currency = resolveCliCurrency(query.currency, settings.currency);
   return runResults(
@@ -2507,13 +2415,8 @@ async function hotelsDetails(
     const locale = single.get("--locale");
     if (locale) query.locale = locale;
     const view = single.get("--view");
-    // Guard --view (default|detail) locally — a typo exits 2
-    // before the network call rather than the API's 400 → exit 6.
     if (view) query.view = validateEnumValue(view, DETAIL_VIEWS, "--view");
   } catch (err) {
-    // Print the caught message (bad hotelId's "must be a positive integer",
-    // an unknown flag, or the --view guard) like every other command, instead of
-    // swallowing it and printing bare usage (CLI-3).
     deps.error(errorMessage(err));
     return EXIT.USAGE;
   }
@@ -2550,9 +2453,8 @@ const REVIEW_GUEST_TYPES = new Set([
 ]);
 
 /** Flag → published query-parameter name. Typed against the contract's own
- *  parameter set (Check C), so the kebab/camel split below is the API's, not a
- *  guess: `guest-type` is a net-new filter knob, `pageSize` mirrors a field the
- *  surface already accepts. */
+ *  parameter set (Check C), so the kebab/camel mix below (`guest-type`,
+ *  `pageSize`) is the API's, not a guess. */
 const REVIEWS_FLAG_TO_PARAM: Record<string, WireQuery<"getHotelReviews">> = {
   "--topics": "topics",
   "--guest-type": "guest-type",
@@ -2704,11 +2606,10 @@ export function parseRoomsArgs(args: string[]): RoomsPlan {
     flagCheckOut,
   );
   const createBody: HotelsSearchBody = { hotelId, checkIn, checkOut };
-  // `applyOccupancyFlags` is the SINGLE writer of --site/--currency/--locale on
-  // the create body: it copies all three, so an explicit flag reaches the create
-  // as well as the rates read and never loses to a stored setting for half the
-  // operation. Do NOT re-copy them here — two reviewers read this function alone
-  // and reported the flags as dropped. `integration/hotels.test.ts` pins all three.
+  // `applyOccupancyFlags` is the single writer of --site/--currency/--locale on
+  // the create body, so an explicit flag reaches the create as well as the
+  // rates read. Do not re-copy them here; they are not dropped.
+  // `integration/hotels.test.ts` pins all three.
   applyOccupancyFlags(createBody, single);
   return { hotelId, createBody, ratesQuery };
 }
@@ -2736,15 +2637,14 @@ function resolveRoomsDates(
 }
 
 /** Resolve the searchId for a rooms read: reuse `--search`, else mint a
- *  hotel-scoped search (an item-14 create) and return its id. */
+ *  hotel-scoped search and return its id. */
 async function resolveRoomsSearchId(
   config: CliConfig,
   deps: HotelsDeps,
   plan: RoomsPlan,
   settings: UserSettings,
-  /** The currency the caller already resolved, so the mint and the rates read it
-   *  feeds go out in ONE unit — the invariant the merge-before-create held while
-   *  `applyPreferences` filled both from the same file. */
+  /** The currency the caller already resolved, so the mint and the rates read
+   *  it feeds use the same currency. */
   currency: string | undefined,
 ): Promise<
   | {
@@ -2756,9 +2656,9 @@ async function resolveRoomsSearchId(
     }
   | { ok: false; code: number }
 > {
-  // Reusing an existing --search does no create, so there's no occupancy echo —
-  // and no market to resolve either: that search already fixed one, so a stored
-  // `site` must NOT reach this path (it would claim a market the rates aren't in).
+  // Reusing an existing --search does no create, so there is no occupancy echo
+  // and no market to resolve: that search already fixed one, so a stored `site`
+  // must not reach this path (it would claim a market the rates are not in).
   if (plan.searchId) return { ok: true, searchId: plan.searchId };
   let siteSource: CliSiteSource = "default";
   const created = await withAccessToken(config, deps, (token, market) => {
@@ -2767,8 +2667,6 @@ async function resolveRoomsSearchId(
       settings,
       ["locale"],
     );
-    // Same --site resolution as the other funnels: explicit → stored setting →
-    // id_token market → nothing (API floors US).
     const resolvedSite = resolveCliSite(cb.siteCode, settings.site, market);
     siteSource = resolvedSite.source;
     return deps.createHotelSearch(config.apiBaseUrl, token, {
@@ -2783,11 +2681,10 @@ async function resolveRoomsSearchId(
     ok: true,
     searchId: created.value.searchId,
     occupancy: created.value.occupancy,
-    // Carry the market too. This form MINTS a search, so a stored `site` can
-    // decide the point of sale, and an unreported market is exactly the silent
-    // decision issue #1386 exists to remove. Emitted as a PAIR, like the two
-    // search verticals: a legacy API that omits the echo must not leave an
-    // orphan source behind.
+    // Carry the market too: this form mints a search, so a stored `site` can
+    // decide the point of sale, and that must be reported (issue #1386).
+    // Emitted as a pair, like the search verticals, so a legacy API that omits
+    // the echo does not leave an orphan source.
     ...(created.value.siteCode === undefined
       ? {}
       : { siteCode: created.value.siteCode, siteCodeSource: siteSource }),
@@ -2863,8 +2760,8 @@ async function hotelsRooms(
   // caller-supplied --search was reused (no create) or on a legacy API.
   printJson(
     {
-      // Both rooms forms are priced, so both report the currency rung — unlike
-      // the market, which only the minting form may decide.
+      // Both rooms forms are priced, so both report the currency rung, unlike
+      // the market, which only the minting form decides.
       ...withCurrencyProvenance(snapshot, currency.source),
       settled: state,
       ...(resolved.occupancy === undefined
@@ -2957,8 +2854,6 @@ async function hotelsBookingLink(
   const settings = await deps.loadSettings();
   const linkQuery = applyPreferences(query, settings, ["locale"]);
   const result = await withAccessToken(config, deps, (token, market) => {
-    // Same --site resolution: explicit → stored setting → id_token market →
-    // nothing (API US floor).
     const site = resolveCliSite(query.siteCode, settings.site, market).siteCode;
     return deps.fetchHotelBookingLink(
       config.apiBaseUrl,
@@ -2972,16 +2867,12 @@ async function hotelsBookingLink(
   return printJson(result.value, deps);
 }
 
-/** `wego hotels <sub> ...` — dispatch to the sub-command handlers. */
 export async function hotels(
   config: CliConfig,
   args: string[],
   deps: HotelsDeps,
 ): Promise<number> {
   const sub = args[0];
-  // Same help short-circuit as `flights` (issue #1119): recognized BEFORE
-  // sub-command matching, so it never falls into the `default:` arm. Uses the
-  // shared `isHelpArg` so the group and leaf levels can't drift.
   if (isHelpArg(args)) {
     deps.log(HOTELS_USAGE);
     return 0;
@@ -3026,14 +2917,11 @@ async function flightsSearch(
     deps.error(errorMessage(err));
     return EXIT.USAGE;
   }
-  // ①+③ through the shared engine (issue #1084): `flights search` now BLOCKS to
-  // settled — the single behaviour change that removes the flights↔hotels
-  // asymmetry — and stamps `settled`. The `FLIGHTS` vertical (no completion flag
-  // → rides `snapshotFareCount` + item-presence) owns the site resolution and
-  // the empty-page hint; create + settle-read run in SEPARATE authed calls
-  // (inside `runSearch`) so a mid-settle 401 never re-POSTs a second search.
-  // Locale from the stored settings (see `hotelsSearch`); the vertical resolves
-  // `site` AND `currency` and stamps both sources.
+  // The shared engine blocks until settled and stamps `settled` (issue #1084).
+  // The create and the settle reads run in separate authed calls so a
+  // mid-settle 401 never re-POSTs a second search. Only `locale` is merged
+  // here; the vertical resolves `site` and `currency` and stamps both sources
+  // (see `hotelsSearch`).
   const settings = await deps.loadSettings();
   const code = await runSearch(
     FLIGHTS,
@@ -3061,14 +2949,12 @@ async function flightsResults(
     deps.error(errorMessage(err));
     return EXIT.USAGE;
   }
-  // ②+③ through the shared engine: `--wait` blocks to settled on the same
-  // count-convergence rule hotels uses (now one loop, not two); a bare read is a
-  // single snapshot stamped `unsettled` (issue #1084). The whole `--wait` settle
-  // runs inside one authed call, so a mid-settle 401 refresh restarts the
-  // (idempotent) poll — worst case ~doubling the wait, accepted for simplicity.
-  // Same as hotels: the bare read inherits the stored currency instead of
-  // falling back to USD (the 216 SAR → 58 USD measurement in issue #1386), and
-  // reports which rung that was (#1400).
+  // `--wait` blocks until settled; a bare read is a single snapshot stamped
+  // `unsettled` (issue #1084). The whole `--wait` settle runs inside one authed
+  // call, so a mid-settle 401 refresh restarts the (idempotent) poll: at worst
+  // it doubles the wait, accepted for simplicity.
+  // The read inherits the stored currency instead of falling back to USD
+  // (issue #1386), and reports which rung that was (#1400).
   const settings = await deps.loadSettings();
   const currency = resolveCliCurrency(parsed.query.currency, settings.currency);
   return runResults(
@@ -3171,17 +3057,15 @@ async function flightsExperience(
 }
 
 /** Rethrow a 401 untouched (so `withAccessToken` can refresh + retry) but turn an
- *  API 404 into a friendly message. Any other error passes through. Exported so
- *  the vertical configs (`verticals.ts`) reuse the SAME 404-translation for their
- *  results reads. */
+ *  API 404 into a friendly message. Any other error passes through. Exported for
+ *  `verticals.ts`' results reads. */
 export function translateNotFound(message: string): (err: unknown) => never {
   return (err) => {
     if (err instanceof UnauthorizedError) throw err;
-    // The shared `authedJsonGet` throws a typed `NotFoundError` on a 404 (an
-    // expired search / unknown trip); older callers matched the generic
-    // `failed: 404` message, so accept both. Re-throw a typed `NotFoundError`
-    // (not a plain `Error`) so the friendly message still maps to
-    // EXIT.NOT_FOUND (4) — a script can tell an expired id from a generic fault.
+    // `authedJsonGet` throws a typed `NotFoundError` on a 404; other paths throw
+    // a plain `Error` with a `failed: 404` message, so accept both. Re-throw a
+    // typed `NotFoundError` so the message still maps to EXIT.NOT_FOUND (4) and
+    // a script can tell an expired id from a generic fault.
     if (
       err instanceof NotFoundError ||
       (err instanceof Error && /failed: 404\b/.test(err.message))
@@ -3216,16 +3100,13 @@ export async function logout(
 
 // --- flights arg parsing ----------------------------------------------------
 
-/** The `--cabin` values, typed as the contract's own cabin set (Check C, #1300).
- *  `ReadonlySet<FlightCabin>` is what makes `CABINS.has(x)` narrow `x` to a valid
- *  cabin, so the client-side guard and the API's enum cannot drift.
+/** The `--cabin` values, typed as the contract's own cabin set (Check C, #1300),
+ *  so the client-side guard and the API's enum cannot drift.
  *
- *  Built from a `Record<FlightCabin, true>` because that is what makes the drift
- *  claim symmetric. `new Set<FlightCabin>([…])` only catches a REMOVED or renamed
- *  member: any subset satisfies it, so a cabin ADDED to the contract would
- *  compile here and the CLI would reject a value the API accepts (exit 2, no
- *  network call, a user blocked on a valid cabin). A missing record key is a
- *  compile error. */
+ *  Built from a `Record<FlightCabin, true>` rather than `new Set<FlightCabin>([…])`
+ *  because a Set literal accepts any subset: a cabin added to the contract would
+ *  still compile, and the CLI would reject a value the API accepts. A missing
+ *  record key is a compile error. */
 const CABIN_MEMBERS: Record<FlightCabin, true> = {
   economy: true,
   premium_economy: true,
@@ -3236,7 +3117,6 @@ const CABINS: ReadonlySet<FlightCabin> = new Set(
   Object.keys(CABIN_MEMBERS) as FlightCabin[],
 );
 
-/** Narrow a raw `--cabin` value to a cabin the API accepts. */
 function isFlightCabin(value: string): value is FlightCabin {
   return (CABINS as ReadonlySet<string>).has(value);
 }
@@ -3251,7 +3131,7 @@ const FLIGHT_SORTS = new Set([
 ]);
 
 // Client-side enum guards mirroring apps/api flights/schema.ts
-// (pollFlightsQuerySchema) — validated before any network call, like --sort.
+// (pollFlightsQuerySchema), validated before any network call.
 const FLIGHT_DEPARTURE_BLOCKS = new Set([
   "midnight",
   "morning",
@@ -3262,10 +3142,9 @@ const FLIGHT_BOOKING_TYPES = new Set(["wego", "airline"]);
 const FLIGHT_AIRLINES_MATCHES = new Set(["any", "all"]);
 
 /** A minute-of-day (0-1439) `min-max` outbound-departure range. `min > max`
- *  wraps midnight (e.g. `1320-360` = 22:00–06:00), matching the API's
- *  `departureMinutes`/`inRange` semantics. */
-/** `flag` names the offending flag in the message: four flags share this shape,
- *  so a fixed `--departure-range` would send the caller to the wrong one. */
+ *  wraps midnight (e.g. `1320-360` = 22:00-06:00), matching the API's
+ *  `departureMinutes`/`inRange` semantics. `flag` names the offending flag in
+ *  the message, because four flags share this shape. */
 function validateDepartureRange(
   raw: string,
   flag = "--departure-range",
@@ -3281,8 +3160,6 @@ function validateDepartureRange(
   return `${Number(parts[0])}-${Number(parts[1])}`;
 }
 
-/** Reject any list value outside `allowed`, mirroring how `--sort` guards its
- *  single value — so a typo fails locally before any network call. */
 function validateEnumList(
   values: string[],
   allowed: Set<string>,
@@ -3307,11 +3184,9 @@ interface FlagTokens {
   bools: Set<string>;
 }
 
-/** Generic `--flag[=value]` tokenizer. `single`/`list` name the recognized flags;
- *  an unknown flag or a flag missing its value throws a usage error. */
 /** Resolve a `--flag`'s value at index `i`: inline (`--flag=v`) or the next arg
- *  (`--flag v`, only when it isn't itself an option). Returns the value + the
- *  index to continue scanning from. Throws when the value is missing. */
+ *  (`--flag v`, only when it is not itself an option). Returns the value and the
+ *  index to continue scanning from. */
 function readFlagValue(
   args: string[],
   i: number,
@@ -3330,7 +3205,6 @@ function readFlagValue(
   return { value, next: i + 1 };
 }
 
-/** Mutable accumulator for {@link tokenizeFlagSets}. */
 interface FlagAcc {
   positional: string[];
   single: Map<string, string>;
@@ -3338,10 +3212,9 @@ interface FlagAcc {
   bools: Set<string>;
 }
 
-/** The flag-name sets a token is classified against. A name in `known` that is
- *  neither `bool` nor `list` is a single-valued flag — there is no separate
- *  `single` set to check, so it isn't carried here. `usage` is appended to the
- *  unknown-flag error (the one unified error format, CLI-2). */
+/** A name in `known` that is neither `bool` nor `list` is a single-valued flag,
+ *  so there is no separate `single` set. `usage` is appended to the unknown-flag
+ *  error. */
 interface FlagSets {
   known: Set<string>;
   list: ReadonlySet<string>;
@@ -3383,13 +3256,11 @@ function consumeFlagToken(
 }
 
 /**
- * The single argv tokenizer for every `wego` command (CLI-2 — collapsed the four
- * former tokenizers `tokenizePlacesArgs`/`tokenizeFlags`/`parseFlagArgs`/this
- * onto one). Splits argv into positionals + single-valued flags (`--flag value`/
- * `--flag=value`, last wins) + repeatable comma-split `list` flags (`--airlines
- * SQ,TR`, `--types city,airport`) + valueless `bool` flags (`--wait`; `--wait=x`
- * throws). `list`/`bool` default empty for commands that use neither. An unknown
- * flag throws the one unified error: `Unknown option: --x` + the command's usage.
+ * The argv tokenizer for every `wego` command. Splits argv into positionals,
+ * single-valued flags (`--flag value` / `--flag=value`, last wins), repeatable
+ * comma-split `list` flags (`--airlines SQ,TR`), and valueless `bool` flags
+ * (`--wait`; `--wait=x` throws). An unknown flag throws `Unknown option: --x`
+ * plus the command's usage.
  */
 function tokenizeFlagSets(
   args: string[],
@@ -3459,8 +3330,7 @@ export function parseFlightSearchArgs(args: string[]): CreateFlightSearchBody {
   if (toDate) body.toDate = parseIsoDate(toDate, "--return");
   const cabin = single.get("--cabin");
   if (cabin) {
-    // `has` on a `ReadonlySet<FlightCabin>` is a type guard, so the assignment
-    // below needs no cast — the check and the contract are one thing.
+    // `isFlightCabin` is a type guard, so the assignment below needs no cast.
     if (!isFlightCabin(cabin)) {
       throw new Error(`--cabin must be one of ${[...CABINS].join(", ")}`);
     }
@@ -3476,12 +3346,12 @@ export function parseFlightSearchArgs(args: string[]): CreateFlightSearchBody {
   return body;
 }
 
-/** Mirror the API's page/pageSize bounds (apps/api flights/schema.ts
- *  DEFAULT_PAGE_SIZE/MAX_PAGE_SIZE) so this help text can't drift from what
- *  the server actually enforces (issue #1120). */
 // Mirrors the API's 7-digit bound on the layover params.
 const MAX_STOPOVER_DURATION = 9_999_999;
 
+/** Mirror the API's page/pageSize bounds (apps/api flights/schema.ts
+ *  DEFAULT_PAGE_SIZE/MAX_PAGE_SIZE) so the help text matches what the server
+ *  enforces (issue #1120). */
 const FLIGHTS_MAX_PAGE = 100;
 const FLIGHTS_DEFAULT_PAGE_SIZE = 10;
 const FLIGHTS_MAX_PAGE_SIZE = 50;
@@ -3652,7 +3522,6 @@ export function parseFlightResultsArgs(args: string[]): {
     FLIGHT_AIRLINES_MATCHES,
   );
   query.sameAirline = enumFlag(single, "--same-airline", BOOL_FLAG_VALUES);
-  // The four leg/clock window flags, all the same `min-max` minute-of-day shape.
   for (const [flag, field] of [
     ["--departure-range", "departureRange"],
     ["--arrival-range", "arrivalRange"],
@@ -3708,15 +3577,11 @@ export function parseFlightTripArgs(args: string[]): {
   if (currency) out.currency = currency;
   const locale = single.get("--locale");
   if (locale) out.locale = locale;
-  // Guarded locally against the published enum, exactly as `hotels details` guards
-  // the same axis: a typo exits 2 with the legal values named, rather than costing
-  // a round trip to read a 400 back.
   const view = single.get("--view");
   if (view) out.view = validateEnumValue(view, DETAIL_VIEWS, "--view");
   return out;
 }
 
-/** Pretty-print a command's result as JSON (consistent output across commands). */
 function printJson(value: unknown, deps: CommandIo): number {
   deps.log(JSON.stringify(value, null, 2));
   return 0;
@@ -3737,11 +3602,10 @@ function errorMessage(err: unknown): string {
 }
 
 /**
- * Whether `apiBaseUrl` points at a machine-local `apps/api` — so a connection
- * failure warrants the "is the local api running?" hint rather than a
- * network/URL hint. Covers `localhost`, the loopback IPs, and `*.localhost`
- * (the portless dev subdomains). A malformed URL is treated as non-local
- * (nothing to lose — it just omits the local-only hint).
+ * Whether `apiBaseUrl` points at a machine-local `apps/api`, so a connection
+ * failure gets the "is the local api running?" hint. Covers `localhost`, the
+ * loopback IPs, and `*.localhost` (the portless dev subdomains). A malformed
+ * URL is treated as non-local, which only omits the hint.
  */
 function isLoopbackHost(apiBaseUrl: string): boolean {
   let host: string;
@@ -3763,19 +3627,17 @@ function isLoopbackHost(apiBaseUrl: string): boolean {
  * Turn an error from an authed API call into an actionable one-line message.
  * Two cases get a concrete next step instead of a raw error:
  *
- * - **Unreachable** (`ApiUnreachableError`): name the host, and when it's a
- *   local target add the `bun dev` hint — the #1 first-run stumble is calling
- *   the CLI before `apps/api` is up (its default target is `localhost:3001`).
- * - **Rejected (401)** (`UnauthorizedError`): the server answered but refused
- *   the credential. After a login that just succeeded, "run login again" is
- *   misleading — the usual cause is a token issued for a *different*
- *   environment than `WEGO_API_URL` (e.g. staging token vs prod API), so say
- *   that before suggesting a re-login.
+ * - **Unreachable** (`ApiUnreachableError`): name the host, and for a local
+ *   target add the `bun dev` hint, since the most common first-run mistake is
+ *   calling the CLI before `apps/api` is up.
+ * - **Rejected (401)** (`UnauthorizedError`): after a login that just
+ *   succeeded, "run login again" is misleading. The usual cause is a token
+ *   issued for a different environment than `WEGO_API_URL` (e.g. staging token
+ *   vs prod API), so say that before suggesting a re-login.
  *
- * Anything else (typed `ApiHttpError`, timeout, …) is delegated to
- * `formatCliError`, so it keeps the taxonomy's enrichment (code · detail ·
- * `trace_id` · Retry-After · next action). The stable exit *class* for any of
- * these is owned separately by `exitCodeForError`.
+ * Anything else is delegated to `formatCliError`, which keeps the taxonomy's
+ * detail (code, `trace_id`, Retry-After, next action). The exit class is owned
+ * separately by `exitCodeForError`.
  */
 function describeApiError(err: unknown, apiBaseUrl: string): string {
   if (err instanceof ApiUnreachableError) {

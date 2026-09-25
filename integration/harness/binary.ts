@@ -5,9 +5,9 @@
  * run tests the exact artifact it is about to publish, on each target's own runner.
  * Without it, the host binary is compiled from this checkout, the way a pull request
  * and a developer run it. With `WEGO_INTEGRATION_MANIFEST` also set, the provided
- * binary must match its line in that `SHA256SUMS.txt` before it runs. Either way the suite drives a single-file binary as its
- * own process: its argv parsing, exit codes and stream split are what an agent
- * depends on, and no in-process test sees them.
+ * binary must match its line in that `SHA256SUMS.txt` before it runs. Either way the
+ * suite runs the binary as its own process: its argv parsing, exit codes and stream
+ * split are what an agent depends on, and no in-process test sees them.
  *
  * A compiled binary bakes nothing (`--env 'WEGO_BUILD_*'` is not passed), so it
  * reports `0.0.0-dev`. Every endpoint comes from the runtime env `wego.ts` sets.
@@ -33,7 +33,7 @@ export const MANIFEST_ENV = "WEGO_INTEGRATION_MANIFEST";
 
 const CLI_DIR = fileURLToPath(new URL("../../", import.meta.url));
 
-/** A cold `bun build --compile` is slow, not unbounded. */
+/** Generous because a cold `bun build --compile` is slow, but still bounded. */
 const COMPILE_TIMEOUT_MS = 180_000;
 
 /** Each directory holds a full single-file binary, so it lives only as long as the

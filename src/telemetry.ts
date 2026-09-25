@@ -368,9 +368,8 @@ export interface TelemetryDeps {
   durationMs: number;
   /** Exec-path signal, not the spoofable env-stamped version. */
   fromSource: boolean;
-  /** The resolved backend target. Only a `prod` run emits (foundations#74 rung
-   *  2): a staging or local run is a test, and counting tests as usage is how
-   *  the numbers stop describing users. */
+  /** Only a `prod` run emits: a staging run is a test, and counting tests as
+   *  usage would skew the numbers. */
   target: Target;
   /** The baked write-only project key; absent ⇒ nothing to post to. */
   posthogKey?: string;
@@ -386,8 +385,8 @@ export interface TelemetryDeps {
   /** Called only on an emitting run, so a disabled run writes nothing. */
   persistDeviceId: (deviceId: string) => Promise<void>;
   readUid: () => Promise<string | undefined>;
-  /** Detached child. Returns a promise on the inline paths — Windows, or a
-   *  binary already deleted by `uninstall` — where the send is awaited. */
+  /** Detached child. Returns a promise on the inline paths (Windows, or a
+   *  binary already deleted by `uninstall`), where the send is awaited. */
   spawnSender: (payload: string) => void | Promise<void>;
   /** stderr, never stdout. */
   printPayload: (payload: string) => void;
@@ -410,9 +409,9 @@ export async function maybeSendTelemetry(
   }
   // Above every other silent guard, and deliberately below `log`: a non-prod run
   // may still be audited on stderr, but nothing about it reaches PostHog. The
-  // target is resolved from the flag/env, not from the endpoint, so pointing
-  // `WEGO_API_URL` at staging is NOT what suppresses the event — naming the
-  // target is.
+  // target is resolved from the flag or env, not from the endpoint, so pointing
+  // `WEGO_API_URL` at staging does not suppress the event; naming the target
+  // does.
   if (!isProdTarget(deps.target)) return "skipped-non-prod-target";
   if (deps.fromSource) return "skipped-from-source";
   if (!deps.posthogKey) return "skipped-unbaked";

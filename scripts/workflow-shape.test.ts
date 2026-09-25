@@ -1,54 +1,39 @@
 /**
- * WORKFLOW SHAPE: the capability split in the publishing lanes, asserted.
+ * Workflow shape: the capability split in the publishing lanes.
  *
  * Two capabilities must never meet in one job:
  *   - `id-token: write`, which cosign exchanges for a Fulcio certificate naming
- *     this workflow - the identity `identitiesForRing` pins and every installed
- *     binary verifies;
+ *     this workflow (the identity `identitiesForRing` pins and every installed
+ *     binary verifies);
  *   - `BLOB_READ_WRITE_TOKEN`, which writes the store those binaries download from.
  *
- * They used to meet. The release job held both, ran a frozen install, and then ran
- * `upload-release-blob.ts`, which imports `@vercel/blob` - 31 packages
- * transitively. `id-token: write` is granted per JOB and GitHub sets
- * `ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN` for EVERY step of a job that holds it,
- * so imported code anywhere in that job could mint its own certificate under the
- * name clients trust, and sign whatever it liked. Splitting `sign` out is what
- * closed that; these tests are what keep it closed.
+ * `id-token: write` is granted per job, and GitHub sets
+ * `ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN` for every step of a job that holds it.
+ * A job that also runs `upload-release-blob.ts` imports `@vercel/blob` (31
+ * packages transitively), so any of that code could mint a certificate under the
+ * name clients trust and sign whatever it liked.
  *
- * WHY A TEST AND NOT A COMMENT. Every regression below is one or two lines, and -
- * except the last - all of them still publish a green release. A weakened lane
- * looks exactly like a working one:
+ * Every regression below is a line or two, and all but the last still publish a
+ * green release:
  *
- *   - `setup-bun` added to the signing job (a new signing check needs a script)
- *     -> dependency code is back beside the OIDC token. Nothing fails.
- *   - `id-token: write` moved to workflow level (a new job wants attestations)
- *     -> every job in the file can sign. Nothing fails.
- *   - `environment: production` added to the signing job (it needs a var)
- *     -> the signer can read the store token. Nothing fails.
- *   - the signing job merged back into the publisher ("why the artifact hop?")
- *     -> both capabilities reunited. Nothing fails.
- *   - the signing call extracted into a reusable workflow ("two lanes, one call")
- *     -> the Fulcio SAN re-points at THAT file and every `wego update` fails
- *        closed. This one fails loudly, and catastrophically.
+ *   - `setup-bun` added to the signing job -> dependency code beside the OIDC
+ *     token.
+ *   - `id-token: write` moved to workflow level -> every job in the file can sign.
+ *   - `environment: production` added to the signing job -> the signer can read
+ *     the store token.
+ *   - the signing job merged back into the publisher -> both capabilities in one
+ *     job.
+ *   - the signing call extracted into a reusable workflow -> the Fulcio SAN
+ *     re-points at that file and every `wego update` fails closed.
  *
- * The same class already cost this repository twice: the two lanes carried copied
- * signing calls that drifted apart, killing an edge run and then the first real
- * release (see `.github/actions/sign-manifest`). Comments were present throughout.
+ * Asserted by property where there is one: nothing pins the job name "sign"; the
+ * claim is that the job that runs the signing action may sign and can do nothing
+ * else.
  *
- * ASSERTED BY PROPERTY WHERE THERE IS A PROPERTY. Nothing here pins the string
- * "sign": the claim is "the job that may sign is the one that runs the signing
- * action, and it can do nothing else". Rename the job freely; violate the shape
- * and this fails.
- *
- * `ID_TOKEN_HOLDERS` below is the one deliberate exception, and it is a LIST
- * because there is no longer a property that separates the holders. Two jobs now
- * want an OIDC token for unrelated reasons: `sign` exchanges it for a Fulcio
- * certificate, and the verification job presents it as an identity to a
- * receiver in wego-ai that writes a check run back. "The job that runs cosign"
- * does not describe the second kind, and "any job that needs an identity"
- * describes every job anyone will ever want to add. So the set is enumerated, and
- * widening it is a diff a release signer reviews rather than a property that
- * quietly admits one more.
+ * `ID_TOKEN_HOLDERS` is the exception, a list because no property separates the
+ * holders: `sign` exchanges the token for a Fulcio certificate, and the
+ * verification job presents it as an identity to a receiver in wego-ai. So the set
+ * is enumerated, and widening it is a diff a release signer reviews.
  *
  * The mutations this suite kills:
  *   - `id-token: write` added at workflow level, or to a job outside the named
@@ -81,20 +66,17 @@ const SIGNING_LANES: string[] = ["edge-cli.yml", "release-cli.yml"];
 const PUBLISHING_LANES: string[] = [...SIGNING_LANES, "promote-cli.yml"];
 
 /**
- * EVERY JOB IN THE REPOSITORY THAT MAY HOLD `id-token: write`, by file and name.
- *
- * Three, in two files, and they are two kinds of thing:
+ * Every job in the repository that may hold `id-token: write`, by file and name:
  *
  *   edge-cli.yml    sign            cosign, for the edge ring's signed record
  *   release-cli.yml sign            cosign, for the release manifest
  *   release-cli.yml notify-verify   the release's identity, to the verify receiver
  *
- * The receiver in wego-ai reads the token's claims - `repository`, `event_name`,
- * `ref`, `job_workflow_ref`, `sha` - and answers 403 to anything else, so the
- * value of `id-token: write` in the verification job is precisely that it cannot
- * be minted anywhere else and still match. A fourth job quietly granted the
- * permission is a fourth place a token naming this repository can be produced, and
- * `workflow-lanes.test.ts` cannot see it because none of these jobs touches a ring.
+ * The receiver in wego-ai checks the token's claims (`repository`, `event_name`,
+ * `ref`, `job_workflow_ref`, `sha`) and answers 403 to anything else. Any other job
+ * granted the permission is another place a token naming this repository can be
+ * produced, and `workflow-lanes.test.ts` cannot see it because none of these jobs
+ * touches a ring.
  */
 const ID_TOKEN_HOLDERS: Record<string, string[]> = {
   "edge-cli.yml": ["sign"],
@@ -115,16 +97,10 @@ const SIGN_ACTION = ".github/actions/sign-manifest";
 /**
  * Does this `uses:` name an action inside THIS repository?
  *
- * Two spellings, and both are local. `./path` is relative to the workspace, so
- * it needs a checkout first. `$/path` is the self repository reference: it
- * resolves to this repository at the RUNNING COMMIT with no checkout, it may
- * not carry an `@ref`, and GitHub now recommends it over `./` precisely because
- * `./` resolves against whatever the caller happened to check out.
- *
- * The signing assertion below has to know both spellings. Knowing only `./`, it
- * would reject a correct local call to `sign-manifest` the moment anyone adopts
- * the recommended form - a failure that would not be true, on the one assertion
- * that guards the release signer.
+ * Two spellings, both local. `./path` is relative to the workspace, so it needs a
+ * checkout first. `$/path` is the self repository reference: it resolves to this
+ * repository at the running commit with no checkout and may not carry an `@ref`.
+ * GitHub recommends it over `./`, so the signing assertion must accept both.
  */
 const isLocalUses = (uses: string): boolean =>
   uses.startsWith("./") || uses.startsWith("$/");
@@ -184,13 +160,8 @@ function signingJobs(wf: Workflow): string[] {
 }
 
 /**
- * 1 - the whole security claim, half one, and now stated over the WHOLE directory
- * rather than per signing lane.
- *
- * Scoping it to the two signing lanes was right while `sign` was the only holder
- * anywhere; it is not right now, because a third file can grant the permission and
- * a suite that only reads two files would never look. `readdirSync` is what makes
- * "no other job, in no other workflow" an assertion rather than an intention.
+ * 1 - half of the security claim, stated over the whole directory rather than per
+ * signing lane, because any workflow file can grant the permission.
  */
 describe("id-token: write is granted to exactly the named jobs", () => {
   const files = readdirSync(".github/workflows")
@@ -198,7 +169,7 @@ describe("id-token: write is granted to exactly the named jobs", () => {
     .sort();
 
   it("finds the workflows the named set refers to", () => {
-    // A renamed file would otherwise drop out of the scan AND out of the
+    // A renamed file would otherwise drop out of both the scan and the
     // comparison, leaving this suite green having asserted nothing about it.
     for (const file of Object.keys(ID_TOKEN_HOLDERS)) {
       expect(
@@ -227,15 +198,13 @@ describe.each(SIGNING_LANES)("%s: the signing capability", (file) => {
   const wf = lane(file);
 
   it("gives it to the job that actually signs, and to no other", () => {
-    // Still a property: whatever else holds an OIDC token in this file, exactly
-    // one job runs the signing action, and it is one of the named holders.
     const signing = signingJobs(wf);
     expect(signing).toHaveLength(1);
     expect(signers(wf)).toContain(signing[0] as string);
   });
 
-  // 2 — the signing job runs no repository code, so there is nothing in it to
-  // abuse the token it holds. `sign-manifest` needs cosign and a dist/ only.
+  // 2 - the signing job runs no repository code, so nothing in it can abuse
+  // the token it holds. `sign-manifest` needs only cosign and a dist/.
   it("keeps the signing job free of anything that installs or runs dependencies", () => {
     const [name] = signingJobs(wf);
     const steps = wf.jobs[name as string]?.steps ?? [];
@@ -245,7 +214,7 @@ describe.each(SIGNING_LANES)("%s: the signing capability", (file) => {
     }
   });
 
-  // 3 — and cannot reach the store even if something in it did run.
+  // 3 - and it cannot reach the store even if something in it did run.
   it("keeps the store token and its environment out of the signing job", () => {
     const [name] = signingJobs(wf);
     const job = wf.jobs[name as string] as Job;
@@ -255,12 +224,12 @@ describe.each(SIGNING_LANES)("%s: the signing capability", (file) => {
 });
 
 /**
- * THE VERIFICATION JOBS: an identity leaves, and nothing else does.
+ * The verification jobs: an identity leaves, and nothing else does.
  *
  * It holds `id-token: write` so a receiver in wego-ai can read a token GitHub
- * signed and decide, from its claims alone, whether this repository is asking. The
- * whole arrangement rests on this repository holding NO credential for it, which is
- * three separate properties and not one:
+ * signed and decide, from its claims alone, whether this repository is asking.
+ * That rests on this repository holding no credential for it, which is three
+ * separate properties:
  *
  *   - no `environment:`, so the job cannot be handed the store token the way
  *     `release` and the promote lanes are;
@@ -340,7 +309,7 @@ describe.each(
  * `notify-verify` waits for the job that advances `cli/next`, because a
  * verification of bytes the ring is not yet serving proves nothing. That job is
  * also the one holding the store token, so the edge exists on purpose and cannot be
- * removed. What must stay true is that it is the ONLY such edge: `needs:` passes a
+ * removed. What must stay true is that it is the only such edge: `needs:` passes a
  * job's outputs, never its secrets, but each additional edge to a token-bearing job
  * is another place a future output could carry something it should not.
  */
@@ -419,18 +388,18 @@ describe("release-cli.yml: notify-verify hands on the answer, and holds only the
 });
 
 /**
- * THE REPORT READERS: they read a check run, and can do nothing else.
+ * The report readers: they read a check run, and can do nothing else.
  *
  * Two jobs run `scripts/next-report.ts`: `release-cli.yml`'s `next-report`, which
  * waits for wego-ai's verdict after a release, and the banner at the top of
  * `promote-cli.yml`. Both read another repository's text into a public summary,
  * and both are advice rather than gates, which is two separate properties:
  *
- *   - READ-ONLY. `checks: read` for the API, `contents: read` for the checkout,
+ *   - Read-only. `checks: read` for the API, `contents: read` for the checkout,
  *     nothing else. No environment, no `id-token`, and no secret but the run's
  *     own `github.token`: a reader that could write, sign or reach the store is a
  *     privileged job whose input is text from outside this repository.
- *   - NEVER RED. `continue-on-error` on the job, and a step that ends in
+ *   - Never red. `continue-on-error` on the job, and a step that ends in
  *     `exit 0`. A red reader would read as a failed release, or on the promote
  *     lane as a refused gate, over a report that is only ever advice.
  */
@@ -527,7 +496,7 @@ describe("release-cli.yml: next-report runs whenever notify-verify ran", () => {
 describe.each(PUBLISHING_LANES)("%s: the store capability", (file) => {
   const wf = lane(file);
 
-  // 4 — the other half of the claim, and the one that holds for promote too.
+  // 4 - the other half of the claim, which holds for promote too.
   it("never gives id-token to a job that can write the store", () => {
     const holders = new Set(signers(wf));
     for (const name of storeWriters(wf)) expect(holders.has(name)).toBe(false);
@@ -537,10 +506,10 @@ describe.each(PUBLISHING_LANES)("%s: the store capability", (file) => {
 describe.each(SIGNING_LANES)("%s: the signing identity", (file) => {
   const wf = lane(file);
 
-  // 5 — the Fulcio SAN is `<repo>/.github/workflows/<file>@<ref>`: the FILE, not
-  // the job. Moving cosign between jobs of this file is invisible to clients;
-  // moving it into a `workflow_call` file re-points the SAN and every installed
-  // binary refuses the ring. A composite action is safe - it runs inline here.
+  // 5 - the Fulcio SAN is `<repo>/.github/workflows/<file>@<ref>`: the file, not
+  // the job. Moving cosign into a `workflow_call` file re-points the SAN and
+  // every installed binary refuses the ring. A composite action is safe: it runs
+  // inline here.
   it("keeps the signing call in the lane file: no reusable workflow, either way", () => {
     expect(Object.keys(wf.on ?? {})).not.toContain("workflow_call");
     for (const job of Object.values(wf.jobs)) expect(job.uses).toBeUndefined();
@@ -556,21 +525,15 @@ describe.each(SIGNING_LANES)("%s: the signing identity", (file) => {
 });
 
 /**
- * `bun install` runs this repository's `prepare` script, and `prepare` is husky:
- * it points `core.hooksPath` at `.husky/_`. On a runner that is at best pointless
- * and at worst load-bearing in the wrong direction - `release-please.yml`,
- * `release-badge.yml` and the promote lane all commit, and a pre-commit hook
- * firing inside a release job would fail a release over a file the lane did not
- * write and cannot fix.
+ * `bun install` runs this repository's `prepare` script, husky, which points
+ * `core.hooksPath` at `.husky/_`. `release-please.yml`, `release-badge.yml` and
+ * the promote lane all commit, and a pre-commit hook firing inside a release job
+ * would fail a release over a file the lane did not write.
  *
- * `.github/actions/setup-bun` sets `HUSKY=0` for exactly that reason. The guard
- * only holds while every install goes through the composite, and the next
- * workflow to add a bare `bun install` would undo it silently, months later, in
- * a lane nobody runs on a pull request.
- *
- * The mutation this kills: a `run: bun install` step added anywhere outside the
- * composite action - in a workflow, or in one of the OTHER composite actions,
- * which is the half a workflows-only scan misses.
+ * `.github/actions/setup-bun` sets `HUSKY=0` for that reason, which only holds
+ * while every install goes through it. A bare `bun install` in a workflow, or in
+ * another composite action, would undo it silently in a lane nobody runs on a
+ * pull request.
  */
 const INSTALL = /\bbun\s+install\b/;
 
@@ -583,9 +546,8 @@ describe("every `bun install` goes through the composite action", () => {
   );
 
   /**
-   * Every composite action except the installer itself. Both spellings: GitHub
-   * accepts `action.yaml`, and a guard that only knows `action.yml` would skip
-   * the file it was added to watch, silently and green.
+   * Every composite action except the installer itself. Both spellings, because
+   * GitHub accepts `action.yaml` too.
    */
   const actionFile = (dir: string): string | undefined =>
     [

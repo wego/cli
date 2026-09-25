@@ -1,26 +1,18 @@
 /**
  * `upgrade-path.sh`, driven end to end against a fake self-updating binary.
  *
- * The script's whole value is in the ASSERTIONS it makes about a multi-hop
- * chain — converges, advances, terminates, routes, settles — and every one of
- * them only fires on a real `wego update`, against a real ring, over the
- * network. So in production it is exercised once per merge and once per
- * release, on paths that are supposed to be green; the cases where it must FAIL
- * would otherwise never run at all, and a gate whose failure branch is untested
- * is a gate nobody should trust.
+ * In CI the script only runs against real rings on paths that are supposed to
+ * be green, so without this its failure branches would never run.
  *
  * The harness replaces only the binary. `$LADDER` is a `from>to` version map and
- * the fake `wego` walks it, rewriting its OWN `#VERSION=` line to "self-replace"
- * — so the bytes genuinely change, `version` genuinely reports the new value, and
- * the script's hashing, loop memory and route bookkeeping are the shipped ones.
+ * the fake `wego` walks it, rewriting its own `#VERSION=` line to "self-replace",
+ * so the bytes really change, `version` reports the new value, and the script's
+ * hashing, loop detection and route bookkeeping are the shipped ones.
  *
- * The fake also REFUSES unless it finds `$XDG_CONFIG_HOME/wego/install.json`,
- * exactly as a real post-foundations#74 binary does. That makes the config-scope
- * invariant behavioural rather than a text pin: the fake derives its scope from
- * the name it was invoked as — the rule every build up to 1.2.7 used, and the one
- * the constant `wego` agrees with for a binary called `wego` — so if the script ever
- * stops copying the start binary to a file named `wego`, the arranged record
- * lands in a directory the copy does not read and every case here fails.
+ * The fake also refuses unless it finds `$XDG_CONFIG_HOME/<scope>/install.json`,
+ * as a real binary does, and derives its scope from the name it was invoked as
+ * (the rule builds up to 1.2.7 used). So if the script stops copying the start
+ * binary to a file named `wego`, every case here fails.
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -39,9 +31,8 @@ afterAll(() => {
  * A `wego` that self-updates along `$LADDER`.
  *
  * `#VERSION=` is both what `version` prints and what the "replace" rewrites, so
- * a hop changes the file's bytes for the same reason a real one does. `#PAD=`
- * exists only for the one case that needs bytes to move while the version does
- * not — the disagreement branch.
+ * a hop changes the file's bytes. `#PAD=` exists only for the case that needs
+ * bytes to move while the version does not (the disagreement branch).
  */
 const fakeBinary = (opts: { settled?: boolean } = {}) => `#!/bin/sh
 #VERSION=0.0.0
@@ -156,7 +147,7 @@ describe("a chain that reaches the ring's version", () => {
 });
 
 describe("--via pins the route, not just the destination", () => {
-  // The pre-relay path is only correct if it goes THROUGH the frozen bridge. A
+  // The pre-relay path is only correct if it goes through the frozen bridge. A
   // chain that arrived by some other route would converge and pass without this.
   test("passes when the waypoints match", () => {
     const r = run({
@@ -184,8 +175,8 @@ describe("--via pins the route, not just the destination", () => {
 
 describe("the failures a single-hop smoke cannot see", () => {
   // wego/cli#25: an agent-less build updated to 1.1.0, which read the live
-  // pointer, which served the agent-less build. Every hop exits 0. Only the
-  // SEQUENCE is wrong, so only a driver that remembers the sequence can say so.
+  // pointer, which served the agent-less build. Every hop exits 0; only the
+  // sequence is wrong.
   test("names a self-update loop rather than letting the budget expire", () => {
     const r = run({
       ladder: "1.0.1>9.9.9 9.9.9>1.0.1",
@@ -199,8 +190,6 @@ describe("the failures a single-hop smoke cannot see", () => {
     expect(r.out).not.toContain("still at");
   });
 
-  // The failure that looks most like success: `update` exits 0, replaces
-  // nothing, and the chain is still short of the destination.
   test("refuses a hop that succeeds without replacing anything", () => {
     const r = run({ ladder: "", start: "1.1.0", expected: "1.2.5" });
     expect(r.code).not.toBe(0);
@@ -218,8 +207,8 @@ describe("the failures a single-hop smoke cannot see", () => {
     expect(r.out).toContain("version and the bytes disagreeing");
   });
 
-  // Exit 6 is a signed record the binary's baked trust set rejects — the single
-  // most likely way a change in this repository strands an old install.
+  // Exit 6 is a signed record the binary's baked trust set rejects, the most
+  // likely way a change in this repository strands an old install.
   test("surfaces a refused signature as a failure, never a skip", () => {
     const r = run({
       ladder: "1.1.0>EXIT6",
@@ -255,8 +244,8 @@ describe("the failures a single-hop smoke cannot see", () => {
 });
 
 describe("a run that would prove nothing is refused, not passed", () => {
-  // The same greenwash `update-smoke.sh` refuses under --require-replace: on a
-  // re-run the pointer may simply have moved to meet the start binary.
+  // As with `update-smoke.sh --require-replace`: on a re-run the pointer may
+  // have moved to meet the start binary.
   test("refuses a start binary that is already the expected version", () => {
     const r = run({ ladder: "", start: "1.2.5", expected: "1.2.5" });
     expect(r.code).not.toBe(0);

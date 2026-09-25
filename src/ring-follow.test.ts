@@ -12,20 +12,18 @@ import {
 import { type UpdateDeps, update } from "./update";
 
 /**
- * foundations#74 rung 3 — update follows a RECORDED ring.
+ * foundations#74 rung 3: update follows a recorded ring. One describe block per
+ * claim:
  *
- * The rung's three claims, one describe block each:
- *
- *  1. the installer records which ring it installed from, in CONFIG, not in the
+ *  1. the installer records which ring it installed from, in config, not in the
  *     binary;
- *  2. `wego update` follows that record — the record, and nothing baked, decides
- *     where the bytes come from;
- *  3. a missing record REFUSES rather than guesses.
+ *  2. `wego update` follows that record, and nothing baked decides where the
+ *     bytes come from;
+ *  3. a missing record refuses rather than guesses.
  *
- * Claim 1 spans two apps that share no code by design, so each side pins the same
- * literal: the fixture below is byte-for-byte what `apps/api`'s installer script
- * writes, and `apps/api/src/routes/install.test.ts` asserts the script emits it.
- * If one side changes the shape, the other side's suite fails.
+ * Claim 1 spans two apps that share no code, so each pins the same literal: the
+ * fixture below is byte-for-byte what `apps/api`'s installer script writes, and
+ * `apps/api/src/routes/install.test.ts` asserts the script emits it.
  */
 
 /** Exactly what the installer script writes (see the file header). */
@@ -47,10 +45,9 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 }
 
 /**
- * `update` deps over an in-memory install, recording every URL fetched. Deliberately
- * `--check`-shaped: this suite asks WHERE a followed ring reads from and WHETHER an
- * unrecorded one reads at all, so nothing here needs to write a binary (the
- * download/verify/swap half is `update.test.ts`'s).
+ * Records every URL fetched. `--check`-shaped: this suite asks where a followed
+ * ring reads from and whether an unrecorded one reads at all, so nothing writes a
+ * binary (download, verify and swap are covered in `update.test.ts`).
  */
 function checkDeps(overrides: Partial<UpdateDeps> = {}) {
   const out: string[] = [];
@@ -72,9 +69,8 @@ function checkDeps(overrides: Partial<UpdateDeps> = {}) {
       const url = String(input);
       fetched.push(url);
       const manifest = `${await sha256Hex(current)}  wego-linux-x64\n`;
-      // The signed build record the manifest has to come with (foundations#74 rung
-      // 9): a real signature over these exact bytes, so this suite keeps reading
-      // through the same fail-closed path production does.
+      // A real signature over these bytes, so this suite reads through the same
+      // fail-closed verification production does (foundations#74 rung 9).
       const body =
         new URL(url).searchParams.get("sig") === "1"
           ? JSON.stringify(await signManifest(enc(manifest)))
@@ -125,10 +121,8 @@ describe("the recorded ring lives in config, not in the binary", () => {
   });
 
   it("keeps no build-baked download base in the self-update path", async () => {
-    // The mutation this rung exists to prevent: re-introducing a channel URL
-    // compiled into the artifact. `update.ts` must resolve its source from the
-    // RECORD alone — a baked base is what made a published binary impossible to
-    // re-point without a rebuild.
+    // Guards against re-introducing a channel URL compiled into the binary, which
+    // would make a published binary impossible to re-point without a rebuild.
     // Asserted as booleans, not `not.toContain`, so a failure prints the claim
     // rather than the whole module.
     const source = await Bun.file(
@@ -136,8 +130,8 @@ describe("the recorded ring lives in config, not in the binary", () => {
     ).text();
     expect(source.includes("WEGO_BUILD_DOWNLOAD_BASE_URL")).toBe(false);
     expect(source.includes("downloadBaseUrl")).toBe(false);
-    // No env read at all here: a baked value and a live env var are the same read
-    // in a compiled binary, which is how a poisoned environment could re-point it.
+    // No env read at all: in a compiled binary a baked value and a live env var
+    // are the same read, so a poisoned environment could re-point it.
     expect(source.includes("process.env")).toBe(false);
   });
 });
@@ -148,15 +142,13 @@ describe("wego update follows the recorded ring", () => {
     expect(await update(["--check"], deps)).toBe(EXIT.OK);
     expect(fetched).toEqual([
       "https://api.wego.com/install?dl=SHA256SUMS.txt&ring=latest",
-      // The record is fetched before those bytes are READ, never after they are
-      // trusted (foundations#74 rung 9).
+      // Fetched before the manifest is read (foundations#74 rung 9).
       "https://api.wego.com/install?dl=SHA256SUMS.txt.sigstore.json&ring=latest&sig=1",
     ]);
   });
 
   it("follows a DIFFERENT recorded ring to a different endpoint", async () => {
-    // The point of a record: two installs of the same bytes follow whatever each
-    // one recorded. Nothing about the binary decides this.
+    // Two installs of the same bytes follow whatever each one recorded.
     const { deps, fetched } = checkDeps({
       readInstallRecord: async () => ({
         ring: "staging",
@@ -166,8 +158,7 @@ describe("wego update follows the recorded ring", () => {
     expect(await update(["--check"], deps)).toBe(EXIT.OK);
     expect(fetched).toEqual([
       "https://api.wegostaging.com/install?dl=SHA256SUMS.txt&ring=staging",
-      // The record is fetched before those bytes are READ, never after they are
-      // trusted (foundations#74 rung 9).
+      // Fetched before the manifest is read (foundations#74 rung 9).
       "https://api.wegostaging.com/install?dl=SHA256SUMS.txt.sigstore.json&ring=staging&sig=1",
     ]);
   });
@@ -192,11 +183,9 @@ describe("wego update follows the recorded ring", () => {
   });
 
   it("sends the recorded ring, so a ring install cannot drift to the deploy's own channel", () => {
-    // The whole point of the record (rung 3) is that the pointer is a fact on the
-    // machine; a bare ?dl= would resolve against whatever channel the DEPLOY was
-    // configured with, so a `next` install would receive stable's bytes on its
-    // next update - a checksum-clean swap nothing downstream can catch, because
-    // update decides on a checksum difference and never on a version.
+    // A bare ?dl= resolves against the deploy's configured channel, so a `next`
+    // install would receive stable's bytes on its next update, a swap nothing
+    // catches because update decides on a checksum difference, not a version.
     expect(
       ringAssetUrl("https://api.wego.com/install", "wego-darwin-arm64", "next"),
     ).toBe("https://api.wego.com/install?dl=wego-darwin-arm64&ring=next");
@@ -209,8 +198,8 @@ describe("wego update follows the recorded ring", () => {
   });
 
   it("refuses a recorded endpoint that is not HTTPS", async () => {
-    // The record is a plain local file, so it is an input: anyone able to write it
-    // could otherwise redirect the download to a plaintext host.
+    // The record is a plain local file: anyone able to write it could otherwise
+    // redirect the download to a plaintext host.
     const { deps, err, fetched } = checkDeps({
       readInstallRecord: async () => ({
         ring: "latest",
@@ -230,9 +219,7 @@ describe("a missing record refuses rather than guesses", () => {
     });
     expect(await update([], deps)).toBe(EXIT.PERMANENT);
     expect(err.join("\n")).toMatch(/refusing to guess which ring/);
-    // Names the file, so the user can see what is missing…
     expect(err.join("\n")).toContain(RECORD_PATH);
-    // …and the one command that writes it.
     expect(err.join("\n")).toContain("/install | bash");
     expect(fetched).toEqual([]);
   });
@@ -285,11 +272,8 @@ describe("a missing record refuses rather than guesses", () => {
   });
 
   it("accepts a trailing slash on /install and canonicalizes it", () => {
-    // `/install/` names the same endpoint, so rejecting it would refuse a record a
-    // person could plausibly hand-write - and the refusal would brick BOTH `update`
-    // and the new-version notice while telling the user nothing, since the two
-    // spellings look identical to them. Canonicalizing at the parse boundary is not
-    // "guessing a ring": rung 3's refusal is about an ABSENT ring, not a slash.
+    // `/install/` names the same endpoint; rejecting it would break both `update`
+    // and the version notice over a spelling the user cannot tell apart.
     const record = parseInstallRecord(
       '{"ring":"stable","installUrl":"https://api.wego.com/install/"}',
     );
@@ -300,9 +284,8 @@ describe("a missing record refuses rather than guesses", () => {
   });
 
   it("still refuses a path that only LOOKS like a slashed /install", () => {
-    // The isolating cases: accepting one trailing slash must not widen into
-    // accepting a doubled one or a deeper path, both of which are real malformation
-    // rather than a spelling of the same endpoint.
+    // Accepting one trailing slash must not widen into accepting a doubled one or
+    // a deeper path.
     for (const url of [
       "https://api.wego.com/install//",
       "https://api.wego.com/install/extra",
@@ -316,12 +299,9 @@ describe("a missing record refuses rather than guesses", () => {
   });
 
   it("refuses a DOT SEGMENT that `new URL()` would resolve to /install", () => {
-    // The trap that accepting `/install/` opened, and the reason the canonical value
-    // is rebuilt from the parsed URL rather than stripped off the raw string:
-    // `new URL()` resolves `..` BEFORE `pathname` is read, so each of these presents
-    // as `/install/` and passed the endpoint check, while the raw string a consumer
-    // would build from still carried the traversal - reaching `ringAssetUrl` as
-    // `…/install/extra/..?dl=VERSION`.
+    // `new URL()` resolves `..` before `pathname` is read, so each of these
+    // presents as `/install/` while the raw string still carries the traversal,
+    // which could reach `ringAssetUrl` as `…/install/extra/..?dl=VERSION`.
     for (const url of [
       "https://api.wego.com/install/extra/..",
       "https://api.wego.com/foo/../install/",
@@ -336,8 +316,7 @@ describe("a missing record refuses rather than guesses", () => {
 
   it("refuses credentials rather than dropping them in canonicalization", () => {
     // `url.origin` omits userinfo, so canonicalizing would silently discard a
-    // password. This field refuses a query and a fragment for the same reason:
-    // suspicious input is not quietly rewritten.
+    // password. Suspicious input is refused, not quietly rewritten.
     expect(
       parseInstallRecord(
         '{"ring":"stable","installUrl":"https://u:p@api.wego.com/install"}',
@@ -346,8 +325,7 @@ describe("a missing record refuses rather than guesses", () => {
   });
 
   it("keeps a non-default port through canonicalization", () => {
-    // Rebuilding from `origin` must not lose the port: a record naming a
-    // host:port endpoint has to keep addressing it.
+    // Rebuilding from `origin` must not lose the port.
     expect(
       parseInstallRecord(
         '{"ring":"stable","installUrl":"https://api.wego.com:8443/install/"}',
@@ -359,8 +337,7 @@ describe("a missing record refuses rather than guesses", () => {
   });
 
   it("refuses every unusable record the same way, with no default ring", () => {
-    // One decision function, so there is a single place a fallback could be
-    // smuggled in — and it has no branch that invents a ring.
+    // The single place a fallback could be added; the message must name no ring.
     const decision = followRecordedRing({
       record: null,
       recordPath: RECORD_PATH,
@@ -376,8 +353,7 @@ describe("a missing record refuses rather than guesses", () => {
   });
 
   it("refuses without speculating about where the record might be", () => {
-    // One config scope, so there is no other directory a record could be in and
-    // nothing to offer beyond the one way to obtain one.
+    // One config scope, so there is no other directory a record could be in.
     const decision = followRecordedRing({
       record: null,
       recordPath: RECORD_PATH,
@@ -390,7 +366,7 @@ describe("a missing record refuses rather than guesses", () => {
 
   it("still reports a from-source run as a reinstall, not a missing ring", async () => {
     // A source run has no installed binary to replace, so there is nothing to
-    // record and nothing to refuse — the pre-existing hint must survive.
+    // record and nothing to refuse.
     const { deps, out, err } = checkDeps({
       fromSource: true,
       readInstallRecord: async () => null,
@@ -402,12 +378,9 @@ describe("a missing record refuses rather than guesses", () => {
 });
 
 /**
- * Issue #1751 — the SKILL channel follows the recorded ring too.
- *
- * The binary axis got this treatment at rung 3; the skill axis kept a whole URL
- * baked, and drifted the same way within two days of the channel rename. These
- * assert the split that removes the class: origin is compiled in (a trust anchor),
- * ring comes from the record (policy that must move with a promote).
+ * Issue #1751: the skill base follows the recorded ring too. The origin is
+ * compiled in (a trust anchor); the ring comes from the record (policy that must
+ * move with a promote).
  */
 describe("the skill channel is composed, not baked", () => {
   const ORIGIN = "https://store123.public.blob.vercel-storage.com";
@@ -418,10 +391,8 @@ describe("the skill channel is composed, not baked", () => {
   });
 
   it("composes a ring this binary has never heard of", () => {
-    // Deliberately NOT an allowlist. A binary that refused a well-formed pointer
-    // added after it shipped could not follow it — the same reasoning `RING_NAME`
-    // carries. A ring nothing is published on simply 404s into the embedded copy,
-    // which is why `edge` needs no channel of its own.
+    // Not an allowlist: a binary must be able to follow a well-formed ring added
+    // after it shipped (see `RING_NAME`).
     expect(skillBaseForRing(ORIGIN, "canary")).toBe(`${ORIGIN}/skill/canary`);
   });
 
@@ -432,21 +403,19 @@ describe("the skill channel is composed, not baked", () => {
   });
 
   it("yields no base when either half is missing", () => {
-    // Both are degradations to the embedded copy, never a guessed channel:
-    // an unbaked build (from source) and an install with no record.
+    // An unbaked build and an install with no record: never a guessed channel.
     expect(skillBaseForRing(undefined, "stable")).toBe(undefined);
     expect(skillBaseForRing(ORIGIN, undefined)).toBe(undefined);
     expect(skillBaseForRing(undefined, undefined)).toBe(undefined);
-    // `""` is what `build-release.ts` bakes when the Environment has no origin —
-    // it must read as unbaked, not compose `/skill/stable` against nothing.
+    // An empty origin must read as unbaked, not compose `/skill/stable` against
+    // nothing.
     expect(skillBaseForRing("", "stable")).toBe(undefined);
   });
 
   it("refuses a ring that is not one flat pointer segment", () => {
-    // The recorded half is the one an operator could hand-edit, so it stays
-    // constrained to `RING_NAME`. It may name a different PATH under the pinned
-    // origin; it may never reach a different host, escape the prefix, or smuggle a
-    // query — which is what keeps `skill-remote.ts`'s one-origin claim true.
+    // The recorded half can be hand-edited, so it stays constrained to
+    // `RING_NAME`: it may name a different path under the pinned origin, but never
+    // reach a different host, escape the prefix, or smuggle a query.
     for (const bad of [
       "../cli/stable",
       "stable/../../etc",
@@ -461,8 +430,6 @@ describe("the skill channel is composed, not baked", () => {
   });
 
   it("puts the ring where a reader of the URL can see it", () => {
-    // The marker records the ring and the guard compares it; a base whose last
-    // segment were anything but that ring would put the two back out of step.
     const ring = "stable";
     expect(skillBaseForRing(ORIGIN, ring)?.endsWith(`/${ring}`)).toBe(true);
   });

@@ -6,7 +6,7 @@
  */
 
 export interface LoopbackListener {
-  /** `http://127.0.0.1:<port><path>` — pass as the OAuth `redirect_uri`. */
+  /** `http://127.0.0.1:<port><path>`, passed as the OAuth `redirect_uri`. */
   redirectUri: string;
   /** Resolve with the `code` once the AS redirects with a matching `state`. */
   waitForCode(expectedState: string, timeoutMs?: number): Promise<string>;
@@ -16,7 +16,7 @@ export interface LoopbackListener {
 export type CallbackOutcome =
   | { kind: "code"; code: string }
   | { kind: "error"; error: Error }
-  /** Not for us — `state` didn't match. Must NOT settle/cancel the login. */
+  /** Not for us (wrong origin or `state`). Must not settle or cancel the login. */
   | { kind: "ignore" };
 
 /** The hosts a loopback redirect can legitimately arrive on (RFC 8252 §7.3).
@@ -25,8 +25,8 @@ export type CallbackOutcome =
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 /**
- * Pure interpreter for a callback URL. **Origin, then state, are checked before
- * anything else**: a request from a non-loopback host, or one that doesn't
+ * Pure interpreter for a callback URL. Origin, then state, are checked before
+ * anything else: a request from a non-loopback host, or one that doesn't
  * carry our CSRF `state` (e.g. another page on the machine hitting the loopback
  * with `?error=...`), returns `ignore` so it cannot cancel an in-progress
  * login. Only a loopback request bearing our `state` can yield a `code` or an
@@ -38,7 +38,7 @@ export function interpretCallback(
 ): CallbackOutcome {
   const url = new URL(rawUrl, "http://127.0.0.1");
   // Loopback origins only. The server path can't be anything else, and the
-  // paste path is told to hand over a `127.0.0.1` address — so a URL from any
+  // paste path is told to hand over a `127.0.0.1` address, so a URL from any
   // other host is not the redirect we are waiting for. Defence in depth rather
   // than a live hole: the exchange always uses the listener's own redirect_uri
   // and this process's PKCE verifier, so a foreign code cannot be redeemed.
@@ -71,17 +71,15 @@ export function interpretCallback(
 const DONE_HTML =
   "<!doctype html><meta charset=utf-8><title>wego</title><body style='font-family:system-ui;padding:2rem'>Login complete – you may close this window and return to the terminal.</body>";
 
-// `port` defaults to 0 (ephemeral) — RFC 8252 any-port. Pass a fixed port for
-// clients that register a specific loopback port rather than relying on the
-// AS's port override. An empty `redirectPath` means a BARE-origin redirect_uri
+// `port` 0 is ephemeral (RFC 8252 any-port). Pass a fixed port for clients that
+// register a specific loopback port rather than relying on the AS's port
+// override. An empty `redirectPath` means a bare-origin redirect_uri
 // (`http://127.0.0.1:<port>`); the server then matches the root path `/` that
 // the browser lands on.
 export function startLoopback(
   redirectPath = "/callback",
   port = 0,
 ): LoopbackListener {
-  // The path the loopback server matches incoming callbacks against. A bare
-  // (empty) redirect_uri lands the browser on `/`, so match `/` in that case.
   const matchPath = redirectPath === "" ? "/" : redirectPath;
   let expectedState = "";
   let settle: {
@@ -90,13 +88,12 @@ export function startLoopback(
   } | null = null;
   // Callbacks that arrive before `waitForCode` arms the waiter (or before the
   // expected state is known) are queued here and flushed in order once the
-  // waiter attaches — so a fast valid redirect is never dropped, even if a
-  // later unsolicited/wrong-state request also hits the loopback first.
+  // waiter attaches, so a fast valid redirect is never dropped, even if an
+  // unsolicited or wrong-state request also hits the loopback first.
   const bufferedUrls: string[] = [];
   // The live `waitForCode` deadline, so `close()` can clear it.
   let pendingTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /** Interpret a callback URL and, if it's for us, settle the waiter. */
   function deliver(rawUrl: string): CallbackOutcome {
     const outcome = interpretCallback(rawUrl, expectedState);
     if (outcome.kind !== "ignore" && settle) {
@@ -116,7 +113,7 @@ export function startLoopback(
       if (url.pathname !== matchPath) {
         return new Response("Not found", { status: 404 });
       }
-      // No waiter yet (and the expected state may not be set) — hold the raw
+      // No waiter yet (and the expected state may not be set): hold the raw
       // callback and let `waitForCode` interpret it once state is known.
       if (!settle) {
         bufferedUrls.push(req.url);
@@ -154,7 +151,7 @@ export function startLoopback(
           pendingTimer = undefined;
           reject(new Error("login timed out"));
         }, timeoutMs);
-        // `close()` clears this even when the waiter never settles — another
+        // `close()` clears this even when the waiter never settles: another
         // path (a pasted callback) can win the login, and a live timer holds
         // the event loop open long after the caller is done with us.
         pendingTimer = timer;
@@ -171,8 +168,8 @@ export function startLoopback(
           },
         };
         // Flush callbacks that arrived before the waiter was armed, in order,
-        // until one settles. Unsolicited (wrong-state) ones are ignored and we
-        // keep draining — so an early valid redirect isn't lost behind them.
+        // until one settles. Unsolicited (wrong-state) ones are ignored and
+        // draining continues, so an early valid redirect isn't lost behind them.
         while (bufferedUrls.length > 0 && settle) {
           const url = bufferedUrls.shift();
           if (url) deliver(url);

@@ -3,35 +3,32 @@ import { readFileSync } from "node:fs";
 import { CONTRACT_COVERAGE } from "./api-contract";
 
 /**
- * Check B: the api↔cli contract's third question, and the only one a type
- * cannot answer.
+ * Check B: does each dotted path the CLI depends on exist in the published
+ * body? A type cannot answer this.
  *
- * **Check B answers one question: does this dotted path exist in the published
- * body?** The fields below are ones the CLI's *behaviour* depends on while its
- * schema tolerates their absence - the settle-convergence counters above all.
- * Drop `metadata.snapshotFareCount` from the API and nothing else notices: the
- * CLI's tolerant count absorbs the absence, the polling loop stops converging,
- * and `flights search` silently degrades to item-presence. No type reports
- * that, because the CLI deliberately made the field optional.
+ * The fields below are ones the CLI's behaviour depends on while its schema
+ * tolerates their absence, mainly the settle-convergence counters. If the API
+ * drops `metadata.snapshotFareCount`, the CLI's tolerant count absorbs the
+ * absence, the polling loop stops converging, and `flights search` silently
+ * degrades to item-presence. No type reports that, because the field is
+ * deliberately optional in the CLI.
  *
- * It is a RUNTIME walk of the vendored contract, not a type-level check. The
- * type-level form was built once and did not work: `DeepKeys` /
- * `UnionToIntersection` widened silently on an array-bearing body, so an entry
- * naming a path that did not exist PASSED. The contract is a JSON file in this
- * repository - walking it is a few lines, works on arrays, and says
- * `"metadata.snapshotFareCount" not found in getHotelRates 200` instead of a
- * twelve-line conditional-type error.
+ * This is a runtime walk of the vendored contract, not a type-level check. The
+ * type-level form (`DeepKeys` / `UnionToIntersection`) widened silently on an
+ * array-bearing body, so an entry naming a path that did not exist passed.
+ * Walking the JSON handles arrays and gives a one-line failure message instead
+ * of a long conditional-type error.
  *
  * Checks A and C live in `api-contract.ts` and run under `bun run typecheck`.
- * This file touches no network: it reads the committed `contract/openapi.json`,
- * which `bun run api-contract:refresh` is what updates.
+ * This file reads the committed `contract/openapi.json`, which
+ * `bun run api-contract:refresh` updates.
  */
 
 const CONTRACT = new URL("../contract/openapi.json", import.meta.url);
 
 /** A field the CLI's behaviour reads, and where the API publishes it.
- *  `everyVariant` demands the path in EVERY branch of a `?view=` union - right
- *  when the CLI reads the field regardless of which variant it asked for. */
+ *  `everyVariant` requires the path in every branch of a `?view=` union, for a
+ *  field the CLI reads whichever variant it asked for. */
 interface PublishedField {
   operationId: string;
   status: number;
@@ -215,7 +212,6 @@ interface Spec {
 
 const spec = JSON.parse(readFileSync(CONTRACT, "utf8")) as Spec;
 
-/** The JSON schema node the contract publishes for one operation + status. */
 function bodySchema(operationId: string, status: number): SpecNode | undefined {
   for (const operations of Object.values(spec.paths)) {
     for (const operation of Object.values(operations)) {
@@ -235,14 +231,13 @@ function deref(node: SpecNode | undefined): SpecNode | undefined {
 }
 
 /**
- * Every alternative the response can BE: itself, or each branch of an `anyOf` /
- * `oneOf`. `allOf` is not an alternative - it is one shape assembled from parts
- * - so it stays a single entry here.
+ * Every alternative the response can be: itself, or each branch of an `anyOf` /
+ * `oneOf`. `allOf` is one shape assembled from parts, not an alternative, so it
+ * stays a single entry.
  *
- * That distinction is what `everyVariant` rests on. Expanding `allOf` here too
- * would make each part look like a competing response variant, and an
- * `everyVariant` field carried by ONE part would then be reported missing from
- * the others: a false failure on a perfectly valid contract.
+ * `everyVariant` depends on this. Expanding `allOf` too would make each part
+ * look like a competing variant, and an `everyVariant` field carried by one
+ * part would be reported missing from the others on a valid contract.
  */
 function alternatives(node: SpecNode | undefined): SpecNode[] {
   const resolved = deref(node);
@@ -254,8 +249,8 @@ function alternatives(node: SpecNode | undefined): SpecNode[] {
 
 /**
  * The shapes a property lookup may land on at one level: each alternative, plus
- * each `allOf` part, because an assembled shape carries its parts' properties.
- * This is the merge `alternatives` deliberately does not do.
+ * each `allOf` part, because an assembled shape carries its parts' properties
+ * (unlike `alternatives`).
  */
 function lookupShapes(node: SpecNode | undefined): SpecNode[] {
   const resolved = deref(node);
@@ -269,7 +264,7 @@ function lookupShapes(node: SpecNode | undefined): SpecNode[] {
 }
 
 /**
- * Walk a dotted path through ONE variant. `[]` steps into array items - the
+ * Walks a dotted path through one variant. `[]` steps into array items, the
  * case the type-level version got wrong.
  */
 function resolves(node: SpecNode | undefined, path: string): boolean {
@@ -300,10 +295,8 @@ function resolves(node: SpecNode | undefined, path: string): boolean {
   return current !== undefined;
 }
 
-/** Why this declared path does not hold in THIS body, or `undefined` when it
- *  does. Split from `unresolvedPath` so the `everyVariant` rule can be tested
- *  against a constructed body, not only against whatever the contract happens
- *  to publish today. */
+/** Split from `unresolvedPath` so the `everyVariant` rule can be tested against
+ *  a constructed body, not only against what the contract publishes today. */
 function missingFrom(
   body: SpecNode | undefined,
   field: PublishedField,
@@ -322,7 +315,6 @@ function missingFrom(
   return `"${field.path}" not found in ${field.operationId} ${field.status} body${variantNote} - ${field.because}`;
 }
 
-/** Why this declared path does not hold, or `undefined` when it does. */
 function unresolvedPath(field: PublishedField): string | undefined {
   const body = bodySchema(field.operationId, field.status);
   if (!body) {
@@ -333,8 +325,8 @@ function unresolvedPath(field: PublishedField): string | undefined {
 
 describe("Check B - the fields the CLI's behaviour depends on are published", () => {
   it("names at least one dependency per funnel (not vacuous)", () => {
-    // A guard on the guard: an empty or accidentally-filtered table would make
-    // every assertion below pass while checking nothing.
+    // An empty or accidentally filtered table would make every assertion below
+    // pass while checking nothing.
     expect(CLI_DEPENDS_ON.length).toBeGreaterThan(10);
     const operations = new Set(CLI_DEPENDS_ON.map((f) => f.operationId));
     expect(operations.has("getFlightSearchResults")).toBe(true);
@@ -359,25 +351,23 @@ describe("Check B - the fields the CLI's behaviour depends on are published", ()
   });
 
   it("would reject a path that does not exist", () => {
-    // The injection, kept as a test: this is the exact case the type-level
-    // Check B passed. Two shapes - a plain miss and an array-bearing body.
+    // The type-level Check B passed this case. Two shapes: a plain miss and an
+    // array-bearing body.
     const flights = bodySchema("getFlightSearchResults", 200);
     expect(resolves(flights, "metadata.snapshotFareCount")).toBe(true);
     expect(resolves(flights, "metadata.notAField")).toBe(false);
     const rates = bodySchema("getHotelRates", 200);
     expect(resolves(rates, "rates[].id")).toBe(true);
     expect(resolves(rates, "rates[].notAField")).toBe(false);
-    // The array step itself must be load-bearing: without `[]` the path must
-    // not resolve, or `[]` would be decoration and every array path a false
-    // pass.
+    // Without `[]` the path must not resolve, or every array path could pass
+    // falsely.
     expect(resolves(rates, "rates.id")).toBe(false);
   });
 
   it("reads an `allOf` as one assembled shape, not as competing variants", () => {
-    // The bug this kills: expanding `allOf` into "variants" made each part look
-    // like an alternative response, so an `everyVariant` field carried by ONE
-    // part was reported missing from the others - a failure on a contract that
-    // publishes the field on every response it can return.
+    // Expanding `allOf` into variants made each part look like an alternative
+    // response, so an `everyVariant` field carried by one part was reported
+    // missing from the others, on a contract that publishes it everywhere.
     const assembled: SpecNode = {
       allOf: [
         { properties: { searchComplete: {} } },
@@ -398,8 +388,7 @@ describe("Check B - the fields the CLI's behaviour depends on are published", ()
     };
     expect(missingFrom(assembled, field)).toBeUndefined();
 
-    // And the rule it must not weaken: a genuine `anyOf` still has to carry the
-    // field in every branch.
+    // A real `anyOf` must still carry the field in every branch.
     const union: SpecNode = {
       anyOf: [{ properties: { searchComplete: {} } }, { properties: {} }],
     };
@@ -435,10 +424,9 @@ describe("the vendored contract", () => {
     expect(document.servers?.map((server) => server.url)).toEqual([
       "https://api.wego.com",
     ]);
-    // Two-space indent and a trailing newline, so a refresh produces a diff a
-    // person can read rather than one reformatted line. Biome writes this
-    // shape, and `api-contract:refresh` runs biome over the file, so the two
-    // agree by construction rather than by anyone remembering.
+    // Two-space indent and a trailing newline, so a refresh produces a readable
+    // diff. `api-contract:refresh` runs biome over the file, which writes this
+    // shape.
     const text = readFileSync(CONTRACT, "utf8");
     expect(text.endsWith("\n")).toBe(true);
     expect(text.split("\n")[1]).toMatch(/^ {2}"/);

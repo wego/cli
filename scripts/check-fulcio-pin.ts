@@ -1,34 +1,26 @@
 /**
  * Does `src/release-signing/sigstore-roots.ts` still match what Fulcio serves?
  *
- * THE FAILURE THIS WATCHES FOR IS SILENT, GLOBAL AND UNRECOVERABLE. Every binary
- * carries its Fulcio trust anchors PINNED AT BUILD TIME - not fetched, not taken
- * from a system trust store, because the whole point of the check is not to depend
- * on anything an attacker who can write the release store could also reach. The
- * consequence is that the day Sigstore starts issuing leaves under material a
- * binary has never seen, that binary refuses every release published from then on.
- * It does not crash. It keeps working perfectly and simply never updates again,
- * and a binary that cannot take an update cannot take the fix either.
+ * Every binary pins its Fulcio trust anchors at build time (not fetched, not
+ * from a system trust store), so the check does not depend on anything an
+ * attacker who can write the release store could also reach. The consequence:
+ * once Sigstore issues leaves under material a binary has never seen, that
+ * binary refuses every later release. It keeps working but never updates
+ * again, so it cannot take the fix either.
  *
- * NOTHING ELSE WOULD NOTICE. The release lane keeps signing fine - it gets fresh
- * certificates every run - so CI stays green while every binary in the field
- * quietly stops accepting new records. `docs/release.md` says it outright: "There
- * is no automatic notice when Fulcio rotates." This is that notice.
+ * Nothing else would notice. The release lane gets fresh certificates every run
+ * and keeps signing fine, so CI stays green while binaries in the field stop
+ * accepting new records.
  *
- * WHY THIS AND NOT A GATE IN THE RELEASE LANES. The obvious alternative is to make
- * each promote or rollback prove the candidate can still verify something signed
- * today - drive a real binary through a real update before moving the pointer.
- * That was considered and rejected: it costs ~30s of exposure on the one path
- * where exposure is the thing being minimised, it asks the question one tag at a
- * time, and it only ever asks it during an incident. The risk here is rare and
- * sudden and hits the entire install base at once, which is exactly the shape a
- * cheap scheduled check handles well and an expensive per-operation gate handles
- * badly.
+ * Why a scheduled check rather than a gate in the release lanes (making each
+ * promote or rollback drive a real binary through a real update): that costs
+ * ~30s of exposure on the path where exposure is being minimised, checks one tag
+ * at a time, and only runs during an incident. The risk is rare, sudden and hits
+ * every install at once, which suits a cheap scheduled check.
  *
- * ROTATION IS A CODE CHANGE, deliberately (see `sigstore-roots.ts`). When this
- * fails, the fix is to review and commit the new material - and to know that every
- * binary built before that commit now has a rollback horizon: it can only be rolled
- * back onto releases it can still verify.
+ * Rotation is deliberately a code change (see `sigstore-roots.ts`). When this
+ * fails, review and commit the new material. Every binary built before that
+ * commit can then only be rolled back onto releases it can still verify.
  *
  * Run: `bun run scripts/check-fulcio-pin.ts`
  */
@@ -42,11 +34,10 @@ export const FULCIO_ROOT_CERT_URL =
 /**
  * The DER bodies of every certificate in a PEM bundle, sorted.
  *
- * Sorted because the endpoint's ORDER is not a promise and neither is the pin
- * file's - the SET of certificates is the claim. Whitespace is stripped for the
- * same reason: the pin lives inside a template literal in a TypeScript file and
- * the endpoint returns a plain bundle, so line wrapping and trailing newlines
- * differ for reasons that have nothing to do with trust.
+ * Sorted because neither the endpoint nor the pin file promises an order; the
+ * set of certificates is what matters. Whitespace is stripped because the pin
+ * lives in a TypeScript template literal and the endpoint returns a plain
+ * bundle, so line wrapping and trailing newlines differ harmlessly.
  */
 export function certificateBodies(pem: string): string[] {
   const bodies: string[] = [];
@@ -66,8 +57,8 @@ export function certificateBodies(pem: string): string[] {
 }
 
 /**
- * `null` when the pin still matches the live bundle, else the reason - one
- * paragraph, ready for stderr and for the issue this opens.
+ * `null` when the pin still matches the live bundle, else the reason, ready for
+ * stderr and for the issue this opens.
  */
 export function pinDrift(pinnedPem: string, livePem: string): string | null {
   const pinned = certificateBodies(pinnedPem);

@@ -31,8 +31,6 @@ describe("contract check", () => {
 
   it("rejects a body missing a required field", () => {
     const op = operationById("getNearbyPlaces");
-    // The shape the retired in-process stub served: no totalCandidates, hasMore
-    // or origin.resolvedFrom. The fake would have caught it.
     const errors = validateResponse(op, 200, "application/json", {
       results: [{ code: "LCY", name: "London City Airport", type: "airport" }],
       metadata: {

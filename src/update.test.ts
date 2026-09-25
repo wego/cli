@@ -13,9 +13,8 @@ import {
   update,
 } from "./update";
 
-// The RECORDED install endpoint (`ring-follow.ts`), not a blob channel base:
-// `update` follows the ring the installer wrote and fetches every asset through
-// that endpoint's own `?dl=` branch.
+// The recorded install endpoint (`ring-follow.ts`), not a blob channel base:
+// every asset is fetched through its `?dl=` branch.
 const BASE = "https://api.wego.com/install";
 const RING = "latest";
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -41,8 +40,6 @@ interface Route {
   throwErr?: unknown;
 }
 
-/** What a recording fetch serves for one `?dl=` asset: the signed record, the
- *  manifest it vouches for, or the gzipped binary. */
 async function servedBody(
   asset: string | null,
   sums: string,
@@ -55,7 +52,6 @@ async function servedBody(
   return Bun.gzipSync(latest);
 }
 
-/** Build a byte-response out of a string or buffer body. */
 function bodyResponse(body: string | Uint8Array): Response {
   const bytes = typeof body === "string" ? enc(body) : body;
   return {
@@ -67,13 +63,10 @@ function bodyResponse(body: string | Uint8Array): Response {
 }
 
 /**
- * A real signed build record for whatever manifest this suite routed
- * (foundations#74 rung 9), or null when the URL is not a record request.
- *
- * Derived here, once, rather than added to twenty route maps — and it is a genuine
- * signature over those exact bytes, so every test keeps exercising the REAL
- * verifier rather than a stub of it. A test that wants a refusal path routes the
- * `&sig=1` URL explicitly, which takes precedence over this.
+ * A real signed build record for whatever manifest the test routed, or null when
+ * the URL is not a record request. Derived here rather than added to every route
+ * map, and a genuine signature so every test exercises the real verifier. A test
+ * that wants a refusal routes the `&sig=1` URL explicitly, which takes precedence.
  */
 async function recordFor(
   url: string,
@@ -81,7 +74,7 @@ async function recordFor(
 ): Promise<Response | null> {
   if (new URL(url).searchParams.get("sig") !== "1") return null;
   if (routes[url]) return null;
-  // The record's `?dl=` names the BUNDLE; the bytes it signs are the manifest's.
+  // The record's `?dl=` names the bundle; the bytes it signs are the manifest's.
   const manifestUrl = url
     .replace("&sig=1", "")
     .replace(SIGNATURE_ASSET, MANIFEST_ASSET);
@@ -98,12 +91,9 @@ function fakeFetch(routes: Record<string, Route>): typeof fetch {
     if (record) return record;
     const route = routes[url];
     if (!route) {
-      // An unrouted `.gz` models a pre-#1235 channel that carries no archive:
-      // answer 404 so the consumer falls back to the raw asset (the fallback the
-      // gz-first download exists to exercise). Any other unrouted URL is a bug.
-      // Read `dl=` as the route does rather than matching the URL's tail: every
-      // fetch now carries `&ring=` after it (foundations#74 rung 4), so a
-      // suffix check would stop recognising the archive.
+      // An unrouted `.gz` models a pre-#1235 ring with no archive: answer 404 so
+      // the raw-asset fallback is exercised. Any other unrouted URL is a bug.
+      // Read `dl=` rather than the URL's tail, since `&ring=` follows it.
       if (new URL(url).searchParams.get("dl")?.endsWith(".gz")) {
         return {
           ok: false,
@@ -127,8 +117,7 @@ function fakeFetch(routes: Record<string, Route>): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-/** Build injectable deps over an in-memory fs. The running binary is preloaded
- *  at `execPath` with `currentBytes`. `confirm` defaults to yes. */
+/** In-memory fs with `currentBytes` preloaded at `execPath`; `confirm` says yes. */
 function makeDeps(
   overrides: Partial<UpdateDeps> = {},
   currentBytes: Uint8Array = enc("OLD-BINARY"),
@@ -260,10 +249,9 @@ describe("update", () => {
   });
 
   it("refuses a source run even when WEGO_BUILD_VERSION + base are set (fromSource wins over version)", async () => {
-    // The footgun: a source run (`bun run src/index.ts`) that inherits
-    // WEGO_BUILD_VERSION + WEGO_BUILD_DOWNLOAD_BASE_URL reports a non-dev version
-    // and a live base, but execPath is the Bun runtime — self-update must NOT
-    // download + rename over it. The exec-path signal must win over the version.
+    // A source run (`bun run src/index.ts`) that inherits WEGO_BUILD_VERSION
+    // reports a non-dev version, but execPath is the Bun runtime, so self-update
+    // must not rename over it.
     const { deps, out } = makeDeps({ version: "0.2.2", fromSource: true });
     expect(await update([], deps)).toBe(EXIT.OK);
     expect(out.join("\n")).toMatch(/running from source/);
@@ -273,9 +261,9 @@ describe("update", () => {
   });
 
   it("refuses when the install recorded no ring, naming the record and the reinstall line", async () => {
-    // The rung-3 refusal (foundations#74): `update` replaces the running binary on
-    // a checksum difference alone, so with no recorded pointer there is nothing
-    // safe to guess. It must FAIL, not degrade to a hint.
+    // `update` replaces the binary on a checksum difference alone, so with no
+    // recorded ring there is nothing safe to guess. It must fail, not degrade to a
+    // hint.
     const { deps, err, out } = makeDeps({
       readInstallRecord: async () => null,
     });
@@ -330,7 +318,7 @@ describe("update", () => {
       current,
     );
     expect(await update([], deps)).toBe(EXIT.OK);
-    // The followed ring is named, so a user can see WHICH pointer said so.
+    // Names the ring so the user can see which pointer said so.
     expect(out.join("\n")).toMatch(
       /Already up to date \(0\.1\.0, ring latest\)/,
     );
@@ -351,7 +339,6 @@ describe("update", () => {
     );
     expect(await update(["--check"], deps)).toBe(EXIT.OK);
     expect(out.join("\n")).toMatch(/update is available/);
-    // Untouched.
     expect(new TextDecoder().decode(files.get(execPath))).toBe("OLD");
   });
 
@@ -377,10 +364,8 @@ describe("update", () => {
     );
     expect(await update(["-y"], deps)).toBe(EXIT.OK);
     expect(new TextDecoder().decode(files.get(execPath))).toBe("NEW-BINARY");
-    // Temp sibling cleaned up (renamed away).
     expect(files.has(`${tempPath}`)).toBe(false);
     expect(chmodCalls).toEqual([[`${tempPath}`, 0o755]]);
-    // Linux: no quarantine xattr to clear.
     expect(quarantineCalls).toHaveLength(0);
     expect(out.join("\n")).toMatch(/Updated wego/);
   });
@@ -388,14 +373,14 @@ describe("update", () => {
   it("prefers the gzipped asset: decompresses it and replaces in place", async () => {
     const latest = enc("NEW-BINARY");
     const gz = Bun.gzipSync(latest);
-    // Only the raw line is in SHA256SUMS.txt — `update` verifies the DECOMPRESSED
-    // bytes against the raw checksum, never the archive against its own line.
+    // Only the raw line is listed: `update` verifies the decompressed bytes
+    // against the raw checksum, never the archive against its own line.
     const sums = await sumsFor({ "wego-linux-x64": latest });
     const { deps, out, files, execPath, chmodCalls } = makeDeps(
       {
         fetch: fakeFetch({
           [`${BASE}?dl=SHA256SUMS.txt&ring=${RING}`]: { body: sums },
-          // Raw asset deliberately NOT served: proves the gz path was taken.
+          // Raw asset not served, so success proves the gz path was taken.
           [`${BASE}?dl=wego-linux-x64.gz&ring=${RING}`]: { body: gz },
         }),
       },
@@ -425,8 +410,7 @@ describe("update", () => {
   });
 
   it("aborts fail-closed when the gz decompresses to bytes that don't match the raw checksum", async () => {
-    // A present gz whose decompressed bytes fail the raw hash is a HARD failure —
-    // never a silent downgrade to the raw asset (which here is not even served).
+    // A hard failure, never a silent downgrade to the raw asset (not served here).
     const gz = Bun.gzipSync(enc("TAMPERED"));
     const sums = await sumsFor({ "wego-linux-x64": enc("EXPECTED") });
     const { deps, err, files, execPath, tempPath } = makeDeps(
@@ -445,9 +429,8 @@ describe("update", () => {
   });
 
   it("fails hard on a non-404 gz error (5xx) and does NOT fall back to raw", async () => {
-    // Only an ABSENT gz (404) falls back. A 5xx is a server error, not "the
-    // archive isn't here", so it aborts rather than downgrading — the raw asset
-    // is served but must never be reached.
+    // Only a 404 falls back. A 5xx does not mean the archive is absent, so the
+    // raw asset is served here but must never be reached.
     const latest = enc("NEW");
     const sums = await sumsFor({ "wego-linux-x64": latest });
     const { deps, err, files, execPath } = makeDeps(
@@ -475,7 +458,7 @@ describe("update", () => {
           [`${BASE}?dl=wego-linux-x64.gz&ring=${RING}`]: {
             body: enc("not-a-gzip-stream"),
           },
-          // Raw IS served but must never be reached: a corrupt archive is fatal.
+          // Served but must never be reached: a corrupt archive is fatal.
           [`${BASE}?dl=wego-linux-x64&ring=${RING}`]: { body: latest },
         }),
       },
@@ -550,11 +533,10 @@ describe("update", () => {
       same,
     );
     expect(await update(["--force", "-y"], deps)).toBe(EXIT.OK);
-    expect(chmodCalls).toHaveLength(1); // did the download+replace despite match
+    expect(chmodCalls).toHaveLength(1);
   });
 
   it("aborts fail-closed on a checksum mismatch, leaving the binary intact", async () => {
-    // SHA256SUMS lists the hash of DIFFERENT bytes than the asset actually serves.
     const sums = await sumsFor({ "wego-linux-x64": enc("EXPECTED") });
     const { deps, err, files, execPath, tempPath } = makeDeps(
       {
@@ -603,7 +585,6 @@ describe("update", () => {
     expect(await update(["-y"], deps)).toBe(EXIT.ERROR);
     expect(err[0]).toMatch(/permission denied/);
     expect(err[0]).toContain("curl -fsSL https://api.wego.com/install | bash");
-    // Temp file cleaned up on failure.
     expect(files.has(`${tempPath}`)).toBe(false);
   });
 
@@ -665,9 +646,8 @@ describe("update", () => {
         url: String(url),
         hasSignal: init?.signal instanceof AbortSignal,
       });
-      // Three fetches: the signed build record, the sums read it vouches for, and
-      // the `<asset>.gz` download (gz-first). A stalled any-of-them must not hang
-      // the update, so every one carries a deadline.
+      // Three fetches: the signed build record, the sums it vouches for, and the
+      // `<asset>.gz` download.
       const body = await servedBody(
         new URL(String(url)).searchParams.get("dl"),
         sums,
@@ -687,9 +667,8 @@ describe("update", () => {
     expect(seen.every((c) => c.hasSignal)).toBe(true);
   });
 
-  // foundations#74 rung 9. The manifest decides whether to replace the running
-  // binary, so it is authority; these assert that authority is never granted on the
-  // store's word alone.
+  // foundations#74 rung 9: the manifest decides whether to replace the binary, so
+  // it is never trusted on the store's word alone.
   it("refuses when the ring serves no signed build record", async () => {
     const latest = enc("NEW");
     const sums = await sumsFor({ "wego-linux-x64": latest });
@@ -697,9 +676,8 @@ describe("update", () => {
       {
         fetch: fakeFetch({
           [`${BASE}?dl=SHA256SUMS.txt&ring=${RING}`]: { body: sums },
-          // An absent record must REFUSE, not wave the manifest through. Treating
-          // "no record" as "not signed yet" would hand any store writer a
-          // downgrade: delete the record, verification turns itself off.
+          // Treating "no record" as "not signed yet" would hand any store writer
+          // a downgrade: delete the record and verification turns itself off.
           [`${BASE}?dl=SHA256SUMS.txt.sigstore.json&ring=${RING}&sig=1`]: {
             status: 404,
           },
@@ -712,11 +690,9 @@ describe("update", () => {
     expect(err.join("\n")).toContain("signed build record");
   });
 
-  // Both refuse - that is not the question. The EXIT CODE is: `src/error-report.ts`
-  // owns a taxonomy a wrapper branches on, so reporting an unreached host as
-  // PERMANENT tells a caller to stop retrying a condition that is temporary, while
-  // reporting an absent record as temporary invites a retry loop against a ring
-  // that will never carry one.
+  // Both refuse; the exit code differs. A wrapper branches on the
+  // `src/error-report.ts` taxonomy, so an unreached host must not read as
+  // PERMANENT, and an absent record must not invite a retry loop.
   it("reports an unreachable record host as a timeout, not a permanent refusal", async () => {
     const latest = enc("NEW");
     const sums = await sumsFor({ "wego-linux-x64": latest });
@@ -724,8 +700,8 @@ describe("update", () => {
       {
         fetch: fakeFetch({
           [`${BASE}?dl=SHA256SUMS.txt&ring=${RING}`]: { body: sums },
-          // The deadline firing rather than a served status: never reached, so
-          // nothing is known about whether a record exists.
+          // The deadline fires rather than a status being served, so nothing is
+          // known about whether a record exists.
           [`${BASE}?dl=SHA256SUMS.txt.sigstore.json&ring=${RING}&sig=1`]: {
             throwErr: new DOMException(
               "The operation timed out.",
@@ -738,20 +714,17 @@ describe("update", () => {
       enc("OLD"),
     );
     expect(await update(["-y"], deps)).toBe(EXIT.TIMEOUT);
-    // Still a refusal: no binary is installed on the strength of an unread record.
     expect(err.join("\n")).toContain("signed build record");
-    // AND NO REINSTALL ADVICE. This branch is temporary by construction, so
-    // telling someone to reinstall because their network blinked would trade a
-    // working install for a transient failure. The remedy belongs only on the
-    // branch that is genuinely a dead end.
+    // No reinstall advice: this is temporary, and reinstalling over a network
+    // blip trades a working install for a transient failure.
     expect(err.join("\n")).not.toContain("Reinstall the latest with:");
   });
 
   it("refuses a record that does not vouch for the manifest served with it", async () => {
     const latest = enc("NEW");
     const sums = await sumsFor({ "wego-linux-x64": latest });
-    // A real, correctly-signed record - over DIFFERENT bytes. This is the swap a
-    // store writer would make: keep a valid-looking record, change the manifest.
+    // A correctly signed record over different bytes: the swap a store writer
+    // would make, keeping a valid-looking record and changing the manifest.
     const record = JSON.stringify(await signManifest(enc("other manifest\n")));
     const { deps, err } = makeDeps(
       {
@@ -765,39 +738,28 @@ describe("update", () => {
       },
       enc("OLD"),
     );
-    // RETRYABLE, not PERMANENT. This exact shape is what a ring mid-promote
-    // serves: `upload-release-blob.ts` copies the record and the manifest as two
-    // adjacent writes, so a reader between them sees a record for the OTHER
-    // manifest, and a cache can straddle the pair for its whole TTL. Reporting
-    // that as permanent tells every wrapper to stop retrying a condition that
-    // clears in seconds.
+    // RETRYABLE, not PERMANENT: a ring mid-promote serves exactly this.
+    // `upload-release-blob.ts` writes the record and the manifest separately, so a
+    // reader between them, or a cache straddling them, sees a record for the other
+    // manifest. It clears on its own.
     expect(await update(["-y"], deps)).toBe(EXIT.RETRYABLE);
     const out = err.join("\n");
     expect(out).toContain("not vouched for");
     expect(out).toContain("may be mid-update");
     expect(out).toContain("Nothing was installed");
-    // Must NOT tell them to reinstall: waiting fixes this, reinstalling is a
-    // pointless round trip that happens to work for the wrong reason.
+    // Waiting fixes this, so no reinstall advice.
     expect(out).not.toContain("Reinstall the latest with:");
   });
 
-  // THE DEAD END MUST NAME ITS EXIT - and this is the case that IS one.
-  //
-  // v1.2.3 shipped this test against a payload mismatch, which is the promote
-  // window above and self-resolving. The assertion passed while describing the
-  // wrong scenario, and the code it was guarding gave reinstall advice on four
-  // failure classes that reinstalling does not fix.
-  //
-  // The real dead end is IDENTITY: the ring serves a record signed by someone
-  // this binary's trust set does not accept. Waiting never helps, and only a
-  // build carrying different rules can take it - which is exactly why
-  // reinstalling is the remedy here and nowhere else. It is what every 1.2.0 and
-  // 1.2.1 install hit when `cli/stable` served a record signed under wego-ai's
-  // `cli-v1.1.0` tag (wego/cli#29).
+  // Identity is the one dead end: the ring serves a record signed by an identity
+  // this binary's trust set does not accept. Waiting never helps and only a build
+  // with different rules can take it, so reinstalling is the remedy here and
+  // nowhere else. Every 1.2.0 and 1.2.1 install hit this when `cli/stable` served
+  // a record signed under wego-ai's `cli-v1.1.0` tag (wego/cli#29).
   it("tells the user to reinstall when the RECORD'S IDENTITY is not accepted", async () => {
     const latest = enc("NEW");
     const sums = await sumsFor({ "wego-linux-x64": latest });
-    // A correctly-signed record over the RIGHT bytes, re-issued to a leaf whose
+    // A correctly signed record over the right bytes, re-issued to a leaf whose
     // SAN names a workflow this binary does not trust. Identity is checked before
     // any cryptography, so the swap alone produces the refusal.
     const signed = (await signManifest(sums)) as {
@@ -822,12 +784,11 @@ describe("update", () => {
     expect(out).toContain("Reinstall the latest with:");
     expect(out).toContain("curl -fsSL");
     expect(out).toContain("retrying will not change that");
-    // And NOT the mid-update wording: this one does not clear on its own.
     expect(out).not.toContain("may be mid-update");
   });
 
-  // The record is fetched from the ring's own record prefix, through the same
-  // first-party endpoint - the release store's hostname stays server-side here too.
+  // Through the same first-party endpoint, so the release store's hostname stays
+  // server-side.
   it("fetches the record for the ring it follows, marked as a record", async () => {
     const latest = enc("NEW");
     const sums = await sumsFor({ "wego-linux-x64": latest });
@@ -862,7 +823,7 @@ describe("update", () => {
         ring: "latest",
         installUrl: "http://evil.example/install",
       }),
-      // fetch must never be reached — the guard fires before any network call.
+      // No routes: the guard must fire before any network call.
       fetch: fakeFetch({}),
     });
     expect(await update(["--check"], deps)).toBe(EXIT.PERMANENT);

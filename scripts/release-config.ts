@@ -3,8 +3,8 @@ export interface ReleaseEnvSpec {
   tokenUrl: string;
   apiUrl: string;
   clientId: string;
-  /** The write-only PostHog key baked as `WEGO_BUILD_POSTHOG_PROJECT_KEY`. **Optional**,
-   *  like the two channel bases: absent → the binary emits nothing. */
+  /** The write-only PostHog key baked as `WEGO_BUILD_POSTHOG_PROJECT_KEY`.
+   *  Optional: when absent the binary emits no telemetry. */
   posthogKey?: string;
 }
 
@@ -42,31 +42,19 @@ function requiredEnv(source: NodeJS.ProcessEnv, name: string): string {
 }
 
 /**
- * The one host family the baked AUTH/API endpoints may point at.
+ * The one host family the baked auth/API endpoints may point at.
  *
- * The published binary's DEFAULT target is `prod`, and `prod` imposes no endpoint
- * overrides (`src/target.ts`) - it uses these baked values verbatim. So whatever is
- * baked here is what every install talks to until its user passes `--target`.
+ * The published binary's default target is `prod`, and `prod` imposes no endpoint
+ * overrides (`src/target.ts`): it uses these baked values verbatim. A
+ * `Production - cli` Environment mis-set to staging values would compile staging
+ * endpoints into the binary everyone installs, and nothing downstream would
+ * notice: the build succeeds and the smoke runs `version` and `logout`, neither
+ * of which touches the network. Staging is reachable at run time with
+ * `--target staging`, so it never needs to be baked.
  *
- * The retired flavor axis used to police this as a two-way cross-check: a staging
- * build's hosts had to contain `wegostaging`, a prod build's had to not. With one
- * build there is no label left to contradict, but the DANGER did not go with it -
- * it got worse, because there is no longer a second build whose absence would be
- * noticed. A `Production - cli` Environment mis-set to staging values would compile
- * staging endpoints into the binary everyone installs, and nothing downstream could
- * detect it: the build succeeds, the smoke runs `version` and `logout` (neither
- * touches the network), and the binary simply talks to the wrong backend forever.
- *
- * So the check is now POSITIVE and one-way, which is both simpler and stricter than
- * what it replaces: these three must be `wego.com` hosts. Staging is reachable from
- * this same binary at RUN time (`--target staging`), which is exactly why it never
- * needs to be baked.
- *
- * A SUFFIX match on the registrable domain, not an exact host: the auth and API
- * hosts differ (`auth.wego.com`, `api.wego.com`) and neither should be pinned here,
- * where a new subdomain would be a routine change. `.wegostaging.com` does not end
- * with `.wego.com`, so the staging family is excluded by construction rather than by
- * a second rule that could drift from the first.
+ * A suffix match on the registrable domain, not an exact host: the auth and API
+ * hosts differ and a new subdomain is a routine change. `.wegostaging.com` does
+ * not end with `.wego.com`, so staging is excluded without a second rule.
  */
 const PRODUCTION_HOST_SUFFIX = ".wego.com";
 
@@ -83,29 +71,15 @@ function assertProductionHost(raw: string, name: string): void {
 }
 
 /**
- * Read and validate THE public release bundle before any artifact is removed or
+ * Read and validate the public release bundle before any artifact is removed or
  * built. The build environment supplies the same canonical names as runtime.
  *
- * One bundle, not two. The `wegostaging` flavor is gone (foundations#74 rung 7):
- * the backend is no longer welded into the artifact, so there is exactly one
- * `wego-*` binary, baked with the PROD endpoints, and `--target staging`
- * swaps the whole auth bundle at run time from `src/target.ts`'s source literals
- * (rung 2). The flavor CHANNEL-PATH cross-check went with it - a ring is a
- * recorded install-time choice now, not something baked. The flavor HOST check did
- * not go: it came back as `assertProductionHost` above, positive instead of
- * two-way. See its comment for why one build makes that stricter, not looser.
+ * There is one `wego-*` binary, baked with the prod endpoints; `--target staging`
+ * swaps the whole auth bundle at run time from `src/target.ts`.
  */
 export function readReleaseEnvSpec(source: NodeJS.ProcessEnv): ReleaseEnvSpec {
-  // Optional: absent → the built binary's `skill install` degrades to the
-  // embedded copy.
-  //
-  // There is no channel base here any more, on EITHER axis. `wego update` reads the
-  // ring the INSTALLER recorded (foundations#74 rung 3) and the new-version notice
-  // reads the same record, so nothing about where a binary looks for a newer version
-  // is compiled into it. It used to be baked as `WEGO_BUILD_DOWNLOAD_BASE_URL`, which
-  // made two sources of truth for one question and drifted exactly as that invites:
-  // the baked value still named `cli/latest` after rung 7 retired it.
-  //
+  // No channel base is baked: `wego update` and the new-version notice read the
+  // ring the installer recorded, so there is one source of truth for it.
   const posthogKey = source.WEGO_CLI_POSTHOG_PROJECT_KEY?.trim() || undefined;
   const spec: ReleaseEnvSpec = {
     authorizeUrl: requiredEnv(source, "WEGO_AUTH_AUTHORIZE_URL"),
@@ -117,7 +91,7 @@ export function readReleaseEnvSpec(source: NodeJS.ProcessEnv): ReleaseEnvSpec {
   assertReleaseHttps(spec.authorizeUrl, "WEGO_AUTH_AUTHORIZE_URL");
   assertReleaseHttps(spec.tokenUrl, "WEGO_AUTH_TOKEN_URL");
   assertReleaseHttps(spec.apiUrl, "WEGO_API_URL");
-  // HTTPS alone accepts ANY https host, staging included. These three become the
+  // HTTPS alone accepts any host, staging included. These three become the
   // default-target endpoints of every published install, so they are pinned to the
   // production host family too.
   assertProductionHost(spec.authorizeUrl, "WEGO_AUTH_AUTHORIZE_URL");

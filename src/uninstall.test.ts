@@ -116,7 +116,7 @@ describe("uninstall", () => {
 
   it("refuses a source run even when WEGO_BUILD_VERSION spoofs a release version (fromSource wins over version)", async () => {
     // A source run (`bun run src/index.ts`) that inherits WEGO_BUILD_VERSION reports
-    // a non-dev version, but execPath is still the Bun runtime — must NOT be removed.
+    // a non-dev version, but execPath is still the Bun runtime.
     const { deps, out, removed, flags } = makeDeps({
       version: "0.2.2",
       fromSource: true,
@@ -149,7 +149,6 @@ describe("uninstall", () => {
       telemetryOptedOut: async () => true,
     });
     expect(await uninstall(["-y"], deps)).toBe(EXIT.OK);
-    // The update-check throttle still goes; only the opt-out is preserved.
     expect(removed).toEqual([
       EXEC,
       STATE,
@@ -188,8 +187,7 @@ describe("uninstall", () => {
     expect(confirmCalls[0]).toContain(CREDS);
     expect(confirmCalls[0]).toContain(STATE);
     expect(confirmCalls[0]).toContain(SKILL);
-    // The skill line names its scope so a project-/--dir-scoped install left in
-    // place isn't a surprise (the summary only removes the default user-scope skill).
+    // Names the scope so a project or --dir install left in place is no surprise.
     expect(confirmCalls[0]).toMatch(/default user-scope agent skill/);
   });
 
@@ -208,7 +206,6 @@ describe("uninstall", () => {
     const { deps, confirmCalls, flags } = makeDeps();
     expect(await uninstall(["-y", "--keep-credentials"], deps)).toBe(EXIT.OK);
     expect(flags()).toEqual({ credsRemoved: false, skillRemoved: true });
-    // confirm bypassed by -y
     expect(confirmCalls).toHaveLength(0);
   });
 
@@ -221,7 +218,6 @@ describe("uninstall", () => {
   it("on Windows removes creds/skill but prints a manual binary step", async () => {
     const { deps, out, removed, flags } = makeDeps({ platform: "win32" });
     expect(await uninstall(["-y"], deps)).toBe(EXIT.OK);
-    // Can't delete the running .exe, but the rest of the footprint still goes.
     expect(removed).toEqual([
       STATE,
       INSTALL_RECORD,
@@ -235,9 +231,7 @@ describe("uninstall", () => {
   });
 
   it("logs and continues when only the local state file can't be removed", async () => {
-    // The state removal is best-effort like every other cleanup step: a failure
-    // there must not strand the uninstall or skip the credentials/skill removal
-    // that follows it.
+    // Must not skip the credentials and skill removal that follow it.
     const { deps, err, flags } = makeDeps({
       rm: async (path) => {
         if (path === STATE)
@@ -260,8 +254,8 @@ describe("uninstall", () => {
   });
 
   it("preserves credentials + skill when the binary can't be removed", async () => {
-    // The binary goes first, so an unremovable binary (e.g. a root-owned dir run
-    // unprivileged) must NOT leave the login/agent wiped while the binary stays.
+    // An unremovable binary (e.g. a root-owned dir run unprivileged) must not
+    // leave the login and skill wiped while the binary stays.
     const { deps, flags } = makeDeps({
       rm: async () => {
         throw Object.assign(new Error("EACCES"), { code: "EACCES" });
@@ -272,8 +266,6 @@ describe("uninstall", () => {
   });
 
   it("cleanup is best-effort: a credentials-removal failure doesn't strand the uninstall", async () => {
-    // The binary is already gone; a cleanup hiccup is logged and skipped, the skill
-    // is still removed, and the command still succeeds.
     const { deps, out, err, removed, flags } = makeDeps({
       removeCredentials: async () => {
         throw Object.assign(new Error("EACCES"), { code: "EACCES" });

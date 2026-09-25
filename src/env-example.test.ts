@@ -10,7 +10,7 @@ import {
 import { parseDotenv } from "./env-local";
 
 /**
- * Env keys declared in a dotenv-style file — active (`KEY=…`) or commented
+ * Env keys declared in a dotenv-style file, active (`KEY=…`) or commented
  * (`# KEY=…`), since a typo in a commented example var is just as misleading.
  * Anchored at line start so an inline comment (e.g. a URL after the value)
  * never matches.
@@ -60,13 +60,11 @@ describe(".env.local.example", () => {
     expect(requireClientId(config)).toBe(config.clientId);
   });
 
-  // The template now declares the previously-commented optional vars explicitly
-  // (12-factor: complete config — a straight `cp` leaves nothing behind a hidden
-  // default). Same reasoning as WEGO_API_URL above: each explicit literal is
-  // bound to its code default so making them explicit can't let the template
-  // silently drift from `loadCliConfig`'s defaults. `redirectPort` is compared as
-  // a string because the example is dotenv text ("0") while the parsed config is
-  // a number (0).
+  // The template declares the optional vars explicitly, so a straight `cp`
+  // leaves nothing behind a hidden default. Each literal is bound to its code
+  // default so the template cannot drift from `loadCliConfig`. `redirectPort` is
+  // compared as a string because the example is dotenv text ("0") while the
+  // parsed config is a number (0).
   it("declares the explicit optionals equal to their code defaults (doc/code binding)", () => {
     const active = parseDotenv(
       readFileSync(join(import.meta.dir, "..", ".env.local.example"), "utf8"),

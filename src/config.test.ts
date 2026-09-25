@@ -9,8 +9,7 @@ import {
 } from "./config";
 
 /** Run `body` as though the binary on disk were named `name`. `process.execPath`
- *  is the only thing that ever varied the config scope, and it is assignable, so
- *  this drives the real wiring rather than a parallel copy of the rule. */
+ *  is assignable, so this drives the real wiring rather than a copy of the rule. */
 function asCommand<T>(name: string, body: () => T): T {
   const real = process.execPath;
   process.execPath = `/home/u/.local/bin/${name}`;
@@ -114,8 +113,6 @@ describe("loadCliConfig", () => {
   });
 
   it("does not validate loopback settings (whoami/logout must not break on a login-only env var)", () => {
-    // loadCliConfig never throws on a malformed loopback override — validation
-    // is deferred to assertLoopback, called only by login.
     expect(() =>
       loadCliConfig(env({ WEGO_CLI_REDIRECT_PORT: "abc" })),
     ).not.toThrow();
@@ -131,9 +128,8 @@ describe("loadCliConfig", () => {
   });
 
   it("scopes the default credentials dir by an explicitly passed scope", () => {
-    // The scope is still a parameter so `index.ts` can pass the target-aware one
-    // for the credentials while passing the bare `wego` for the rest. Only the
-    // DEFAULT stopped varying.
+    // The scope is a parameter so `index.ts` can pass the target-aware one for
+    // the credentials and the bare `wego` for the rest.
     expect(defaultCredentialsPath({ XDG_CONFIG_HOME: "/x/cfg" }, "wego")).toBe(
       "/x/cfg/wego/credentials.json",
     );
@@ -146,9 +142,7 @@ describe("loadCliConfig", () => {
   });
 
   it("loadCliConfig does not let the command name move the credentials path", () => {
-    // Nothing about the invocation decides where anyone's tokens live. Under the
-    // name-keyed rule this first case answered `/x/cfg/wego-next/...`, which is
-    // how a copied binary came up logged out.
+    // A copied binary under another name must not come up logged out.
     const c = asCommand("wego-next", () =>
       loadCliConfig(env({ XDG_CONFIG_HOME: "/x/cfg" }), {}),
     );
@@ -229,10 +223,9 @@ describe("assertSecureUrl", () => {
 
   it("allows the reserved .localhost suffix over http, and only it", () => {
     // Portless serves the local `apps/api` at `api.localhost`, and a linked
-    // worktree at a branch-prefixed name under the same suffix. Since the
-    // `local` target went, `WEGO_API_URL` is the only way to name either, so a
-    // rule that knew only the three literals would reject every developer's
-    // setup. RFC 6761 reserves the suffix for loopback; nothing routable has it.
+    // worktree at a branch-prefixed name under the same suffix, and
+    // `WEGO_API_URL` is the only way to name either. RFC 6761 reserves the
+    // suffix for loopback; nothing routable has it.
     expect(() =>
       assertSecureUrl("http://api.localhost", "WEGO_API_URL"),
     ).not.toThrow();
@@ -266,9 +259,8 @@ describe("requireClientId", () => {
 
 describe("the config scope", () => {
   it("is `wego` whatever the binary on disk is called", () => {
-    // The whole point of the constant. Under the old name-keyed rule these two
-    // resolved to `/x/cfg/wego-next/...` and `/x/cfg/wego-edge/...`, so a copied
-    // binary silently owned a different login, ring record and opt-out.
+    // A copied or renamed binary must not silently own a different login, ring
+    // record and opt-out.
     for (const name of ["wego", "wego-next", "wego-edge", "mywego"]) {
       expect(
         asCommand(name, () =>
@@ -295,16 +287,13 @@ describe("the config scope", () => {
     //
     //     record_dir="${XDG_CONFIG_HOME:-$HOME/.config}/$BIN_NAME"
     //
-    // and `BIN_NAME` defaults to the flavor, the literal `wego`. That is the same
-    // arithmetic as below, which is what lets README's side-by-side recipe work
-    // with no change to the installer and no ring knob in the CLI: give each extra
-    // install its own XDG_CONFIG_HOME and the two sides meet on one path.
+    // and `BIN_NAME` defaults to the literal `wego`. That is the same arithmetic
+    // as below, which is what lets the side-by-side recipe work with no change to
+    // the installer and no ring knob in the CLI: give each extra install its own
+    // XDG_CONFIG_HOME and the two sides meet on one path.
     //
-    // Pinned here because the two live in different repositories. When this file's
-    // rule was keyed to the command name, a `WEGO_CLI_BIN=wego-next` install wrote
-    // to `~/.config/wego-next/` and read from `~/.config/wego/`: the ring record
-    // was simply invisible and `update` refused. A test that spells out the
-    // installer's own formula is the cheapest place to notice that again.
+    // Pinned here because the two live in different repositories. If they
+    // disagree, the ring record is invisible and `update` refuses.
     const root = "/home/u/.wego/edge/config";
     const installerBinName = "wego"; // what the script uses when WEGO_CLI_BIN is unset
     const writes = `${root}/${installerBinName}/install.json`;
@@ -340,9 +329,8 @@ describe("the config scope", () => {
   });
 
   it("stays inside the config root, never the root itself", () => {
-    // The old empty-flavor guard, kept as the property it was protecting: a
-    // scope that collapsed to "" would put credentials.json next to every other
-    // tool's config.
+    // A scope that collapsed to "" would put credentials.json next to every
+    // other tool's config.
     expect(defaultCredentialsPath({ XDG_CONFIG_HOME: "/x/cfg" })).toBe(
       "/x/cfg/wego/credentials.json",
     );

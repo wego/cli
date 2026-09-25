@@ -28,19 +28,17 @@ name: Release (cli)
 # with the store token, and neither of the two can reach it.
 # `scripts/workflow-shape.test.ts` asserts this split and names the exact set.
 #
-# `notify-verify` IS ALLOWED TO GO RED. Nothing that publishes needs it, and a red
-# there means "verification was not requested", never "the release failed". The
-# bytes are published and `cli/next` has moved by the time it runs. It carries no
-# `continue-on-error` on purpose: a request that silently did not happen is worse
-# than a red job, because the promote banner would then show "No report" for a
-# reason nobody saw. A red here makes the run's conclusion `failure`, so
-# `promote-cli.yml` reads this run job by job and leaves out `notify-verify` and
-# `next-report`: a receiver outage must not hold back a promote.
+# `notify-verify` may go red. Nothing that publishes needs it, and red there means
+# "verification was not requested", not "the release failed": the bytes are
+# published and `cli/next` has moved by the time it runs. No `continue-on-error`
+# on purpose, so a request that did not happen is visible rather than showing up
+# later as an unexplained "No report" on the promote banner. Because a red here
+# fails the run, `promote-cli.yml` checks this run job by job and skips
+# `notify-verify` and `next-report`: a receiver outage must not block a promote.
 #
-# `next-report` IS NEVER RED. It waits for wego-ai's `cli-next-smoke` check, looks
-# once at its `cli-next-evals` check, and writes both into this run's summary, for
-# a person to read before promoting. It is advice, so every outcome, including
-# "no report", is a green job.
+# `next-report` is never red. It waits for wego-ai's `cli-next-smoke` check, looks
+# once at its `cli-next-evals` check, and writes both into this run's summary for
+# the promoter. It is advice, so every outcome, including "no report", is green.
 #
 # Signing identity (the Fulcio SAN):
 #   https://github.com/wego/cli/.github/workflows/release-cli.yml@refs/tags/vX.Y.Z
@@ -126,11 +124,10 @@ jobs:
       - name: Unit tests
         run: bun run test
 
-      # The same audit, at tag time. Not redundant with `ci-cli`, which audits at merge
-      # time: an advisory published between the last merge to `main` and this tag falls
-      # in that gap, and this step is what closes it. `prepare` is the only correct job
-      # for it - `build`, `sign` and `release` all `needs:` this one, so a finding here
-      # means the vulnerable tree is never compiled, never signed and never published.
+      # The same audit as `ci-cli`, at tag time, to catch an advisory published
+      # between the last merge and this tag. It belongs in `prepare` because
+      # `build`, `sign` and `release` all need this job, so a finding stops the
+      # tree from being compiled, signed or published.
       - name: Audit the installed dependency tree (bun.lock)
         run: bun audit --audit-level=high
 
@@ -327,8 +324,8 @@ jobs:
   # so a target that fails blocks publication for all of them: `cli/next` serves one
   # manifest, and a release with a broken platform in it has no backward path.
   #
-  # NOT WINDOWS. `wego-windows-x64.exe` is built and published but has no leg here:
-  # its first run (v1.4.0) failed on the suite, not the binary, and held the release.
+  # Not Windows. `wego-windows-x64.exe` is built and published but has no leg here:
+  # the suite itself does not pass on Windows (seen at v1.4.0).
   # `scripts/workflow-lanes.test.ts` names it as the one exemption, so a new target
   # cannot go untested silently.
   #
@@ -439,10 +436,9 @@ jobs:
     # No `id-token`: signing happened in `sign`. This job can write bytes to the
     # store but cannot produce a record clients accept.
     #
-    # `contents: read`, not write. This job used to hold the store token and
-    # `contents: write` together, the only job in the repository with two meaningful
-    # write capabilities. The GitHub Release moved to `announce`, which holds
-    # `contents: write` and no environment. Do not give this job write back.
+    # `contents: read`, not write. The GitHub Release is created in `announce`, so
+    # no job holds both the store token and repository write. Do not give this job
+    # write.
     permissions:
       contents: read
     env:
@@ -636,22 +632,19 @@ jobs:
   # check run on this commit, as its GitHub App (id 4987365), and `next-report`
   # below reads it into this run's summary. Nothing gates on it.
   #
-  # THIS REPOSITORY HOLDS NO CREDENTIAL FOR ANY OF IT. What travels is a GitHub
-  # Actions OIDC token, which GitHub signs and this job merely asks for; the
-  # receiver decides what it is worth by reading the claims. The identity it admits
-  # for this lane is: `repository == wego/cli`, `event_name == push`,
+  # This repository holds no credential for this. The job sends a GitHub Actions
+  # OIDC token, signed by GitHub, and the receiver decides from its claims. It
+  # admits: `repository == wego/cli`, `event_name == push`,
   # `ref == refs/tags/<tag>`, `sha == body.sha`, and a `job_workflow_ref` naming
-  # THIS file at THIS tag. A fork, a branch run, or a call from another workflow
-  # produces a token that does not match, and the receiver answers 403.
+  # this file at this tag. A fork, a branch run, or a call from another workflow
+  # gets a 403.
   #
-  # NO SWITCH ON THIS SIDE. The job always asks; the receiver's own switch, in
+  # No switch on this side. The job always asks; the receiver's switch, in
   # wego-ai, decides. Switched off, it answers 404, read below as "not verified".
   #
-  # `needs: [prepare, release]` is the whole dependency set, and `release` is on it
-  # because the smoke is of what `cli/next` now serves. That is also the only edge
-  # to a job holding the store token, and this job cannot reach the token through
-  # it: `needs` passes outputs, not secrets, and this job declares no
-  # `environment:`, which is where the token lives.
+  # `needs: release` because the smoke tests what `cli/next` now serves. That edge
+  # does not expose the store token: `needs` passes outputs, not secrets, and this
+  # job declares no `environment:`.
   notify-verify:
     name: Request release verification
     needs: [prepare, release]
@@ -662,10 +655,9 @@ jobs:
     # the answer still leaves a value to read; a later write of the same key wins.
     outputs:
       status: ${{ steps.ask.outputs.status }}
-    # NO `environment:`, ever. This job holds `id-token: write`, so every step of it
-    # can mint a token under an identity a receiver trusts; an environment here
-    # would put the store token in the same job, which is the pairing
-    # `workflow-shape.test.ts` exists to refuse.
+    # Never an `environment:`. This job holds `id-token: write`; an environment
+    # would put the store token in the same job, which `workflow-shape.test.ts`
+    # refuses.
     #
     # `id-token: write` alone. No `contents: read` either: there is no checkout,
     # and a job-level block replaces the workflow floor rather than adding to it.
@@ -741,10 +733,9 @@ jobs:
   # when `notify-verify` was, which is every run that did not publish. After a
   # 202 or 409 it looks every 30 s, for up to 45 min.
   #
-  # NEVER RED, three ways over: the script exits 0 on every state it knows, the
-  # step turns a crash into a summary line and `exit 0`, and the job is
-  # `continue-on-error`. Nothing needs it. A red here would read as a failed
-  # release and send someone looking for a fault in the bytes.
+  # Never red: the script exits 0 on every state it knows, the step turns a crash
+  # into a summary line and `exit 0`, and the job is `continue-on-error`. Nothing
+  # needs it. A red here would look like a failed release.
   #
   # `checks: read` for the API read and `contents: read` for the checkout, and
   # nothing else: no environment, no secret, no `id-token`. `github.token` is the
@@ -789,23 +780,20 @@ jobs:
   #   release    environment: release   (store token)   contents: read
   #   announce   no environment         (no token)      contents: write
   #
-  # One job used to hold both. A compromised transitive dependency executing there
-  # got repository write and the ring together. There is nothing in this job to
-  # compromise either: one `github-script` step and an artifact download, no Bun, no
-  # `node_modules`, no `@vercel/blob`.
+  # A compromised dependency in one job would otherwise get repository write and
+  # the ring together. This job runs no project code: one `github-script` step and
+  # an artifact download, no Bun, no `node_modules`, no `@vercel/blob`.
   #
-  # No `environment:`, and it must stay that way. Do not hoist `environment:` to
-  # workflow level in this file: that would give this job the store token and give
-  # `sign` one too, collapsing the separation between signing and writing the ring.
-  # Nothing would visibly break.
+  # No `environment:`, and never one at workflow level in this file: that would
+  # give this job and `sign` the store token, removing the separation between
+  # signing and writing the ring, with nothing visibly breaking.
   #
   # `needs: [prepare, release]`: `prepare` produces `tag` and `prev_tag`, and the
-  # bytes must be published before a Release announces them. Same order as when
-  # these steps sat at the end of `release`.
+  # bytes must be published before a Release announces them.
   #
-  # `promote-cli.yml` gates on the release run's conclusion, not on one job, so a
-  # failure here holds the tag back from promote until it is re-run. This job is
-  # idempotent and writes no ring, so re-running it alone is safe.
+  # `promote-cli.yml` requires this job to have succeeded, so a failure here holds
+  # the tag back from promote until it is re-run. This job is idempotent and
+  # writes no ring, so re-running it alone is safe.
   announce:
     name: Announce the release on GitHub
     needs: [prepare, release]

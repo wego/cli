@@ -1,38 +1,29 @@
 /**
- * Read the plugin repo back after a publish (foundations#101 rung 4b).
+ * Read the plugin repo back after a publish.
  *
  *   bun run scripts/verify-plugin-published.ts
  *
- * `publish-plugin.ts` proves that the repo holds only paths the plan names. It
- * never looks at what those paths CONTAIN once pushed, so the lane's own probe
- * is "paths, not bytes". This closes that: re-clone the published repo and
- * compare every `{from, to}` pair byte for byte against source, failing the
- * promote when any is missing or differs.
+ * `publish-plugin.ts` proves the repo holds only paths the plan names, not what
+ * those paths contain once pushed. This re-clones the published repo and compares
+ * every `{from, to}` pair byte for byte against source, failing the promote when
+ * any is missing or differs.
  *
- * IT MUST RE-CLONE. Inspecting the working copy the publish pushed from would
- * only confirm we did what we thought we did - it reads our own copy of the
- * truth, and it would pass the case this exists to catch. `publish-plugin.ts`
- * ends with `git push origin HEAD`; on an EMPTY remote the clone has an unborn
- * HEAD, and which branch name that resolves to depends on what the remote
- * advertises versus the runner's `init.defaultBranch`. Resolve it wrong and the
- * push succeeds, the step exits 0, and the channel everyone installs from is
- * still empty. Only an independent fetch can tell.
+ * It must re-clone. The working copy the publish pushed from would pass the case
+ * this exists to catch: `publish-plugin.ts` ends with `git push origin HEAD`, and
+ * on an empty remote the clone has an unborn HEAD whose branch name depends on
+ * what the remote advertises versus the runner's `init.defaultBranch`. Resolve it
+ * wrong and the push succeeds while the channel everyone installs from stays
+ * empty.
  *
- * Gated on `SKILLS_PUBLISH_TOKEN` exactly like the publish, so it skips precisely
- * when the publish skipped. A verify that ran while nothing was published would
- * fail every promote until the lane is armed. Armed, not provisioned: the App
- * credentials already exist, and `SKILLS_PUBLISH_ENABLED` is the separate switch
- * rung 5(b) flips - see `publish-plugin.ts`.
+ * Gated on `SKILLS_PUBLISH_TOKEN` like the publish, so it skips exactly when the
+ * publish skipped; otherwise it would fail every promote until the lane is armed.
+ * `SKILLS_PUBLISH_ENABLED` is the separate switch (see `publish-plugin.ts`).
  *
- * WHILE `wego/skills` IS PRIVATE this clone is authenticated, and it therefore
- * proves the bytes and nothing about reachability. Once the repo is public the
- * read should drop the credential and clone anonymously: that reads the channel
- * the way a user does, and it is the only version that catches the repo being
- * flipped back to private - an authenticated read sails through that while every
- * `skills add` in the world breaks. The licence blocker (#98) is cleared - the
- * plan now publishes `LICENSE` - so what is left is the flip itself, and this
- * change lands AFTER it: an anonymous clone of a still-private repo fails every
- * promote.
+ * While `wego/skills` is private this clone is authenticated, so it proves the
+ * bytes and nothing about reachability. Once the repo is public it should clone
+ * anonymously: that reads the channel the way a user does, and catches the repo
+ * being flipped back to private. Not before: an anonymous clone of a private repo
+ * fails every promote.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,11 +45,10 @@ const TOKEN_NAME = PLUGIN_TOKEN_ENV;
 
 const plan = pluginPublishPlan(SKILLS.map((s) => s.id));
 
-// Every source is stat'd BEFORE the gate and before any clone, exactly as
-// `publish-plugin.ts` does it. Without this a missing source throws ENOENT from
-// inside the work block, escapes the `Done` handler, and the step dies with a
-// raw stack trace instead of the report every other failure here produces - and
-// it dies on the FIRST bad source rather than naming them all.
+// Every source is stat'd before the gate and any clone, as in `publish-plugin.ts`.
+// Otherwise a missing source throws ENOENT inside the work block, escapes the
+// `Done` handler, and the step dies with a raw stack trace on the first bad
+// source rather than naming them all.
 const missingSources = missingPlanSources(cliRoot, plan, existsSync);
 if (missingSources.length > 0) {
   console.error(
@@ -82,8 +72,6 @@ if (!gate.publish) {
 const work = mkdtempSync(join(tmpdir(), "wego-plugin-verify-"));
 let exitCode = 0;
 try {
-  // Shallow and fresh. The point is to read what the remote serves, not to
-  // re-read anything this machine already has.
   git(work, "clone", "--depth", "1", REPO, "repo");
   const repo = join(work, "repo");
 
@@ -95,10 +83,9 @@ try {
     try {
       actual = readFileSync(join(repo, to));
     } catch (err) {
-      // ENOENT is the only error that means "absent". A directory at the path
-      // (EISDIR/ENOTDIR) or an unreadable one is a DIFFERENT fault, and calling
-      // it MISSING sends the operator to check branches - see the hint below,
-      // which fires only on absence for exactly this reason.
+      // Only ENOENT means absent. A directory at the path (EISDIR/ENOTDIR) or an
+      // unreadable file is a different fault, and calling it MISSING would feed
+      // the branch hint below, which fires only on absence.
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
         absent += 1;
@@ -114,11 +101,9 @@ try {
   }
 
   if (failures.length > 0) {
-    // The branch hint is earned ONLY when the clone shows every planned file
-    // absent, which is the signature of a clone that landed on a ref the push
-    // did not write. Printed on any failure it would be boilerplate: it would
-    // send someone hunting branches over a single tampered byte, and it would
-    // make a test asserting it prove nothing, since every failure would say it.
+    // The branch hint is printed only when every planned file is absent, the
+    // signature of a clone that landed on a ref the push did not write. On any
+    // other failure it would send someone hunting branches over one bad byte.
     const everythingAbsent = absent === plan.length;
     console.error(
       `plugin verify FAILED: ${failures.length} of ${plan.length} published ` +

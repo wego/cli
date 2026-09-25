@@ -1,14 +1,9 @@
 /**
- * The plugin read-back, driven against a REAL git repository over `file://`
- * (foundations#101 rung 4b).
+ * The plugin read-back, driven against a real git repository over `file://`.
  *
- * Same harness as `plugin-publish.test.ts` and for the same reason: every case
- * here is about what git actually does - what a clone of an empty repo
- * contains, which branch `push origin HEAD` resolved to - and none of it
- * survives being asked of a stub.
- *
- * The case that justifies this rung is "the push landed on another branch".
- * `publish-plugin.ts` exits 0 there, so only an independent fetch can tell.
+ * Same harness as `plugin-publish.test.ts`: every case here is about what git
+ * actually does (what a clone of an empty repo contains, which branch
+ * `push origin HEAD` resolved to), which a stub cannot answer.
  */
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -33,8 +28,8 @@ import {
 } from "./plugin-publish";
 
 const cliRoot = join(import.meta.dir, "..");
-// The SAME call the script makes. Hardcoding `["wego"]` would agree only
-// while SKILLS has one entry, and would then under-seed the remote.
+// The same call the script makes. Hardcoding `["wego"]` would agree only
+// while SKILLS has one entry.
 const PLAN = pluginPublishPlan(SKILLS.map((s) => s.id));
 
 afterEach(cleanupWorkspaces);
@@ -53,8 +48,8 @@ function bareRepo(initialBranch = "main"): {
   return {
     url: `file://${bare}`,
     root,
-    // What a given ref actually holds, read straight from the bare repo. Lets a
-    // test assert the SETUP it claims rather than only the verifier's verdict.
+    // What a given ref holds, read straight from the bare repo, so a test can
+    // assert its setup rather than only the verifier's verdict.
     filesOn: (ref: string) => {
       const r = spawnSync(resolveGit(), ["ls-tree", "-r", "--name-only", ref], {
         cwd: bare,
@@ -139,31 +134,27 @@ describe("verify-plugin-published against a file:// bare repo", () => {
   });
 
   it("fails and names every file when the repo is empty", () => {
-    // A publish that wrote nothing at all still exits 0 today.
+    // A publish that wrote nothing at all still exits 0.
     const remote = bareRepo();
 
     const r = verify(remote.url);
     expect(r.code).toBe(1);
     expect(r.err).toContain("FAILED");
     for (const p of PLAN) expect(r.err).toContain(`${p.to} - MISSING`);
-    // Same observable signature as the wrong-branch case, and honestly so: from
-    // a clone the two are indistinguishable, and the message says "landed on a
-    // ref this clone does not check out" rather than claiming to tell them apart.
+    // From a clone this is indistinguishable from the wrong-branch case, and
+    // the message does not claim to tell them apart.
     expect(r.err).toContain("EVERY published file is absent");
   });
 
   it("fails when the push landed on a different branch", () => {
-    // THE case this rung exists for. `publish-plugin.ts` ends with
-    // `git push origin HEAD`; against an empty remote the branch that resolves
-    // to is not guaranteed to be the one a clone checks out.
+    // `publish-plugin.ts` ends with `git push origin HEAD`; against an empty
+    // remote the branch that resolves to is not guaranteed to be the one a
+    // clone checks out, and the publish still exits 0.
     const remote = bareRepo("main");
     seed(remote.url, remote.root, sourceFiles(), "master");
 
-    // PROVE THE PREMISE FIRST, or this test cannot tell itself apart from the
-    // empty-repo case above: assert the content really is on `master`, and that
-    // the ref a clone checks out really is unborn. Without these two lines the
-    // scenario would degrade to "the repo is empty" the moment `seed()`'s push
-    // stopped working, and the assertions below would still pass.
+    // Prove the premise first: without it this would degrade to the empty-repo
+    // case the moment `seed()`'s push stopped working, and still pass.
     expect(remote.filesOn("master").sort()).toEqual(
       PLAN.map((p) => p.to).sort(),
     );
@@ -172,8 +163,6 @@ describe("verify-plugin-published against a file:// bare repo", () => {
     const r = verify(remote.url);
     expect(r.code).toBe(1);
     expect(r.err).toContain("MISSING");
-    // Earned, not boilerplate: the hint is printed only when EVERY planned file
-    // is absent, so it is false for the tampered and one-missing cases below.
     expect(r.err).toContain("EVERY published file is absent");
   });
 
@@ -189,7 +178,6 @@ describe("verify-plugin-published against a file:// bare repo", () => {
     const r = verify(remote.url);
     expect(r.code).toBe(1);
     expect(r.err).toContain(`${skill.to} - differs at byte`);
-    // Only the tampered file is named; the others are fine.
     expect(r.err).toContain(`1 of ${PLAN.length}`);
     // One wrong byte is not a branch problem, so the hint must stay silent.
     expect(r.err).not.toContain("EVERY published file is absent");
@@ -214,10 +202,6 @@ describe("verify-plugin-published against a file:// bare repo", () => {
 
 describe("missingPlanSources", () => {
   it("names every absent source, in plan order, not just the first", () => {
-    // Measured before the fix: a missing source made the verifier exit 1 with a
-    // raw stack trace, print no report at all, and abort on the FIRST offender.
-    // `publish-plugin.ts` had always stat'd its sources up front; the verifier
-    // had not, and this predicate is now the one rule both run.
     const present = new Set([PLAN[0].from]);
     const missing = missingPlanSources("/root", PLAN, (path) =>
       present.has(path.replace("/root/", "")),
@@ -251,9 +235,8 @@ describe("the token gate", () => {
 });
 
 describe("the path that needs no git", () => {
-  // The graceful skip returns before any git command runs. Resolving the binary
-  // at module load would quietly make it depend on git being installed - the
-  // exact regression that hit `publish-plugin.ts`, so it is pinned here too.
+  // The skip returns before any git command runs. Resolving the git binary at
+  // module load would make it depend on git being installed.
   it("skips gracefully with no git on PATH", () => {
     const stage = mkdtempSync(join(tmpdir(), "wego-verify-nogit-"));
     workspaces.push(stage);
@@ -275,9 +258,8 @@ describe("the path that needs no git", () => {
 
 describe("redactRemote", () => {
   it("masks a password anywhere in a message, not only at the start", () => {
-    // The first version was anchored, so it redacted a bare URL and silently
-    // did nothing to the same URL inside a sentence - which is where one
-    // actually appears, in `git ... failed:` .
+    // An anchored pattern would redact a bare URL but not one inside a
+    // sentence, which is where it appears, in `git ... failed:`.
     const msg = redactRemote(
       "git clone https://x-access-token:SECRET@github.com/wego/skills.git repo failed",
     );
@@ -287,8 +269,7 @@ describe("redactRemote", () => {
 
   it("leaves a passwordless remote alone", () => {
     // `ssh://git@host/repo` names an identity, not a secret. Masking it would
-    // break the `git clone` line an operator is told to paste - the same
-    // objection that keeps the token out of the URL in the first place.
+    // break the `git clone` line an operator is told to paste.
     for (const url of [
       "ssh://git@github.com/wego/skills.git",
       "https://github.com/wego/skills.git",
@@ -302,8 +283,8 @@ describe("redactRemote", () => {
 describe("a clone that fails against a credential-bearing remote", () => {
   it("keeps the credential out of the error", () => {
     // No such repo, so the clone fails and git echoes the remote back. The
-    // whole rendered message goes through redaction, not just the parts we
-    // wrote - `args` carries the remote verbatim.
+    // whole rendered message must go through redaction, since `args` carries
+    // the remote verbatim.
     const root = mkdtempSync(join(tmpdir(), "wego-verify-nocred-"));
     workspaces.push(root);
     const r = verify(
@@ -337,7 +318,7 @@ describe("describeMismatch", () => {
   });
 
   it("reports the length boundary when one is a prefix of the other", () => {
-    // No byte differs inside the overlap, so the offset IS the shorter length -
+    // No byte differs inside the overlap, so the offset is the shorter length:
     // a truncated publish, which a naive first-difference scan would call equal.
     const msg = describeMismatch(Buffer.from("abcdef"), Buffer.from("abc"));
     expect(msg).toContain("differs at byte 3");

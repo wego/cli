@@ -1,26 +1,24 @@
 #!/usr/bin/env bun
 /**
- * Upload the built release artifacts (apps/cli/dist/*) to a **public** Vercel
- * Blob store, so the `GET /install` endpoint's `curl … | bash` script can pull
- * the binaries with no auth. Run by the release workflow after the binaries are
- * built; run it locally with a token to seed the store by hand.
+ * Upload the built release artifacts (dist/*) to a public Vercel Blob store, so
+ * the `GET /install` endpoint's `curl … | bash` script can pull the binaries with
+ * no auth. Run by the release workflow after the binaries are built; run it
+ * locally with a token to seed the store by hand.
  *
  *   BLOB_READ_WRITE_TOKEN=… bun run scripts/upload-release-blob.ts v0.1.0
  *
- * Three moving pointers = the three RINGS (foundations#74 rung 4/7):
- * **cli/edge** (unreleased main, dogfood), **cli/next** (the candidate real people
- * run) and **cli/stable** (what everyone receives). `next` and `stable` serve the
- * SAME byte-identical `X.Y.Z` build — promotion is a POINTER MOVE, never a rebuild
- * — so a fresh publish can only ever reach `next`, and `stable` is reached only by
- * promoting a `next` build. The routing rule lives in `ring-rules.ts`, shared with
- * the release workflow's gates and with `GET /install?ring=`.
+ * The three moving pointers are the rings: cli/edge (unreleased main, dogfood),
+ * cli/next (the candidate real people run) and cli/stable (what everyone
+ * receives). `next` and `stable` serve the same byte-identical `X.Y.Z` build, so a
+ * fresh publish only reaches `next`, and `stable` is reached only by promoting a
+ * `next` build. The rules live in `ring-rules.ts`.
  *
  * Modes:
  *   <tag>                    build+publish: put dist/* → cli/<tag>/*, then advance
  *                            cli/next. No flags.
  *   --freeze <tag>           immutable-only: put dist/* → cli/<tag>/* and advance
- *                            NO pointer. The release workflow uses this so a pointer
- *                            is advanced by a SEPARATE --promote AFTER the frozen
+ *                            no pointer. The release workflow uses this so a pointer
+ *                            is advanced by a separate --promote after the frozen
  *                            artifact is smoke-verified. Requires an explicit tag.
  *   --promote <tag> [--to next|stable] [--require-serving <ring>]
  *                            promote-only: server-side copy an already-published
@@ -29,8 +27,8 @@
  *                            --to defaults to next. Both rings serve plain X.Y.Z
  *                            only; a prerelease is refused. Explicit tag required.
  *                            --require-serving <ring> refuses unless <ring> already
- *                            serves this tag, read from the SAME store this write
- *                            targets — the promote gate. Omit it to roll back.
+ *                            serves this tag, read from the same store this write
+ *                            targets (the promote gate). Omit it to roll back.
  *
  * --freeze/--promote take the tag ONLY from argv (no RELEASE_TAG fallback), so a
  * stray exported RELEASE_TAG can't silently promote the wrong version.
@@ -38,26 +36,23 @@
  * Env knobs:
  *   BLOB_READ_WRITE_TOKEN  required to actually publish (see REQUIRE_PUBLISH).
  *   REQUIRE_PUBLISH=true   fail (exit 1) instead of the graceful skip when the
- *                          token is unset — set by the release workflow for a
- *                          deliberate stable release so a "green" run can't
- *                          silently publish nothing once Blob is provisioned.
+ *                          token is unset. The release workflow sets it so a
+ *                          green run can't silently publish nothing.
  *   GITHUB_OUTPUT          when set, `store_origin=<origin>` is appended so the
  *                          workflow can read it as a step output (smoke tests).
  *
  * Each file is written to `cli/<tag>/<name>` (immutable, versioned, cached hard).
- * The tag then advances `cli/next/<name>` by **server-side copying** each frozen
- * `cli/<tag>` blob (short cache), so a ring is always byte-identical to the version
- * published to it, even on a resumed re-run. `cli/stable` is advanced by a separate
- * `--promote <tag> --to stable` once a human decides the candidate is good: the same
- * server-side copy of the same frozen bytes, which is why `next` and `stable` serve
- * byte-identical checksums. Stable pathname (no random suffix) so the URL is
- * predictable:
+ * A ring is advanced by server-side copying each frozen `cli/<tag>` blob (short
+ * cache), so it is always byte-identical to the version published to it, even on
+ * a resumed re-run. `cli/stable` is advanced by a separate
+ * `--promote <tag> --to stable` once a human decides the candidate is good, which
+ * is why `next` and `stable` serve identical checksums. No random suffix, so the
+ * URL is predictable:
  *
  *   https://<store-id>.public.blob.vercel-storage.com/cli/stable/<name>
  *
- * Skips gracefully (exit 0) when `BLOB_READ_WRITE_TOKEN` is unset, so the release
- * workflow still succeeds before the Blob store is provisioned — the endpoint
- * just stays dormant until the base URL is configured.
+ * Skips (exit 0) when `BLOB_READ_WRITE_TOKEN` is unset, unless REQUIRE_PUBLISH is
+ * set.
  */
 import { appendFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
@@ -90,25 +85,19 @@ import {
 import { RELEASE_ASSET_BASENAME, ringAcceptsVersion } from "./ring-rules";
 import { releaseTagError } from "./validate-release-tag";
 
-// The verification manifest every consumer cross-checks binaries against. It is
-// the channel-advance COMMIT POINT: copied LAST (after the binaries) and then
-// waited on, so a channel is never observably "manifest ahead of the bytes it
-// vouches for" — the read-after-write race that fail-closes `wego update` /
-// `/install` / the release self-update smoke.
+// The manifest every consumer cross-checks binaries against. It is the ring
+// advance's commit point: copied after the binaries and then waited on, so a ring
+// never serves a manifest ahead of the bytes it vouches for (which would make
+// `wego update`, `/install` and the self-update smoke fail closed).
 const MANIFEST = "SHA256SUMS.txt";
 
-// The channel's advertised version — read by the INSTALLED binary's new-version
-// notice, which never reads the manifest. It is an advertisement, not a
-// deliverable, so it is copied strictly AFTER the commit point and after the
-// deliverable channel is certified consistent (see the advance block below).
+// The ring's advertised version, read by the installed binary's new-version
+// notice, which never reads the manifest. It is copied after the commit point and
+// after the deliverables are certified consistent (see the advance block below).
 const VERSION_OBJECT = "VERSION";
 
-// Modes, the flag guards and the routing decision all live in `release-argv.ts`
-// - pure, and therefore reachable from a test. They used to sit here, closing
-// over `argv` and ending in `process.exit`. This module runs its whole publish
-// at import - no `import.meta.main` guard, every statement top-level - so
-// nothing could ask what `--promote --to stable` routes to without starting a
-// publisher. The exiting stays here; the deciding moved.
+// This module runs its whole publish at import, so the argv decisions live in
+// `release-argv.ts` where they can be tested. The exiting stays here.
 const argv = process.argv.slice(2);
 const mode = parseMode(argv[0]);
 const flagProblem = leadingFlagError(argv) ?? tagPositionError(argv, mode);
@@ -116,13 +105,12 @@ if (flagProblem) {
   console.error(flagProblem.error);
   process.exit(1);
 }
-// Strict argv shape per mode — a misplaced `--to` or a stray positional must
-// ERROR, never be silently ignored. Without this, `<tag> --to stable` (publish)
-// would advance cli/next despite asking for stable, and `--promote <tag> stable`
-// (missing `--to`) would advance cli/next instead of the whole install base.
-// `--to` is promote-only.
+// Strict argv shape per mode: a misplaced `--to` or a stray positional must
+// error, never be ignored. Otherwise `<tag> --to stable` (publish) would advance
+// cli/next despite asking for stable, and `--promote <tag> stable` (missing
+// `--to`) would advance cli/next instead of stable.
 if (mode === "promote") {
-  // ["--promote", tag] plus any of the two optional flag PAIRS, in either order.
+  // ["--promote", tag] plus either of the two optional flag pairs, in any order.
   const flags = argv.slice(2);
   const okShape =
     flags.length % 2 === 0 &&
@@ -163,22 +151,18 @@ if (!tag) {
   process.exit(1);
 }
 
-// Guard the tag through the SAME validator the release workflow and the builder
-// use. The `v*` push glob could otherwise pass a dashless junk tag like
-// `vlatest`, which would read as a plain version and move cli/next — or a
-// semver-invalid one like `v0.4.3-rc.01`, which the installed binary's
-// comparator rejects, permanently silencing its new-version notice. One authority,
-// so no entry point can be the hole in it.
+// The same validator the release workflow and the builder use. The `v*` push glob
+// would otherwise pass a junk tag like `vlatest`, or a semver-invalid one like
+// `v0.4.3-rc.01`, which the installed binary's comparator rejects, permanently
+// silencing its new-version notice.
 const tagError = releaseTagError(tag);
 if (tagError) {
   console.error(`Refusing to publish: ${tagError}`);
   process.exit(1);
 }
 
-// Resolved BEFORE the token check, beside the tag gate above and for the same
-// reason: a mistyped ring is a caller mistake, and the graceful no-token skip
-// below exits 0, so validating after it would swallow the typo entirely on a
-// local run.
+// Resolved before the token check: the no-token skip below exits 0, so validating
+// after it would swallow a mistyped ring on a local run.
 const requireServingResult =
   mode === "promote" ? parseRequireServing(argv) : null;
 if (isArgvError(requireServingResult)) {
@@ -192,9 +176,8 @@ if (!token) {
   const msg =
     "BLOB_READ_WRITE_TOKEN unset - no Blob store to publish to. " +
     "Provision a Vercel Blob store + set the secret to publish binaries.";
-  // REQUIRE_PUBLISH: a deliberate release (workflow sets it for a stable tag)
-  // must FAIL rather than exit 0 with nothing published — a silent no-op once
-  // Blob is live would ship a "successful" release that changed nothing.
+  // A deliberate release sets REQUIRE_PUBLISH so it fails rather than reporting
+  // success having published nothing.
   if (process.env.REQUIRE_PUBLISH === "true") {
     console.error(`${msg} REQUIRE_PUBLISH is set — failing the release.`);
     process.exit(1);
@@ -203,8 +186,6 @@ if (!token) {
   process.exit(0);
 }
 
-// Which moving pointer(s) this run advances, if any. The rule, the defaults and
-// the `--to` parser now live in `release-argv.ts`; what stays here is the exit.
 const advanceResult = computeAdvanceTargets(mode, argv);
 if (isArgvError(advanceResult)) {
   console.error(advanceResult.error);
@@ -212,10 +193,8 @@ if (isArgvError(advanceResult)) {
 }
 const advanceTargets = advanceResult;
 
-// Refused because `update` replaces the running binary on a CHECKSUM difference,
-// never a version comparison, so whatever a ring serves is what its install base
-// receives on the next `update`. A prerelease on `next` or `stable` ships a build
-// neither line opted into.
+// `update` replaces the running binary on a checksum difference, never a version
+// comparison, so whatever a ring serves is what its install base receives next.
 for (const target of advanceTargets) {
   const crossing = ringAcceptsVersion(target, tag);
   if (crossing) {
@@ -228,9 +207,8 @@ let storeOrigin = "";
 let names: string[];
 
 if (mode === "promote") {
-  // Promote-only: no local build. The artifact set is whatever cli/<tag>/ already
-  // holds (a prior, already-tested release); phase 2 below re-points the target
-  // channel at it. Fail loudly if the tag was never published.
+  // No local build: the artifact set is whatever cli/<tag>/ already holds, and
+  // phase 2 below points the target ring at it.
   const existing = await list({ prefix: `cli/${tag}/`, token });
   if (existing.blobs.length === 0) {
     console.error(
@@ -242,18 +220,13 @@ if (mode === "promote") {
   names = existing.blobs.map((b) => b.pathname.slice(`cli/${tag}/`.length));
 
   // --require-serving <ring>: refuse unless <ring> currently serves this tag.
+  // Promotion is about a build people have been running, and a wrong promote
+  // cannot be recalled from machines that already installed it.
   //
-  // The promote decision is about a build people have been RUNNING, so promoting a
-  // tag the candidate ring does not serve is a mistake - and an unrecallable one,
-  // since nothing reaches a machine that already installed.
-  //
-  // The check lives HERE, not in the workflow, because of which STORE it has to
-  // ask. A workflow-side `GET /install?dl=VERSION&ring=next` resolves against that
-  // deploy's own `CLI_DOWNLOAD_BASE_URL`, while this script writes to the origin it
-  // just discovered from `cli/<tag>/`. Nothing enforces that those are the same
-  // store, so the gate could read one store's `next` and then promote in another -
-  // passing or refusing on a fact about the wrong place. Reading it from
-  // `storeOrigin` makes the gate and the write the same store by construction.
+  // The check lives here, not in the workflow, because a workflow-side
+  // `GET /install?dl=VERSION&ring=next` resolves against that deploy's
+  // `CLI_DOWNLOAD_BASE_URL`, which need not be the store this script writes to.
+  // Reading from `storeOrigin` makes the gate and the write the same store.
   if (requireServing) {
     const ring = requireServing;
     const versionUrl = `${storeOrigin}/cli/${ring}/${VERSION_OBJECT}`;
@@ -291,12 +264,9 @@ if (mode === "promote") {
     process.exit(1);
   }
 
-  // Complete-artifact-set guard. One filename on every ring: the flavor split that
-  // baked the backend into the asset name is gone (rung 7), so a release set is the
-  // single `wego-*` family and the TARGET is chosen at run time. What still has to
-  // hold is that the set is not empty of deliverables - a dist/ carrying only
-  // SHA256SUMS.txt, or stray pre-cutover second-flavor bytes lying around, would
-  // publish an artifact `/install` cannot download.
+  // Complete-artifact-set guard. A release set is the single `wego-*` family. A
+  // dist/ carrying only SHA256SUMS.txt, or stale `wegostaging-*` binaries from an
+  // old build, would publish an artifact `/install` cannot download.
   const stale = names.filter((n) =>
     n.startsWith(`${RELEASE_ASSET_BASENAME}staging-`),
   );
@@ -319,15 +289,10 @@ if (mode === "promote") {
     process.exit(1);
   }
 
-  // COVERAGE, CHECKED HERE RATHER THAN AT THE POINTER MOVE. The same rule
-  // `manifestCoversAll` enforces before advancing a ring, run against dist/ before
-  // anything is uploaded. `v0.7.1` published 13 objects and verified all of
-  // them, then refused its own pointer move nine steps later because one was not in
-  // the signed manifest (run 33036257401). The information was available the moment
-  // dist/ was signed; only the check was in the wrong place. Failing here costs a
-  // build, not a burned version number - the tag's COMMIT sidecar makes a
-  // re-publish from a different commit impossible, so a late refusal is expensive in
-  // a way an early one is not.
+  // The same coverage rule `manifestCoversAll` enforces before advancing a ring,
+  // run against dist/ before anything is uploaded. Failing here costs a build;
+  // failing at the pointer move burns the version, because the tag's COMMIT
+  // sidecar prevents a re-publish from a different commit.
   const distManifest = names.includes(MANIFEST)
     ? await readFile(`${distDir}/${MANIFEST}`, "utf8")
     : "";
@@ -342,26 +307,25 @@ if (mode === "promote") {
     process.exit(1);
   }
 
-  // Phase 1 — immutable versioned copies (cached hard). Idempotent so a re-run
+  // Phase 1: immutable versioned copies (cached hard). Idempotent so a re-run
   // after a partial upload resumes: skip anything the pre-list already shows, and
-  // treat an "already exists" put error as success too — Vercel Blob is
-  // read-after-write eventually-consistent, so a fast retry's list() may not yet
-  // show a just-written blob. (Single-page list is fine: ~21 artifacts per tag.)
+  // treat an "already exists" put error as success too, because Vercel Blob is
+  // eventually consistent and a fast retry's list() may not yet show a
+  // just-written blob. (A single-page list is fine: ~21 artifacts per tag.)
   const existing = await list({ prefix: `cli/${tag}/`, token });
   const present = new Set(existing.blobs.map((b) => b.pathname));
   if (existing.blobs[0]) storeOrigin = new URL(existing.blobs[0].url).origin;
 
   // Bind a resume to the commit that first published this tag. `bun build
-  // --compile` is non-reproducible, so re-running a partially-published tag after
-  // the branch has moved would mix bytes from two builds (SMOKE-2's verify-all
-  // catches that), and a fully-published-then-resumed tag could get a git tag
-  // pointing at a different commit than its binaries. If a prior COMMIT sidecar
-  // disagrees with this run's commit, refuse — bump the version instead.
+  // --compile` is not reproducible, so re-running a partially-published tag after
+  // the branch moved would mix bytes from two builds, and a resumed tag could get
+  // a git tag pointing at a different commit than its binaries. If a prior COMMIT
+  // sidecar disagrees with this run's commit, refuse: bump the version instead.
   const releaseCommit = process.env.RELEASE_COMMIT?.trim();
   if (releaseCommit) {
     const commitPath = commitSidecarPath(tag);
-    // An unreadable, empty, or mismatched sidecar is a HARD refusal — never
-    // fail-open on the "don't bind a tag to a different commit" invariant.
+    // An unreadable, empty, or mismatched sidecar is a hard refusal: never fail
+    // open on this invariant.
     const assertCommit = async (url: string): Promise<void> => {
       const res = await fetch(url);
       if (!res.ok) {
@@ -385,7 +349,7 @@ if (mode === "promote") {
         process.exit(1);
       }
     };
-    // Listed directly: the sidecar lives on the RECORD prefix now, so the
+    // Listed directly: the sidecar lives on the record prefix, so the
     // `cli/<tag>/` listing above cannot see it.
     const priorList = await list({ prefix: commitPath, token });
     const prior = priorList.blobs.find((b) => b.pathname === commitPath);
@@ -401,10 +365,9 @@ if (mode === "promote") {
         });
         console.log(`↑ ${commitPath} (${releaseCommit})`);
       } catch (err) {
-        // Same idempotent-resume path as the binary loop below: an "already
-        // exists" (incl. precondition/ETag) means a prior run wrote it though
-        // list() hasn't surfaced it yet (read-after-write lag). Re-list to get
-        // its URL and verify it matches — never crash a legitimate resume.
+        // An "already exists" (incl. precondition/ETag) means a prior run wrote
+        // it though list() hasn't surfaced it yet. Re-list to get its URL and
+        // verify it matches, so a legitimate resume does not crash.
         if (
           !(
             err instanceof Error &&
@@ -425,16 +388,13 @@ if (mode === "promote") {
     }
   }
 
-  // The signed build record is published to the RECORD prefix, never alongside the
-  // downloads (foundations#74 rung 9): a record the same store write can replace
-  // proves nothing the manifest did not already prove. So it is split out of the
-  // download set here rather than filtered later — the one place `dist/` is turned
-  // into an upload list.
+  // The signed build record goes to the record prefix, never alongside the
+  // downloads: a record the same store write can replace proves nothing the
+  // manifest does not. Split out here, where `dist/` becomes an upload list.
   const recordNames = names.filter((name) => name === SIGNATURE_ASSET);
   names = names.filter((name) => name !== SIGNATURE_ASSET);
 
-  // The immutable phase is identical to the edge lane's, so it lives in
-  // `blob-publish.ts` — including the already-published resume rule.
+  // Shared with the edge lane, including the already-published resume rule.
   storeOrigin = await putImmutableAssets({
     names,
     distDir,
@@ -453,9 +413,8 @@ if (mode === "promote") {
       storeOrigin,
     });
   } else {
-    // Not fatal here: `--freeze` publishes, and the gate that matters refuses to
-    // advance a POINTER without a record (phase 2). Saying so loudly beats failing
-    // a publish whose only defect is that nothing will be promotable from it.
+    // Not fatal here: phase 2 refuses to advance a pointer without a record, so
+    // the only effect is that this tag is not promotable yet.
     console.warn(
       `warning: dist/ carries no ${SIGNATURE_ASSET} — cli/${tag} will not be promotable until one is published.`,
     );
@@ -475,30 +434,24 @@ if (mode === "promote") {
   }
 }
 
-// Phase 2 — advance the moving pointer(s) in `advanceTargets` (cli/next and/or
-// cli/stable), but ONLY after every immutable copy above exists. Each file is
-// **server-side copied from its frozen cli/<tag> blob** (not re-uploaded from the
-// local dist/): a resumed re-run rebuilds dist/, and `bun build --compile` isn't
-// byte-reproducible, so copying guarantees the pointer is byte-identical to the
-// published version rather than a drifted rebuild. Short cache so a release
-// propagates in ~a minute.
+// Phase 2: advance the pointers in `advanceTargets`, only after every immutable
+// copy above exists. Each file is server-side copied from its frozen cli/<tag>
+// blob rather than re-uploaded from dist/: a resumed re-run rebuilds dist/, and
+// `bun build --compile` is not byte-reproducible. Short cache so a release
+// propagates in about a minute.
 //
-// The ring is advanced as a NON-ATOMIC multi-object copy over a CDN, and a
-// verifying consumer reads TWO coupled objects (SHA256SUMS.txt + a binary) and
-// cross-checks them. So the ORDER matters (was the root of a fail-closed smoke
-// failure when the manifest was copied first, fronting a still-old binary):
-//   1. copy every binary (+ COMMIT) first,
-//   2. copy SHA256SUMS.txt — the commit point for every VERIFYING consumer,
-//   3. wait until the ring's OWN served URLs are self-consistent to a plain
-//      reader (`waitChannelConsistent`),
-//   4. copy VERSION LAST, then wait again — it is the ADVERTISEMENT the installed
-//      binary's notice reads without ever reading the manifest, so it must never
-//      name a release the channel cannot already deliver.
-// So a channel is never *reported* advanced while a reader could still observe a
-// new manifest next to a stale binary. --freeze advances nothing (the workflow
-// promotes separately after verifying); --promote advances its --to target; a
-// bare publish advances the one channel the tag belongs on. (No manifest/pointer
-// indirection — see PR #1054; this closes the same-race window without it.)
+// The advance is a non-atomic multi-object copy over a CDN, and a verifying
+// consumer cross-checks two objects (SHA256SUMS.txt and a binary), so order
+// matters:
+//   1. copy every binary first,
+//   2. copy the signed record, then SHA256SUMS.txt (the commit point),
+//   3. wait until the ring's served URLs are self-consistent to a plain reader
+//      (`waitChannelConsistent`),
+//   4. copy VERSION last, then wait again. The installed binary's notice reads it
+//      without the manifest, so it must never name a release the ring cannot
+//      deliver yet.
+// So a ring is never reported advanced while a reader could still see a new
+// manifest next to a stale binary.
 if (advanceTargets.length) {
   if (!names.includes(MANIFEST)) {
     console.error(
@@ -507,13 +460,10 @@ if (advanceTargets.length) {
     process.exit(1);
   }
 
-  // The tag's manifest is the source of truth for what a consistent channel must
-  // serve (immutable, already fully verified by the workflow's SMOKE-2). Read it
-  // once to drive the post-copy barrier for every target. It was just written in
-  // phase 1 (or exists from a prior release, for --promote), so a transient miss
-  // is read-after-write lag, not a real absence: retry a bounded few times before
-  // failing — matching this file's COMMIT-sidecar read-after-write handling
-  // rather than aborting the whole promote on the first hiccup.
+  // The tag's manifest is the source of truth for what a consistent ring must
+  // serve. It was just written in phase 1 (or exists already, for --promote), so a
+  // transient miss is read-after-write lag, not a real absence: retry a few times
+  // before failing.
   const tagSumsUrl = `${storeOrigin}/cli/${tag}/${MANIFEST}`;
   const readTagSums = async (attempts = 5): Promise<string> => {
     for (let i = 1; i <= attempts; i++) {
@@ -550,18 +500,16 @@ if (advanceTargets.length) {
     process.exit(1);
   }
 
-  // ── A pointer can never name an unsigned file (foundations#74 rung 9) ────────
+  // A pointer can never name an unsigned file.
   //
-  // The consistency barriers below prove the channel serves the same BYTES the tag
-  // does. They cannot prove those bytes came from us: a store writer who replaced
-  // the binary and the manifest together would satisfy every one of them. So before
-  // any pointer moves, require a signed build record for this tag, and require it to
-  // cover every object about to be served.
+  // The consistency barriers below prove the ring serves the same bytes the tag
+  // does, not that those bytes came from us: a store writer who replaced the
+  // binary and the manifest together would satisfy them. So before any pointer
+  // moves, require a signed build record for this tag that covers every object
+  // about to be served.
   //
-  // Refused rather than warned, and refused on ABSENCE as well as on a bad record:
-  // "no record yet, advance anyway" is the state an attacker would arrange, and it is
-  // also the state a half-finished release workflow produces. Neither should reach a
-  // ring that real installs follow.
+  // A missing record is refused too: "no record yet, advance anyway" is what an
+  // attacker would arrange, and what a half-finished release workflow produces.
   const recordUrl = `${storeOrigin}/${sigPrefixForTag(tag)}/${SIGNATURE_ASSET}`;
   const recordRes = await fetch(recordUrl, {
     cache: "no-store",
@@ -606,8 +554,8 @@ if (advanceTargets.length) {
       process.exit(1);
     }
   }
-  // …and the record only vouches for what the manifest LISTS, so an object the
-  // manifest omits is an object nothing signed.
+  // The record only vouches for what the manifest lists, so an object the
+  // manifest omits is one nothing signed.
   const coverage = manifestCoversAll(tagSumsText, names);
   if (coverage) {
     console.error(coverage);
@@ -628,19 +576,18 @@ if (advanceTargets.length) {
     log: (message) => console.log(message),
   };
 
-  // The first barrier certifies the DELIVERABLE channel, before `VERSION` is
-  // copied. It still compares against the FULL manifest — the served
-  // `SHA256SUMS.txt` lists `VERSION` too, so a trimmed map would be a size
-  // mismatch that never converges — and only skips reading that one body.
+  // The first barrier certifies the deliverables, before `VERSION` is copied. It
+  // still compares against the full manifest (the served `SHA256SUMS.txt` lists
+  // `VERSION` too, so a trimmed map would never converge) and only skips reading
+  // that one body.
   const hasVersionObject = names.includes(VERSION_OBJECT);
   const deliverableDeps: ConsistencyDeps = {
     ...consistencyDeps,
     skipAssets: new Set([VERSION_OBJECT]),
   };
-  // The second barrier is the mirror image: the deliverables were certified
-  // moments earlier and nothing rewrites them in between, so re-hashing ~700 MB
-  // of binaries would only add minutes to every promote. Re-compare the manifest
-  // (cheap) and read the one body that is new.
+  // The second barrier reads only `VERSION`: the deliverables were certified
+  // moments earlier, and re-hashing ~700 MB of binaries would add minutes to every
+  // promote.
   const versionOnlyDeps: ConsistencyDeps = {
     ...consistencyDeps,
     skipAssets: new Set(
@@ -649,9 +596,8 @@ if (advanceTargets.length) {
   };
 
   for (const target of advanceTargets) {
-    // 1) Binaries + COMMIT first — everything EXCEPT the manifest and VERSION.
-    //    Their relative order is irrelevant to correctness (only manifest-last
-    //    matters), so copy them concurrently to cut promote latency.
+    // 1) Everything except the manifest and VERSION. Their relative order does
+    //    not matter, so copy them concurrently.
     await Promise.all(
       names
         .filter((name) => name !== MANIFEST && name !== VERSION_OBJECT)
@@ -670,40 +616,35 @@ if (advanceTargets.length) {
         }),
     );
     // 2) The signed build record, immediately before the manifest it vouches for.
-    //    Order matters and neither order is free: a ring briefly serving a new
-    //    manifest under an old record, or the reverse, makes a client REFUSE — both
-    //    fail closed, so the cost is a moment of "try again", never an unverified
-    //    install. Putting the record first and the manifest last keeps that window
-    //    to two adjacent writes of a few KB each, and keeps the manifest as the one
-    //    commit point everything else is ordered around.
+    //    A new manifest under an old record, or the reverse, makes a client refuse
+    //    (fail closed). Adjacent writes keep that window to two small objects, and
+    //    keep the manifest as the one commit point.
     const { url: recordUrlCopied } = await copy(
       `${sigPrefixForTag(tag)}/${SIGNATURE_ASSET}`,
       `${sigPrefixForRing(target)}/${SIGNATURE_ASSET}`,
       { access: "public", allowOverwrite: true, cacheControlMaxAge: 60, token },
     );
     console.log(`↝ ${recordUrlCopied} (from ${sigPrefixForTag(tag)}) [record]`);
-    // 3) Manifest LAST — the commit point.
+    // 3) The manifest: the commit point.
     const { url: manifestUrl } = await copy(
       `cli/${tag}/${MANIFEST}`,
       `cli/${target}/${MANIFEST}`,
       { access: "public", allowOverwrite: true, cacheControlMaxAge: 60, token },
     );
     console.log(`↝ ${manifestUrl} (from cli/${tag}) [manifest — commit point]`);
-    // 4) Certify the channel is self-consistent to a plain reader before we
-    //    report it advanced (and before the workflow's self-update smoke reads it).
+    // 4) Certify the ring is self-consistent to a plain reader before reporting
+    //    it advanced (and before the workflow's self-update smoke reads it).
     await waitChannelConsistent(
       `${storeOrigin}/cli/${target}`,
       expectedSums,
       hasVersionObject ? deliverableDeps : consistencyDeps,
     );
-    // 5) VERSION strictly last — AFTER the channel can actually serve what it
-    //    advertises. The installed binary's new-version notice reads VERSION and
-    //    never the manifest, so copying it in phase 1 announces a release the
-    //    channel cannot yet deliver: the user is told to update, `wego update`
-    //    still reads the old manifest and reports itself current, and the notice
-    //    PERSISTS its answer — so one propagation window turns into a whole
-    //    throttle window of contradiction (24h on prod). Advertise late instead:
-    //    a briefly stale VERSION only delays a notice, which costs nothing.
+    // 5) VERSION last, once the ring can serve what it advertises. The notice
+    //    reads VERSION and never the manifest; copied early, it tells the user to
+    //    update while `wego update` still reads the old manifest and reports
+    //    itself current, and the notice persists that answer for its whole
+    //    throttle window (24h on prod). A briefly stale VERSION only delays a
+    //    notice.
     if (hasVersionObject) {
       const { url: versionUrl } = await copy(
         `cli/${tag}/${VERSION_OBJECT}`,
@@ -733,26 +674,22 @@ if (advanceTargets.length) {
   const advanced = advanceTargets.map((t) => `cli/${t}`).join(" + ");
   console.log(`\nUpdated ${advanced} (copied from cli/${tag}).`);
 } else {
-  // The only way to advance nothing: computeAdvanceTargets returns [] for
-  // --freeze alone — a bare publish now always routes to exactly one channel,
-  // and --promote always carries its --to target.
+  // Only --freeze advances nothing.
   console.log(
     `\nFroze cli/${tag}/ - no pointer advanced (advance it with --promote after verifying).`,
   );
 }
 if (storeOrigin) {
-  // Human-readable line for a local run.
   console.log(`STORE_ORIGIN=${storeOrigin}`);
-  // Print the CLI_DOWNLOAD_BASE_URL hint for the ring(s) this run advanced (so a
-  // `--to stable` promote doesn't print a misleading cli/next base); fall back to
-  // stable when nothing advanced (e.g. --freeze, before a later promote).
+  // The hint names the rings this run advanced, so a `--to stable` promote does
+  // not print a cli/next base; stable when nothing advanced (--freeze).
   const hintRings = advanceTargets.length ? advanceTargets : ["stable"];
   console.log("Set on the matching apps/api deploy:");
   for (const ring of hintRings) {
     console.log(`  CLI_DOWNLOAD_BASE_URL=${storeOrigin}/cli/${ring}`);
   }
-  // In CI, expose it as a step output (the workflow smoke-tests the artifact
-  // straight from the store) — no fragile log-scraping.
+  // In CI, a step output: the workflow smoke-tests the artifact straight from
+  // the store.
   if (process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, `store_origin=${storeOrigin}\n`);
   }

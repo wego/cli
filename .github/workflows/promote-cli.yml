@@ -35,13 +35,12 @@ jobs:
   # take hours, so this is often the first place their result is shown.
   # `release-cli.yml`'s `next-report` shows the smoke's full table.
   #
-  # READ-ONLY AND GATES NOTHING. No job needs it, it is `continue-on-error`, and
+  # Read-only and gates nothing. No job needs it, it is `continue-on-error`, and
   # the script exits 0 on every state it knows, so a missing, running or bad
-  # report never holds a promote back and never lets one through. The promoter
-  # decides; the banner only makes sure the verdict was in front of them.
+  # report never blocks or allows a promote. The promoter decides.
   #
-  # One look, no polling: "No report yet, started N min ago" is a true answer, and
-  # a promote that waited behind a smoke would be a gate by another name.
+  # One look, no polling: "No report yet, started N min ago" is a valid answer,
+  # and waiting for the smoke would turn this into a gate.
   #
   # `checks: read` and `contents: read`, nothing else: no environment, no secret,
   # no `id-token`. It checks out `main` (the dispatch ref), not the tag: a tag cut
@@ -79,23 +78,12 @@ jobs:
 
   # The human gate.
   #
-  # Not an environment with required reviewers - and no longer because we cannot
-  # have them. We can: the repository went public on 2026-09-17, so required
-  # reviewers are free on every plan, and wego/cli#70 replaced the single shared
-  # `production` environment with one environment per lane, so `stable-promote`
-  # could carry reviewers without changing what any other lane admits. The shared
-  # environment is what made an unprotected one let every dispatch through
-  # (wego/foundations#128); that is the history of this control, not a live
-  # constraint on it.
-  #
-  # The list below is the authority because it lives in VERSION CONTROL. Changing
-  # who may move `cli/stable` is a diff: CODEOWNERS owns `.github/workflows/`, so
-  # `main` will not take it without a release-signer review, and the change stays
-  # visible in the history afterwards. An environment's reviewer list is a settings
-  # toggle any repository admin can flip in a browser, and nothing about it is
-  # legible from a checkout - not its current value, not who last changed it, not
-  # when. That is the property being bought here, and it is the reason to keep the
-  # list even though reviewers are now available.
+  # An allow-list in the workflow, not environment required reviewers (which
+  # `stable-promote` could have). Changing who may move `cli/stable` is then a
+  # diff: CODEOWNERS owns `.github/workflows/`, so `main` will not take it
+  # without a release-signer review, and it stays in the history. An
+  # environment's reviewer list is a settings toggle any admin can change, with
+  # no record in the repository.
   #
   # One person dispatches and approves. There is no four-eyes rule. This job holds
   # no secrets and no variables.
@@ -130,8 +118,8 @@ jobs:
           # re-run; `github.triggering_actor` is whoever started THIS run. Both
           # must be promoters. Checking only the first lets anyone with write
           # access re-run a past run of this lane and have the gate pass on the
-          # original promoter's name - which for the rollback lane is a replay
-          # that moves `cli/stable` onto an old tag.
+          # original promoter's name - which here replays an old promote, a
+          # downgrade once `cli/stable` has moved past it.
           #
           # Call `is_promoter` inside an `if !` condition, never as a bare
           # statement: `set -e` is suspended for a command used as a condition,
@@ -326,14 +314,13 @@ jobs:
           echo "::error::$TAG has no plugin publish lane in its tree (missing:$missing) and SKILLS_PUBLISH_ENABLED is on. Refusing before cli/stable moves: promoting would move both rings and then skip the publish, which reports success for a promote that published nothing. If you meant to put cli/stable back on an EARLIER release, use rollback-cli.yml - it publishes no plugin and does not care."
           exit 1
 
-      # Mint the plugin token BEFORE the move, so a key GitHub refuses fails the
-      # promote while `stable` is still where it was. Minted after the move, a bad
-      # key moved `stable` and then published nothing, and the only way back was a
-      # rollback. The token lasts an hour and this job times out at 30 minutes, so
-      # it is still valid when the publish below uses it.
+      # Mint the plugin token before the move, so a key GitHub refuses fails the
+      # promote while `stable` has not moved. Minted after, a bad key would move
+      # `stable` and then publish nothing. The token lasts an hour and this job
+      # times out at 30 minutes, so it is still valid for the publish below.
       #
-      # Skipped when the flag is off. Without this guard the publish step ran with
-      # no token and REQUIRE_PUBLISH, and failed after `stable` had moved.
+      # Skipped when the flag is off; otherwise the publish step would run with no
+      # token under REQUIRE_PUBLISH and fail after `stable` had moved.
       - name: Mint the plugin publish token
         id: plugin-token
         if: vars.SKILLS_PUBLISH_ENABLED == 'true'
@@ -405,9 +392,9 @@ jobs:
       # Part 1: record the agent with a loopback listener, then ask the real route
       # what it does with that agent. Part 2: run a real `update` against
       # `cli/next`, which serves this tag; the expected result is "up to date".
-      # Part 2 does not use `stable`: during the migration `stable` served a
-      # wego-ai tag that no wego/cli binary accepts, so an outcome test there fails
-      # for a reason unrelated to the candidate (wego/cli#29).
+      # Part 2 does not use `stable`: when `stable` serves a wego-ai tag, no
+      # wego/cli binary accepts it, so an outcome test there fails for a reason
+      # unrelated to the candidate (wego/cli#29).
       #
       # The same check runs in `.github/actions/verify-build` before publication.
       # It is repeated here because the route can change between release and

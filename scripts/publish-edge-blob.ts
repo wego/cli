@@ -1,36 +1,27 @@
 #!/usr/bin/env bun
 /**
- * Publish an EDGE build to the public Vercel Blob store and advance the `cli/edge`
- * moving pointer (foundations#74 rung 5 — the edge lane).
+ * Publish an edge build to the public Vercel Blob store and advance the
+ * `cli/edge` moving pointer.
  *
  *   BLOB_READ_WRITE_TOKEN=… bun run scripts/publish-edge-blob.ts 0.6.6-edge.abc1234
  *
- * The edge lane is the THIRD ring, beside the two flavor channels
- * (`upload-release-blob.ts`, still live until rung 7's cutover). It exists so every
- * merge to main is published as an installable `X.Y.Z-edge.<sha>` build that
- * `.github/workflows/edge-cli.yml` moves `cli/edge` to — dogfooding unreleased main
- * without touching the release path. A broken edge build blocks nothing: the
- * workflow is post-merge and this script never gates a merge.
+ * Every merge to main is published as an installable `X.Y.Z-edge.<sha>` build
+ * that `.github/workflows/edge-cli.yml` moves `cli/edge` to, for dogfooding
+ * unreleased main without touching the release path. A broken edge build blocks
+ * nothing: the workflow is post-merge and never gates a merge.
  *
- * This is a SEPARATE publisher from `upload-release-blob.ts`, not a new mode of it,
- * because the two worlds differ where it matters:
- *   - edge is ONE ring serving ONE `wego-*` asset (`ring-rules.ts`), where the
- *     flavor path hard-required TWO binary families in dist/;
- *   - edge routes by the version's `-edge.` shape (`ringForVersion`), where the
- *     flavor path routes a plain/prerelease tag to `cli/latest`/`cli/staging`.
- * Keeping them apart means rung 5 touches nothing rung 7 owns, and the flavor
- * publisher's disjoint-channel guards stay exactly as they are.
- *
- * The publish/advance MECHANICS mirror `upload-release-blob.ts` exactly (immutable
- * `cli/<version>/` first, then a server-side copy to `cli/edge` with manifest-last,
- * VERSION-last ordering and the `waitChannelConsistent` barrier between), so the
- * edge channel is never observably manifest-ahead-of-bytes to a plain reader.
+ * A separate publisher from `upload-release-blob.ts` because the pointer policy
+ * differs: edge routes by the version's `-edge.` shape (`ringForVersion`) and
+ * accepts only edge versions. The mechanics mirror it (immutable
+ * `cli/<version>/` first, then a server-side copy to `cli/edge` with
+ * manifest-last, VERSION-last ordering and the `waitChannelConsistent` barrier
+ * between), so a plain reader never sees the manifest ahead of the bytes.
  *
  * Env:
  *   BLOB_READ_WRITE_TOKEN  required to publish.
  *   REQUIRE_PUBLISH=true   fail (exit 1) instead of the graceful skip when the token
- *                          is unset — the workflow sets it so a "green" edge run
- *                          can't silently publish nothing.
+ *                          is unset; the workflow sets it so a green edge run
+ *                          cannot silently publish nothing.
  *   RELEASE_TAG            fallback version source when no argv is given.
  *   GITHUB_OUTPUT          when set, `store_origin=<origin>` is appended for the
  *                          workflow to read.
@@ -69,27 +60,26 @@ import { releaseTagError } from "./validate-release-tag";
 const MANIFEST = "SHA256SUMS.txt";
 const VERSION_OBJECT = "VERSION";
 
-/** The bare `X.Y.Z-edge.<sha>` version this run publishes, or a one-line reason. */
 export interface EdgeTarget {
-  /** The bare version (`v` stripped) — also the immutable dir name. */
+  /** `v` stripped; also the immutable dir name. */
   version: string;
-  /** The immutable per-version prefix `cli/<version>`. */
+  /** `cli/<version>` */
   versionPrefix: string;
-  /** The moving ring prefix `cli/edge`. */
+  /** `cli/edge` */
   ringPrefix: string;
 }
 
 /**
  * Resolve the edge target for a raw version or `v` tag, or a one-line refusal.
- * Pure: no I/O, so the guards are unit-tested without the Blob store.
+ * Pure so the guards are unit-tested without the Blob store.
  *
- * Two gates, both from the shared authorities so this publisher cannot drift:
- *   1. `releaseTagError` — the SAME parser the binary's version comparator uses, so
- *      an edge tag it would reject (`v0.0.0-edge.` with an empty id, a leading
- *      zero) never ships.
- *   2. `ringForVersion === "edge"` — the crossed-pair rule from `ring-rules.ts`: a
- *      plain `X.Y.Z` (which routes to `next`) or an `-rc.*` must never land on edge,
- *      because whatever the ring serves is what its install base receives next.
+ * Two gates, both from shared rules so this publisher cannot drift:
+ *   1. `releaseTagError`: the same parser the binary's version comparator uses,
+ *      so an edge tag it would reject (`v0.0.0-edge.` with an empty id, a
+ *      leading zero) never ships.
+ *   2. `ringForVersion === "edge"` (`ring-rules.ts`): a plain `X.Y.Z` (which
+ *      routes to `next`) or an `-rc.*` must never land on edge, because
+ *      whatever the ring serves is what its install base receives next.
  */
 export function resolveEdgeTarget(raw: string): EdgeTarget | { error: string } {
   const version = raw.replace(/^v/, "");
@@ -138,9 +128,9 @@ if (import.meta.main) {
 
   const distDir = "dist";
   const allNames = await readdir(distDir);
-  // The signed build record goes to the RECORD prefix, never beside the downloads
-  // (foundations#74 rung 9) — a record the same store write can replace proves
-  // nothing. Split here, at the one place `dist/` becomes an upload list.
+  // The signed build record goes to the record prefix, never beside the
+  // downloads: a record the same store write can replace proves nothing. Split
+  // here, where `dist/` becomes an upload list.
   const recordNames = allNames.filter((n) => n === SIGNATURE_ASSET);
   const names = allNames.filter((n) => n !== SIGNATURE_ASSET);
   if (names.length === 0) {
@@ -150,9 +140,6 @@ if (import.meta.main) {
     process.exit(1);
   }
 
-  // Edge serves ONE `wego-*` asset (the target axis picks the backend at run time,
-  // so the flavor is never in the filename). Refuse a retired-flavor build — that
-  // is the flavor world's asset and must never reach the ring model's pointer.
   if (!names.includes(MANIFEST)) {
     console.error(`dist/ has no ${MANIFEST} – cannot verify the edge channel.`);
     process.exit(1);
@@ -187,6 +174,8 @@ if (import.meta.main) {
     );
     process.exit(1);
   }
+  // Edge serves only `wego-*` assets (the backend is chosen at run time, so it
+  // is never in the filename).
   const wrongFlavor = binaries.filter(
     (n) => !n.startsWith(`${RELEASE_ASSET_BASENAME}-`),
   );
@@ -197,7 +186,7 @@ if (import.meta.main) {
     process.exit(1);
   }
 
-  // Phase 1 — immutable versioned copies (cached hard), idempotent on a resume.
+  // Phase 1: immutable versioned copies (cached hard), idempotent on a resume.
   const existing = await list({ prefix: `${versionPrefix}/`, token });
   const present = new Set(existing.blobs.map((b) => b.pathname));
   let storeOrigin = existing.blobs[0]
@@ -233,10 +222,11 @@ if (import.meta.main) {
     process.exit(1);
   }
 
-  // Phase 2 — advance cli/edge from the frozen version dir. Same ordering as
-  // `upload-release-blob.ts`: binaries first, manifest (commit point) next, certify,
-  // then VERSION last and certify again — so a reader never sees a new manifest next
-  // to a stale binary, nor a VERSION advertising bytes the channel cannot serve.
+  // Phase 2: advance cli/edge from the frozen version dir. Same ordering as
+  // `upload-release-blob.ts`: binaries first, manifest (commit point) next,
+  // certify, then VERSION last and certify again, so a reader never sees a new
+  // manifest next to a stale binary, nor a VERSION advertising bytes the channel
+  // cannot serve.
   const tagSumsUrl = `${storeOrigin}/${versionPrefix}/${MANIFEST}`;
   const readTagSums = async (attempts = 5): Promise<string> => {
     for (let i = 1; i <= attempts; i++) {
@@ -273,16 +263,13 @@ if (import.meta.main) {
     process.exit(1);
   }
 
-  // The record must VOUCH for this manifest, not merely exist (foundations#74 rung
-  // 9). Presence was checked in phase 1 against `dist/`; that catches a build with
-  // no record but nothing else — a record covering different bytes, or carrying the
-  // RELEASE lane's identity rather than the edge lane's, would still have advanced
-  // `cli/edge`, and every edge client would then refuse to update from it. The
-  // release publisher has always gated here; the edge lane claimed the same gate in
-  // two AGENTS.md files without doing it.
+  // The record must vouch for this manifest, not merely exist. The presence
+  // check against `dist/` misses a record covering different bytes or carrying
+  // the release lane's identity instead of the edge lane's; either would advance
+  // `cli/edge` and every edge client would then refuse to update from it.
   //
-  // Read from the STORE, not from `dist/`: what has to be vouched for is the bytes
-  // the ring will actually serve.
+  // Read from the store, not `dist/`: what must be vouched for is the bytes the
+  // ring will serve.
   const edgeRecordUrl = `${storeOrigin}/${sigPrefixForTag(version)}/${SIGNATURE_ASSET}`;
   const edgeRecordRes = await fetch(edgeRecordUrl, {
     cache: "no-store",
@@ -327,8 +314,8 @@ if (import.meta.main) {
     );
     process.exit(1);
   }
-  // …and a record only vouches for what the manifest LISTS, so an object the
-  // manifest omits is an object nothing signed.
+  // A record only vouches for what the manifest lists, so an object the
+  // manifest omits is unsigned.
   const edgeCoverage = manifestCoversAll(tagSumsText, names);
   if (edgeCoverage) {
     console.error(`Refusing to advance cli/edge: ${edgeCoverage}`);
@@ -374,10 +361,10 @@ if (import.meta.main) {
         console.log(`↝ ${url} (from ${versionPrefix})`);
       }),
   );
-  // The record first, then the manifest it vouches for. Both orders leave a brief
-  // window where a client sees a mismatched pair and REFUSES - fail-closed either
-  // way - so keep the two writes adjacent and the manifest last, which is the commit
-  // point everything else is ordered around (foundations#74 rung 9).
+  // The record first, then the manifest it vouches for. Either order leaves a
+  // brief window where a client sees a mismatched pair and refuses (fail-closed
+  // either way), so keep the writes adjacent with the manifest last, since it is
+  // the commit point everything else is ordered around.
   const { url: recordUrl } = await copy(
     `${sigPrefixForTag(version)}/${SIGNATURE_ASSET}`,
     `${sigPrefixForRing("edge")}/${SIGNATURE_ASSET}`,

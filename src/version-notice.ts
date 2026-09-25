@@ -6,75 +6,55 @@ import {
 } from "./ring-follow";
 
 /**
- * Proactive "a newer release exists" notice — the pull side of the release
- * channel's `VERSION` object.
+ * "A newer release exists" notice, read from the ring's `VERSION` object.
  *
- * Until now an installed binary only learned about a new release if the user
- * thought to run `wego update --check`, so installs drifted silently. That check
- * is also checksum-based (`update.ts`): it hashes the running 60–95 MB binary and
- * cannot name the newer version, because the channel published no version string.
- * The release now writes a tiny `VERSION` object next to `SHA256SUMS.txt`, and
- * this module reads it in the background and hands the caller one stderr line.
+ * `wego update --check` compares checksums (`update.ts`) and cannot name the newer
+ * version, and users rarely run it, so installs drifted silently. The release
+ * writes a small `VERSION` object next to `SHA256SUMS.txt`; this module reads it
+ * and hands the caller one stderr line.
  *
- * Deliberate constraints, because this runs after every command:
- *  - **Throttled**, daily: one published build, one cadence.
- *  - **Persist, then nag.** The channel's answer is stored, so the notice keeps
- *    printing on every command until the user updates — with no further network
- *    calls. A once-per-window notice is trivially missed, and the whole point is
- *    that the user cannot miss it.
- *  - **stdout is untouched.** It is a JSON contract for the agent funnels, so the
- *    message is RETURNED, never written, and the caller puts it on stderr. The
- *    exit code never changes.
- *  - **Fail-safe, never fail-loud.** An unparseable version on either side, a
- *    timeout, or a 5xx produces no notice — never a guess and never an error.
- *  - **Escapable** via `WEGO_CLI_NO_UPDATE_NOTICE`, for CI images, containers,
- *    and harnesses that must not write into `$HOME` or reach the network.
+ * Constraints, because this runs after every command:
+ *  - Throttled to once a day.
+ *  - stdout is untouched: it is a JSON contract for agents, so the message is
+ *    returned and the caller puts it on stderr. The exit code never changes.
+ *  - Fail-safe: an unparseable version on either side, a timeout or a 5xx
+ *    produces no notice, never a guess and never an error.
+ *  - `WEGO_CLI_NO_UPDATE_NOTICE` turns it off, for CI images, containers and
+ *    harnesses that must not write into `$HOME` or reach the network.
  *
- * Written against injected deps (like `skill-refresh.ts`) and returning its
- * decision as a union, so every guard is testable on a path that otherwise has no
- * symptom at all.
+ * The decision is returned as a union so every guard is testable on a path that
+ * otherwise has no visible symptom.
  */
 
-/** Whether an opt-out env var is set to anything meaning "yes". Unset, empty,
- *  `0` and `false` all mean "not opted out"; any other value opts out.
- *
- *  Lived in `skill-refresh.ts` in wego-ai, which used it for the background
- *  refresh's kill switch. That module went with the skill channel; this module
- *  (`WEGO_CLI_NO_UPDATE_NOTICE`) and `index.ts` (`WEGO_CLI_NO_SESSION`) are its
- *  remaining callers, so it lives here rather than in a module of its own. */
+/** Unset, empty, `0` and `false` mean "not opted out"; any other value opts out.
+ *  Also used by `index.ts` for `WEGO_CLI_NO_SESSION`. */
 export function isOptedOut(raw: string | undefined): boolean {
   const v = raw?.trim().toLowerCase();
   return v !== undefined && v !== "" && v !== "0" && v !== "false";
 }
 
-/** The from-source version stamp (matches `index.ts`'s `VERSION` fallback). */
+/** Matches `index.ts`'s `VERSION` fallback. */
 const DEV_VERSION = "0.0.0-dev";
 
-/** How long a stored answer is trusted before the channel is read again. One
- *  window, because there is one published build: the second, hour-long one
- *  belonged to the staging flavor's faster-moving prerelease line. */
 export const NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-/** Per-request deadline for the channel read. Two seconds, matching the
- *  background skill refresh's tightened budget rather than `update`'s 30s: this is
- *  pure added latency on someone else's command, and giving up costs a skipped
- *  notice, nothing more. */
+/** Two seconds rather than `update`'s 30s: this is added latency on someone
+ *  else's command, and giving up only costs a skipped notice. */
 export const NOTICE_FETCH_TIMEOUT_MS = 2000;
 
-/** Longest `VERSION` body worth reading. A deadline bounds *time*, not *bytes*, so
- *  a mis-pointed channel base (a 95 MB binary object) would otherwise be buffered
- *  into the hot path. A semver string plus a newline is well under this. */
+/** A deadline bounds time, not bytes, so a mis-pointed base (a 95 MB binary)
+ *  would otherwise be buffered into the hot path. A semver string plus a newline
+ *  is well under this. */
 export const MAX_VERSION_BYTES = 64;
 
 /**
  * Commands that must never carry the notice:
- *  - `update` — the running process's baked version is stale relative to the
- *    binary it just wrote, so it would nag on the very run that fixed the problem.
- *  - `uninstall` — telling a user to upgrade software they just removed.
- *  - `skill` — `skill list` / `skill path` are documented offline and auth-free,
- *    the same reason the background skill refresh skips them.
- * `skill install` is also the `curl … | bash` installer's last step, so without it
- * a fresh install could print an upgrade notice seconds after installing.
+ *  - `update`: the running process's version is stale relative to the binary it
+ *    just wrote, so it would nag on the run that fixed the problem.
+ *  - `uninstall`: the user just removed the software.
+ *  - `skill`: `skill list` and `skill path` are documented offline and auth-free,
+ *    and `skill install` is the installer's last step, so a fresh install would
+ *    otherwise print an upgrade notice seconds after installing.
  */
 const SELF_MANAGEMENT_COMMANDS = new Set(["update", "uninstall", "skill"]);
 
@@ -99,9 +79,8 @@ export interface Semver {
 const SEMVER =
   /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
 
-/** A numeric identifier, or null when it isn't a legal one. Leading zeros are
- *  semver-invalid, and past ~9 digits `Number()` starts losing precision — both
- *  mean "don't guess", which the caller turns into "no notice". */
+/** Null for a leading zero (semver-invalid) or more than 9 digits (where
+ *  `Number()` starts losing precision). The caller turns null into no notice. */
 function numericId(raw: string): number | null {
   if (raw.length > 1 && raw.startsWith("0")) return null;
   if (raw.length > 9) return null;
@@ -128,7 +107,7 @@ export function parseSemver(raw: string): Semver | null {
 }
 
 /** Semver §11.4.1–3: numeric identifiers compare numerically, alphanumeric ones by
- *  ASCII, and a numeric identifier always ranks BELOW an alphanumeric one. */
+ *  ASCII, and a numeric identifier always ranks below an alphanumeric one. */
 function compareId(x: string | number, y: string | number): number {
   if (x === y) return 0;
   const xNum = typeof x === "number";
@@ -136,7 +115,7 @@ function compareId(x: string | number, y: string | number): number {
   return x < y ? -1 : 1;
 }
 
-/** Semver §11.4: a version WITHOUT a prerelease outranks one with; otherwise the
+/** Semver §11.4: a version without a prerelease outranks one with; otherwise the
  *  identifiers compare field by field, and on an equal prefix the longer set wins. */
 function comparePre(
   a: readonly (string | number)[],
@@ -162,60 +141,43 @@ export function compareSemver(a: Semver, b: Semver): number {
 }
 
 /**
- * True only when both sides parse AND `remote` is *strictly* greater. The two
- * halves are what make this safe to run unattended: unparseable input never
- * becomes a guess, and "strictly greater" keeps a channel rollback (or a staging
- * binary built ahead of its channel) silent instead of advertising a downgrade.
+ * True only when both sides parse and `remote` is strictly greater. Unparseable
+ * input never becomes a guess. Used to choose the wording, not whether to notify
+ * (see `shouldNotify`).
  */
 export function isNewerVersion(remote: string, current: string): boolean {
   const [r, c] = [parseSemver(remote), parseSemver(current)];
   return r !== null && c !== null && compareSemver(r, c) > 0;
 }
 
-/** Version-SHAPED, which is a weaker question than `parseSemver`'s.
+/** Version-shaped, a weaker test than `parseSemver`.
  *
  *  The gate on a fetched body exists to reject a captive-portal page or a proxy
- *  error, not to adjudicate semver legality — and `X.Y.Z-edge.0123456` is a real
- *  build this channel really serves while being semver-INVALID (§9 forbids a
- *  leading zero on a numeric identifier, so `parseSemver` returns null for it).
- *  Gating the read on strict parsing therefore silences the notice permanently
- *  for whichever edge builds happen to draw an all-numeric sha with a leading
- *  zero. Shape is the property the guard actually needs. */
+ *  error, not to judge semver legality. `X.Y.Z-edge.0123456` is a real build the
+ *  ring serves, but semver §9 forbids a leading zero on a numeric identifier, so
+ *  `parseSemver` rejects it. Strict parsing would permanently silence the notice
+ *  for any edge build whose sha is all digits with a leading zero. */
 export function looksLikeVersion(raw: string): boolean {
   return SEMVER.test(raw.trim());
 }
 
 /**
- * Whether the channel is serving something this install should be told about.
+ * Different, not greater: the same question `update` asks when it compares
+ * checksums, so the notice and the command agree on whether there is anything
+ * to do.
  *
- * ONE ORACLE: *different*, not *greater*. It is the same question `update`
- * itself asks when it compares checksums rather than versions, which is what
- * makes the notice and the command agree about whether there is anything to do.
+ * Ordering fails both ways. Semver orders prerelease identifiers lexically and a
+ * git sha has no chronological order, so `0.7.2-edge.4aeec3a2f` can succeed
+ * `0.7.2-edge.e30454f2a` and still sort below it. And a rollback is a deliberate
+ * move to get people off a build: `update` follows bytes in both directions, so
+ * a user whose ring moved backwards still has something to do and must be told
+ * (when `cli/stable` was rolled back from 1.2.0 to 1.1.0, a greater-than rule
+ * told nobody).
  *
- * This used to split by shape. A prerelease (`edge`'s `X.Y.Z-edge.<sha>`) was
- * compared for difference, because semver orders prerelease identifiers
- * lexically and a git sha carries no chronological order at all:
- * `0.7.2-edge.4aeec3a2f` is the SUCCESSOR of `0.7.2-edge.e30454f2a` and sorts
- * below it, so "is it greater" answers a coin flip. A plain `X.Y.Z` was compared
- * for strict ordering, so that "a rollback stays silent rather than advertising
- * a downgrade".
+ * Not claiming a downgrade is new is a wording concern, handled by the caller
+ * choosing `formatChannelChangedNotice` whenever `isNewerVersion` is false.
  *
- * THE ROLLBACK HALF OF THAT WAS WRONG, and this release is what proved it. A
- * rollback is a deliberate act to get people OFF a build, and silence defeats
- * the act: `cli/stable` was rolled back from 1.2.0 to 1.1.0 on 2026-09-14 and
- * nobody who was not already pinned to the bridge was told anything. `update`
- * follows bytes in BOTH directions - `currentHash === expected`, no ordering
- * anywhere - so a user whose channel moved under them has something to do
- * regardless of which way it moved, and the only effect of the old rule was that
- * nobody told them.
- *
- * "Advertising a downgrade" was a real concern and it is a WORDING concern, which
- * is why `formatChannelChangedNotice` already exists: it states what is known
- * (the channel serves other bytes) and claims no ordering. The caller picks it
- * whenever `isNewerVersion` is false, so a rollback now says "your channel now
- * serves 1.2.2 (you have 1.2.3)" rather than calling it new.
- *
- * Unparseable on either side is still no notice, never a guess.
+ * Unparseable on either side is no notice, never a guess.
  */
 export function shouldNotify(latest: string, current: string): boolean {
   const [l, c] = [latest.trim(), current.trim()];
@@ -223,13 +185,12 @@ export function shouldNotify(latest: string, current: string): boolean {
   return l !== c;
 }
 
-/** The one stderr line. Pinned by a test so humans see a stable shape — an agent
- *  is told to treat its PRESENCE as the signal and never parse it.
+/** Pinned by a test so humans see a stable shape; an agent is told to treat its
+ *  presence as the signal and never parse it.
  *
- *  `wego` is the RELEASE, which is one name now. `command` is what the user must
- *  actually TYPE, which is the name the binary was invoked as: an install renamed
- *  by `WEGO_CLI_BIN` would otherwise be told to run a command that does not exist
- *  on its machine. They are the same string on a default install. */
+ *  `wego` names the release. `command` is what the user must type, the name the
+ *  binary was invoked as: an install renamed by `WEGO_CLI_BIN` would otherwise be
+ *  told to run a command that does not exist on its machine. */
 export function formatVersionNotice(
   current: string,
   latest: string,
@@ -238,11 +199,10 @@ export function formatVersionNotice(
   return `A new wego is available: ${current} -> ${latest}. Run \`${command} update -y\`.`;
 }
 
-/** The line for a ring that MOVED without moving forward — the prerelease case,
- *  where "newer" is not a question the version strings can answer (see
- *  `shouldNotify`). Saying "a new version is available" there would claim an
- *  ordering nothing established; this says only what is known, which is that the
- *  channel is serving other bytes than the ones running. */
+/** For a ring that moved but not provably forward: a prerelease, where the
+ *  version strings cannot say which is newer, or a rollback (see `shouldNotify`).
+ *  Claims no ordering, only that the ring serves other bytes than the ones
+ *  running. */
 export function formatChannelChangedNotice(
   current: string,
   latest: string,
@@ -255,19 +215,13 @@ export function formatChannelChangedNotice(
 // The decision
 // ---------------------------------------------------------------------------
 
-/** Why the notice did (or didn't) reach the channel.
+/** Why the notice did or did not reach the channel.
  *
- *  A message accompanies exactly one of these: `checked`, and only when the read
- *  succeeded. Every other outcome is silent, because every other outcome means we
- *  did not ask — and this file says nothing it has not just been told.
- *
- *  It used to nag from a STORED answer on `throttled` and `skipped-unclaimable`
- *  too, on the reasoning that "a stale install keeps being told, for free". Free
- *  in network terms, expensive in correctness terms: the stored answer is half of
- *  a comparison whose OTHER half — the running version — changes underneath it on
- *  every update and every reinstall, and neither event is something this file can
- *  observe. Three defects in one afternoon came out of defending that position
- *  (wego/cli#33, #35). The cache is gone; only the timestamp remains. */
+ *  Only `checked` can carry a message, and only when the read succeeded. Every
+ *  other outcome is silent because nothing was asked, and this file says nothing
+ *  it has not just been told. A stored answer is not reused: it is half of a
+ *  comparison whose other half, the running version, changes on every update and
+ *  reinstall without this file seeing it (wego/cli#33, #35). */
 export type NoticeOutcome =
   | "skipped-explicit-command"
   | "skipped-from-source"
@@ -279,65 +233,48 @@ export type NoticeOutcome =
 
 export interface NoticeResult {
   outcome: NoticeOutcome;
-  /** The stderr line, present only when a strictly newer version is known. */
+  /** Present only when the channel serves a different version. */
   message?: string;
 }
 
-/** What the throttle file records: WHEN we last asked, and nothing else.
- *
- *  Deliberately not the answer. The file's only job is to keep this off the
- *  network on every command; storing what the channel said would make it half of
- *  a stale comparison (see `NoticeOutcome`). The file's content is unused and its
- *  mtime is the whole record. */
+/** When the channel was last asked, and deliberately not what it said (see
+ *  `NoticeOutcome`). The throttle file's content is unused; its mtime is the
+ *  whole record. */
 export interface UpdateCheckState {
   checkedAt: number;
 }
 
 export interface VersionNoticeDeps {
-  /** `process.argv[2]` — the subcommand, for the suppression set. */
+  /** `process.argv[2]`, for the suppression set. */
   command: string | undefined;
-  /** True when running from source (a runtime exec-path signal, NOT the
-   *  env-stamped version which a stray `WEGO_BUILD_VERSION` can spoof). */
+  /** A runtime exec-path signal, not the env-stamped version, which a stray
+   *  `WEGO_BUILD_VERSION` can spoof. */
   fromSource: boolean;
-  /** The running binary's version (matches `wego version`). */
   version: string;
-  /** The name the binary was invoked as (`programName()`). The release is always
-   *  named `wego`; this names the command the user has to type, and `WEGO_CLI_BIN`
-   *  lets an install carry a different one. */
+  /** `programName()`: the command the user has to type, which `WEGO_CLI_BIN`
+   *  can make differ from `wego`. */
   invokedAs: string;
-  /** The installer's ring record — the same one `update` follows. Absent,
-   *  unreadable and malformed all arrive as `null`, and `null` REFUSES: the
-   *  notice goes quiet rather than guessing a channel.
-   *
-   *  foundations#74 rung 3 is explicit that "a missing record refuses rather than
-   *  guesses", and it is the rung that exists to make silent channel drift
-   *  impossible. A baked-URL fallback is the drift: a binary baked with the
-   *  retired `cli/latest` would compare against a prefix nothing advances and
-   *  report "up to date" forever. The cost of refusing is one missing sentence on
-   *  a pre-record install, which `wego update` already refuses for anyway. */
+  /** The same record `update` follows. Missing, unreadable and malformed all
+   *  arrive as `null`, and `null` goes quiet rather than guessing a channel
+   *  (foundations#74 rung 3). A fallback URL could point at a retired prefix
+   *  nothing advances and report "up to date" forever; refusing costs one
+   *  sentence on a pre-record install, which `wego update` refuses anyway. */
   readInstallRecord: () => Promise<InstallRecord | null>;
-  /** Process env, read only for the `WEGO_CLI_NO_UPDATE_NOTICE` escape. */
   env: Record<string, string | undefined>;
   /** Wall clock, ms. */
   now: number;
-  /** The stored answer + stamp, or null when absent or unreadable. */
+  /** Null when absent or unreadable. */
   readState: () => Promise<UpdateCheckState | null>;
-  /** Stamp the throttle window to now, creating the file if needed. Returns
-   *  whether the stamp actually landed — the throttle is only real if it is
-   *  durable (see `maybeNotifyNewVersion`). */
+  /** Stamps the throttle window to now, creating the file if needed. Returns
+   *  whether the stamp landed: the throttle is only real if it is durable. */
   claimWindow: () => Promise<boolean>;
-  /** `fetch`, injectable for tests. */
   fetch: typeof fetch;
 }
 
 /**
- * Decode at most `limit` bytes of a response body, and CANCEL the transfer the
- * moment it goes over. Returns `null` for an over-limit body - the caller reads
- * that as "learned nothing", the same as a transport failure.
- *
- * Counts real bytes, not `string.length`: the limit exists to keep a mis-pointed
- * base out of memory, and UTF-16 code units are not what arrives on the socket. A
- * null stream is an EMPTY body, not a failure.
+ * Cancels the transfer as soon as the body exceeds `limit`, returning `null`,
+ * which the caller treats like a transport failure. Counts bytes on the wire,
+ * not UTF-16 code units. A null stream is an empty body, not a failure.
  */
 async function readBounded(
   stream: ReadableStream<Uint8Array> | null,
@@ -368,28 +305,17 @@ async function readBounded(
   return new TextDecoder().decode(merged);
 }
 
-/** Where the notice reads `VERSION` from: the ring this install FOLLOWS, always
- *  from the installer's record. There is no second source. */
 export interface NoticeChannel {
   /** `<api>/install`, from the record. */
   base: string;
-  /** The recorded ring. Required: a channel without one cannot be resolved, and
-   *  guessing which prefix to read is the thing rung 3 forbids. */
   ring: string;
 }
 
 /**
- * Resolve which channel to ask. ONE source: the installer's record.
- *
- * The record is the same fact `update` follows (`ring-follow.ts`), so the notice
- * and `update` cannot disagree about which ring an install is on — previously they
- * could, and on `edge` they always did: every prod build baked `…/cli/stable`, so
- * an edge install read the stable version, found a plain `X.Y.Z` outranking its own
- * `X.Y.Z-edge.<sha>` (semver §11.3: a prerelease sorts below its release) and
- * advertised an "update" that `update` itself then correctly refused to install.
- *
- * `null` when there is no record, which the caller reports as `skipped-no-record`.
- * No fallback: see `readInstallRecord` for why rung 3 rules one out.
+ * The installer's record is the only source, the same one `update` follows
+ * (`ring-follow.ts`), so the two cannot disagree about which ring an install is
+ * on. `null` without a record; see `readInstallRecord` for why there is no
+ * fallback.
  */
 export function noticeChannel(
   record: InstallRecord | null,
@@ -401,22 +327,15 @@ export function noticeChannel(
   return { base: stripTrailingSlashes(record.installUrl), ring: record.ring };
 }
 
-/** The `VERSION` URL for a channel: always the ring-qualified `?dl=` form `update`
- *  uses, so both resolve one pointer through one first-party host. */
+/** The same ring-qualified `?dl=` form `update` uses, so both resolve one pointer
+ *  through one first-party host. */
 function versionUrl(channel: NoticeChannel): string {
   return ringAssetUrl(channel.base, "VERSION", channel.ring);
 }
 
 /**
- * Read the channel's advertised version, or `null` for every way of not knowing:
- * a transport failure, any non-2xx, an oversized body, or a `200` whose body is
- * not version-SHAPED.
- *
- * This used to distinguish `404` (`""`, an authoritative absence) from everything
- * else (`null`), because only the first was allowed to erase a STORED answer.
- * Nothing is stored now, so both mean the same thing to the one caller: say
- * nothing. A distinction that no longer changes behaviour is worse than no
- * distinction, so it is gone.
+ * `null` for every way of not knowing: a transport failure, any non-2xx, an
+ * oversized body, or a `200` whose body is not version-shaped.
  */
 async function readChannelVersion(
   deps: VersionNoticeDeps,
@@ -427,24 +346,19 @@ async function readChannelVersion(
       headers: { "user-agent": USER_AGENT },
       signal: AbortSignal.timeout(NOTICE_FETCH_TIMEOUT_MS),
     });
-    // Includes the `404` of a pre-`VERSION` tag or a channel that never published
-    // one, and the `403` of an edge rule on a public store. They differed only in
-    // what they were permitted to overwrite; now neither says anything.
+    // Includes the `404` of a tag or ring that never published `VERSION`, and the
+    // `403` of an edge rule on a public store.
     if (!res.ok) return null;
     const declared = Number(res.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > MAX_VERSION_BYTES) return null;
-    // Chunked responses declare no length, so the cap has to apply WHILE reading:
-    // `res.text()` buffers the whole object before any check can reject it, and a
-    // CDN delivers tens of megabytes well inside the 2s deadline.
+    // Chunked responses declare no length, so the cap has to apply while reading:
+    // `res.text()` buffers the whole object first, and a CDN delivers tens of
+    // megabytes well inside the 2s deadline.
     const body = await readBounded(res.body, MAX_VERSION_BYTES);
     if (body === null) return null;
     const trimmed = body.trim();
-    // Only a version-SHAPED body counts as an answer: a `200` carrying a
-    // captive-portal page, a proxy error or an empty body is not one, and this
-    // file never repeats anything it cannot read as a version.
-    //
-    // SHAPE, not `parseSemver`: see `looksLikeVersion` — a semver-invalid but real
-    // edge build is a real build.
+    // Rejects a `200` carrying a captive-portal page, a proxy error or an empty
+    // body. Shape rather than `parseSemver`: see `looksLikeVersion`.
     return looksLikeVersion(trimmed) ? trimmed : null;
   } catch {
     return null;
@@ -452,25 +366,22 @@ async function readChannelVersion(
 }
 
 /**
- * Decide whether to tell the user about a newer release, refreshing the stored
- * answer at most once per window. Never throws, never writes to a stream.
+ * Reads the channel at most once per window. Never throws, never writes to a
+ * stream.
  */
 export async function maybeNotifyNewVersion(
   deps: VersionNoticeDeps,
 ): Promise<NoticeResult> {
-  // First guard: never nag on a command that is itself about this binary's
-  // lifecycle — see SELF_MANAGEMENT_COMMANDS for why each one is in the set.
   if (isSelfManagementCommand(deps.command)) {
     return { outcome: "skipped-explicit-command" };
   }
-  // Gate on the exec-path signal AND the dev stamp, exactly as `update.ts` does:
-  // a locally compiled binary with a baked channel base but no `RELEASE_TAG`
-  // passes the exec-path test and would otherwise nag `0.0.0-dev -> …` forever.
+  // Both checks, as in `update.ts`: a locally compiled binary without
+  // `RELEASE_TAG` passes the exec-path test and would otherwise nag
+  // `0.0.0-dev -> …` forever.
   if (deps.fromSource || deps.version === DEV_VERSION) {
     return { outcome: "skipped-from-source" };
   }
-  // The ring this install FOLLOWS, falling back to the baked base. Read before
-  // the opt-out only would waste a file read, so it stays after it.
+  // Before the record read, so an opted-out run skips the file read.
   if (isOptedOut(deps.env.WEGO_CLI_NO_UPDATE_NOTICE)) {
     return { outcome: "skipped-opt-out" };
   }
@@ -484,29 +395,25 @@ export async function maybeNotifyNewVersion(
     outcome: NoticeOutcome,
   ): NoticeResult => {
     if (!latest || !shouldNotify(latest, deps.version)) return { outcome };
-    // Two wordings, because only one of them is a claim the versions support:
-    // "newer" when the ordering is real, "your channel now serves" when all that
-    // is known is that the bytes differ (`shouldNotify`).
+    // "New" only when the ordering is real; otherwise all that is known is that
+    // the versions differ (`shouldNotify`).
     const message = isNewerVersion(latest, deps.version)
       ? formatVersionNotice(deps.version, latest, deps.invokedAs)
       : formatChannelChangedNotice(deps.version, latest, deps.invokedAs);
     return { outcome, message };
   };
 
-  // A stamp in the FUTURE (clock set backwards, or a bad write) must not throttle
+  // A stamp in the future (clock set backwards, or a bad write) must not throttle
   // forever, so only a non-negative age inside the window counts as fresh.
   const age = state ? deps.now - state.checkedAt : Number.POSITIVE_INFINITY;
   if (age >= 0 && age < NOTICE_INTERVAL_MS) return { outcome: "throttled" };
 
-  // Claim the window BEFORE the fetch, and only proceed if the claim LANDED. An
-  // unwritable state file (read-only `$HOME`, immutable home) otherwise means
-  // every single command pays the full fetch deadline forever — one unwritable
-  // dir turning into a per-invocation network call.
+  // Claim the window before the fetch, and only proceed if the claim landed.
+  // Otherwise an unwritable state file (read-only `$HOME`) makes every command
+  // pay the full fetch deadline.
   if (!(await deps.claimWindow())) return { outcome: "skipped-unclaimable" };
 
   const fresh = await readChannelVersion(deps, channel);
-  // `null` = we learned nothing (a failure, or a body that is not a version), and
-  // this file never says anything it has not just been told.
   if (fresh === null) return { outcome: "checked" };
   return result(fresh, "checked");
 }

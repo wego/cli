@@ -568,7 +568,7 @@ describe("flights results", () => {
   });
 
   it("a bare read inherits the stored currency and locale", async () => {
-    // Regression: a plain read after a SAR search used to come back in USD.
+    // A plain read after a SAR search must stay in SAR, not fall back to USD.
     signIn(s.home);
     writeSettings(s.home, { currency: "SAR", locale: "ar" });
     const fake = s.fake({ routes: [route("flights-results")] });

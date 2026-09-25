@@ -1,30 +1,17 @@
 import { join } from "node:path";
 
 /**
- * The **target** axis — which backend one binary talks to (foundations#74 rung 2).
- *
- * Version, ring and target are three independent things. Today they are welded
- * together: a `wegostaging` binary is a *different build* whose staging endpoints
- * are baked in, so "test this candidate" and "use the cheap backend" cannot be
- * decided separately. This module is the other half of that split — a single
- * build carries every target and picks one at **run time**, from a flag or an
- * env var, with prod as the default.
- *
- * What lives here, and nothing else: the enum, how it is resolved from argv/env,
- * the endpoint bundle each target implies, and the state scope a resolved target
- * gets. The baked-flavor machinery is untouched — the flavor is still the release
- * identity (rung 7 retires it); the target is a run-time choice on top of it.
+ * The target: which backend the binary talks to. Version, ring and target are
+ * independent; one build carries every target and picks one at run time, from a
+ * flag or an env var, with prod as the default.
  */
 
 export const TARGETS = ["prod", "staging"] as const;
 
 export type Target = (typeof TARGETS)[number];
 
-/**
- * Prod, and it is not a preference. A default that could be non-prod is how a
- * user reads test inventory believing it is real, so the whole point of the axis
- * is that the safe end is what you get when you say nothing.
- */
+/** A default that could be non-prod is how a user reads test inventory
+ *  believing it is real. */
 export const DEFAULT_TARGET: Target = "prod";
 
 export const TARGET_FLAG = "--target";
@@ -41,8 +28,8 @@ export interface ResolvedTarget {
 }
 
 /** The four values a target swaps as a unit. Swapping them individually is what
- *  produces the 401 that `.env.local.example` warns about, so the bundle — not
- *  the endpoint — is the unit of choice. */
+ *  produces the 401 that `.env.local.example` warns about, so the bundle, not
+ *  the endpoint, is the unit of choice. */
 export interface TargetBundle {
   authorizeUrl: string;
   tokenUrl: string;
@@ -53,13 +40,11 @@ export interface TargetBundle {
 /**
  * The staging endpoints, as source literals rather than baked build values.
  *
- * Deliberate, and the one place this file departs from `config.ts`'s "no
- * source-code defaults for environment endpoints" rule: prod endpoints stay
- * baked-or-nothing exactly as before, but the *cheap* backend has to be
- * reachable from a binary that was built for prod — that is the premise the rung
- * proves. These are public, invariant, and already committed in
- * `.env.local.example`; `target.test.ts` asserts the two copies agree, so they
- * cannot drift.
+ * This departs from `config.ts`'s "no source-code defaults for environment
+ * endpoints" rule on purpose: prod endpoints stay baked-or-nothing, but staging
+ * has to be reachable from a binary built for prod. These are public and
+ * already committed in `.env.local.example`; `target.test.ts` asserts the two
+ * copies agree.
  */
 const STAGING_AUTH_BASE =
   "https://auth.wegostaging.com/user-auth/v2/users/oauth";
@@ -76,16 +61,14 @@ export function isTarget(value: unknown): value is Target {
   );
 }
 
-/** The allowed list, for every error message that has to name it. */
 function targetList(): string {
   return TARGETS.join("|");
 }
 
 /**
- * Parse one written-down target. `undefined`/empty ⇒ the source said nothing, so
- * the next source decides. Anything else that is not a target **throws**: a
- * mistyped `--target stagng` must not silently fall through to prod, which is
- * the failure this axis exists to prevent.
+ * `undefined` or empty means the source said nothing, so the next source
+ * decides. Anything else that is not a target throws: a mistyped
+ * `--target stagng` must not silently fall through to prod.
  */
 export function parseTarget(
   raw: string | undefined,
@@ -99,9 +82,9 @@ export function parseTarget(
   return value;
 }
 
-/** `--target staging` and `--target=staging` both, scanned over the whole argv:
- *  it is a global switch, not a per-subcommand flag, so `wego flights search …
- *  --target staging` has to work as well as `wego --target staging flights …`. */
+/** Scans the whole argv because `--target` is a global switch, not a
+ *  per-subcommand flag: `wego flights search … --target staging` has to work as
+ *  well as `wego --target staging flights …`. */
 function targetFromArgv(argv: readonly string[]): string | undefined {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -114,9 +97,9 @@ function targetFromArgv(argv: readonly string[]): string | undefined {
 }
 
 /**
- * Resolve the target: the flag beats the env var beats prod. `envValue` is passed
- * in rather than read here so `config.ts` keeps reading every configuration var
- * through its `CliEnvVar`-typed accessor (a mistyped key stays a compile error).
+ * The flag beats the env var beats prod. `envValue` is passed in rather than
+ * read here so `config.ts` keeps reading every configuration var through its
+ * `CliEnvVar`-typed accessor (a mistyped key stays a compile error).
  */
 export function resolveTarget(
   argv: readonly string[],
@@ -126,8 +109,7 @@ export function resolveTarget(
   if (written !== undefined) {
     // The flag and the env var are asymmetric on purpose. An exported-but-empty
     // `WEGO_TARGET=` is ordinary shell noise and means "said nothing"; a typed
-    // `--target` with nothing after it is a person mid-sentence, and answering it
-    // with prod is the silent fallback this axis exists to refuse.
+    // `--target` with no value is a mistake, and must not fall back to prod.
     const fromFlag = parseTarget(written, TARGET_FLAG);
     if (!fromFlag) {
       throw new Error(
@@ -141,14 +123,8 @@ export function resolveTarget(
   return { target: DEFAULT_TARGET, source: "default" };
 }
 
-/** Remove the global flag before a command parser sees it — every one of them
- *  rejects unknown arguments, which is exactly the behaviour we want to keep.
- *
- *  The separated form (`--target staging`) spans two argv entries, so dropping it
- *  carries one bit of state to the next iteration. That is a `dropValue` flag
- *  rather than an index the body advances: a loop whose body moves its own
- *  counter is the thing every reader has to simulate to trust, and `for…of` also
- *  removes the `undefined` an indexed read has to keep answering for. */
+/** Remove the global flag before a command parser sees it: every parser rejects
+ *  unknown arguments, and that behaviour is worth keeping. */
 export function stripTargetFlag(argv: readonly string[]): string[] {
   const out: string[] = [];
   let dropValue = false;
@@ -167,8 +143,8 @@ export function stripTargetFlag(argv: readonly string[]): string[] {
   return out;
 }
 
-/** The one predicate every consumer asks. Written as "is prod" rather than "is
- *  staging" so a target added later is non-prod until someone says otherwise. */
+/** "Is prod" rather than "is staging" so a target added later is non-prod until
+ *  someone says otherwise. */
 export function isProdTarget(target: Target): boolean {
   return target === "prod";
 }
@@ -177,8 +153,8 @@ export function isProdTarget(target: Target): boolean {
  * The endpoints a target imposes, as a **partial** bundle layered over whatever
  * `config.ts` already resolved.
  *
- * - `prod` imposes nothing, so the default path is byte-for-byte today's:
- *   runtime env > baked build value > configuration error.
+ * - `prod` imposes nothing, so the default path is runtime env > baked build
+ *   value > configuration error.
  * - `staging` imposes all three endpoints, and beats the ambient `WEGO_*` vars.
  *   A named target is more specific than a `.env.local` a shell happens to load,
  *   and if it were not, `--target staging` would be a no-op for every developer.
@@ -186,7 +162,7 @@ export function isProdTarget(target: Target): boolean {
  * target: the override path accepts a loopback `http` URL (see `config.ts`), so
  * a target of its own buys nothing.
  *
- * `clientId` is never swapped — the seeded public PKCE client_id is the same
+ * `clientId` is never swapped: the seeded public PKCE client_id is the same
  * literal in staging and prod (see `apps/api/.env.local.example` AUTH_AUDIENCE).
  */
 export function targetEndpointOverrides(
@@ -200,27 +176,24 @@ export function targetEndpointOverrides(
   }
 }
 
-/** The host part of a URL, for keying state by it. Throws on an unparseable URL
- *  — the caller already validates endpoints, and a silent `"unknown"` bucket
- *  would let two environments share one credentials file. */
+/** Throws on an unparseable URL: the caller already validates endpoints, and a
+ *  silent `"unknown"` bucket would let two environments share one credentials
+ *  file. */
 export function hostOf(url: string): string {
   return new URL(url).host;
 }
 
 /**
- * The `~/.config/<scope>/` segment for a resolved target: **keyed by the host
- * that issues the credentials**, so two targets on one binary never read — or
- * 401 on — each other's tokens.
+ * The `~/.config/<scope>/` segment for a resolved target, keyed by the host that
+ * issues the credentials, so two targets on one binary never read (or 401 on)
+ * each other's tokens.
  *
- * Keyed by the *auth* host, not the API host, because that is what a token
+ * Keyed by the auth host, not the API host, because that is what a token
  * belongs to: an install pointed at a local `apps/api` with `WEGO_API_URL` goes
  * on using the store of whichever target issued its credentials, which is what a
  * local API verifying staging tokens needs.
  *
- * `prod` keeps the historical bare `<flavor>/` leaf. That is the same rule, not
- * an exception — the prod auth host is simply aliased to the path it has always
- * had, because a rung that silently logs every existing install out is not a
- * rung anybody would take.
+ * `prod` keeps the bare `<scope>/` leaf so existing installs are not logged out.
  */
 export function targetConfigScope(
   flavor: string,

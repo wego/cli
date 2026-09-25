@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { helpText } from "./index";
 
 /**
- * The root help text, which is pure. Dispatch, the help forms, the version and
- * the usage errors are what the compiled binary prints, so they are
+ * Only the root help text, which is pure. Dispatch, the help forms, the version
+ * and the usage errors are what the compiled binary prints, so they live in
  * `integration/cli.test.ts`.
  */
 
@@ -45,13 +45,9 @@ describe("helpText", () => {
     expect(helpText("wegostaging")).toContain("`wegostaging feedback`");
   });
 
-  // The target axis is deliberately UNDOCUMENTED here. `--target` and
-  // `WEGO_TARGET` still work — they are stripped before dispatch and resolved in
-  // `target.ts` — but help is a public surface, and staging and local are
-  // backends no public user can reach. Naming them there only invites a support
-  // question about a product we do not offer. `src/target.test.ts` owns the
-  // proof that the axis still resolves; this asserts only that help stays quiet
-  // about it.
+  // `--target` and `WEGO_TARGET` still work (`src/target.test.ts` proves it) but
+  // are deliberately left out of help: staging and local are backends no public
+  // user can reach.
   it("keeps the run-time target axis out of help, and keeps the user controls in", () => {
     const text = helpText("wego");
     expect(text).not.toContain("--target");
