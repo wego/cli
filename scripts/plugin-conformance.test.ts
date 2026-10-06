@@ -18,6 +18,8 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { SKILLS } from "../src/skill-embed";
+import { pluginPublishPlan } from "./plugin-publish";
 
 const cliRoot = join(import.meta.dir, "..");
 const manifestPath = join(cliRoot, "plugin/plugin.json");
@@ -171,6 +173,31 @@ describe("the published files are en-dash only", () => {
     ["README.md", readFileSync(readmePath, "utf8")],
   ])("%s carries no em-dash", (_name, body) => {
     expect(body).not.toContain("—");
+  });
+});
+
+/** A fetched script piped into a shell, in any of the spellings scanners flag. */
+const PIPE_TO_SHELL = /\|\s*(sudo\s+)?(ba|z|da)?sh\b/;
+
+describe("no published file pipes a download into a shell", () => {
+  // Every public registry that scans `wego/skills` downgraded it over one line,
+  // `curl -fsSL https://api.wego.com/install | bash`, in the published SKILL.md
+  // (foundations#111). The scanners read these files as text and re-scan on every
+  // promote, so the line coming back costs the grade again. The skill links the
+  // install instructions for the user to follow instead.
+  const plan = pluginPublishPlan(SKILLS.map((s) => s.id));
+
+  it.each(plan.map((p) => [p.to, p.from]))("%s", (_to, from) => {
+    expect(readFileSync(join(cliRoot, from), "utf8")).not.toMatch(
+      PIPE_TO_SHELL,
+    );
+  });
+
+  it("matches the line that was flagged", () => {
+    // Vacuity guard: a pattern that matched nothing would pass every file above.
+    expect("curl -fsSL https://api.wego.com/install | bash").toMatch(
+      PIPE_TO_SHELL,
+    );
   });
 });
 
