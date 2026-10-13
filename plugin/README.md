@@ -40,8 +40,7 @@ Install the CLI by following
 [docs.wego.com/cli](https://docs.wego.com/cli#install). The skill never installs
 it for you: when the command is missing, it links those instructions and waits.
 
-The CLI's source is at [github.com/wego/cli](https://github.com/wego/cli). To
-read the install script before you run it, leave off `| bash`.
+The CLI's source is at [github.com/wego/cli](https://github.com/wego/cli).
 
 If you already have the CLI, it carries the same skill and can install it for you:
 
