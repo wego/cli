@@ -1,7 +1,8 @@
 # `wego` CLI
 
 Live flight and hotel search from the command line, and the runtime that the
-[Wego agent skill](https://github.com/wego/skills) drives.
+[Wego agent skill](https://github.com/wego/skills) drives. The CLI and the skill
+are both open source.
 
 Made by [Wego](https://www.wego.com), the travel search engine and online travel
 agency for the Middle East, North Africa and beyond. Docs, quickstart and use cases
@@ -45,6 +46,8 @@ download.
 ```bash
 curl -fsSL https://docs.wego.com/cli/install | bash
 ```
+
+To read the install script before you run it, leave off `| bash`.
 
 Log in. The browser opens on your machine; over SSH the CLI prints a URL instead
 and takes the redirect back by paste.
