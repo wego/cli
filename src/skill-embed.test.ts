@@ -39,6 +39,18 @@ describe("readEmbeddedSkill", () => {
     expect(body).toContain("Operating contract");
     expect(body.length).toBeGreaterThan(500);
   });
+
+  // Issue #105. The help text was the only surface describing `--stops`, and it
+  // described it backwards; the skill named just `--stops 0`, the single value
+  // where "exact set" and "maximum" agree, so it never contradicted the help.
+  // The skill is what an agent reads, so it has to carry the enumerated form -
+  // and unlike --alliances/--aircraft there is no metadata.filterOptions.stops
+  // to fall back on, which leaves these two surfaces as the only sources.
+  it("teaches the enumerated `at most N stops` form of --stops", async () => {
+    const body = await readEmbeddedSkill();
+    expect(body).toContain("`--stops 0,1`");
+    expect(body).toMatch(/`--stops` selects an exact set/);
+  });
 });
 
 describe("SKILLS registry", () => {

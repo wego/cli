@@ -3964,7 +3964,7 @@ export const RESULTS_USAGE = usage({
     ],
     ["--same-airline true", "One airline for the whole trip."],
     ["--alliances star_alliance", "Alliance codes, lowercase. Comma-list."],
-    ["--stops 0,1", "Max stops on the trip. Comma-list."],
+    ["--stops 0,1", "Exact stop counts. At most 1 is 0,1."],
     ["--min-price N", "Whole trip."],
     ["--max-price N", "Whole trip."],
     ["--max-duration N", "Whole trip, minutes."],
