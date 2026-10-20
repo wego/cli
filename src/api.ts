@@ -363,6 +363,9 @@ async function authedJsonGet<T>(
       },
       http,
     );
+    if (res.headers.get("cf-mitigated") === "challenge") {
+      throw await readApiError(res, label);
+    }
     if (res.status === 401) throw new UnauthorizedError();
     if (res.status === 404) throw new NotFoundError(label);
     if (!res.ok) {
@@ -417,6 +420,9 @@ async function authedJsonPost<T>(
     },
     http,
   );
+  if (res.headers.get("cf-mitigated") === "challenge") {
+    throw await readApiError(res, label);
+  }
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) {
     // No auto-retry on POST: a create is not idempotent, so a blind retry could

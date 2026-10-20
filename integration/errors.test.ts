@@ -21,7 +21,17 @@ async function placesAnswering(...answers: Answer[]) {
 }
 
 describe("error classes", () => {
-  it("reports a hotel-search edge challenge without asking a signed-in caller to log in", async () => {
+  it.each([
+    { method: "POST", status: 403 },
+    { method: "POST", status: 401 },
+    { method: "GET", status: 401 },
+    { method: "GET", status: 404 },
+    { method: "GET", status: 429 },
+    { method: "GET", status: 503 },
+  ])("reports a $method $status edge challenge without login, expiry or retry advice", async ({
+    method,
+    status,
+  }) => {
     signIn(s.home);
     const requests: { method: string; path: string; token: string | null }[] =
       [];
@@ -35,11 +45,12 @@ describe("error classes", () => {
           token: req.headers.get("authorization"),
         });
         return new Response("<html><title>Just a moment...</title></html>", {
-          status: 403,
+          status,
           headers: {
             "content-type": "text/html",
             "cf-mitigated": "challenge",
             "cf-ray": "a4d0830ba9d11e2d-SIN",
+            "retry-after": "0",
           },
         });
       },
@@ -47,22 +58,29 @@ describe("error classes", () => {
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         const result = await s.run(
-          [
-            "hotels",
-            "search",
-            "AUH",
-            "2027-01-17",
-            "2027-01-22",
-            "--adults",
-            "2",
-            "--children",
-            "1",
-            "--children-ages",
-            "10",
-            "--rooms",
-            "1",
-          ],
-          { env: { WEGO_API_URL: String(edge.url) } },
+          method === "POST"
+            ? [
+                "hotels",
+                "search",
+                "AUH",
+                "2027-01-17",
+                "2027-01-22",
+                "--adults",
+                "2",
+                "--children",
+                "1",
+                "--children-ages",
+                "10",
+                "--rooms",
+                "1",
+              ]
+            : ["places", "London"],
+          {
+            env: {
+              WEGO_API_URL: String(edge.url),
+              WEGO_AUTH_TOKEN_URL: new URL("/oauth/token", edge.url).href,
+            },
+          },
         );
         expect(result.code).toBe(6);
         expect(result.out).toBe("");
@@ -72,11 +90,12 @@ describe("error classes", () => {
         expect(result.err).not.toContain("wego login");
         expect(result.err).not.toContain("trace_id=");
         expect(result.err).not.toContain("<html>");
+        expect(result.err).not.toContain("expired");
       }
       expect(requests).toEqual(
         Array.from({ length: 2 }, () => ({
-          method: "POST",
-          path: "/v1/hotels/searches",
+          method,
+          path: method === "POST" ? "/v1/hotels/searches" : "/v1/places",
           token: "Bearer access-1",
         })),
       );

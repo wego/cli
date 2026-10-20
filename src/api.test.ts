@@ -59,17 +59,25 @@ afterAll(() => {
 });
 
 describe("edge error metadata", () => {
-  it("identifies challenge responses and keeps the edge ray separate from API traces", async () => {
+  it.each(
+    [401, 403, 404, 429, 503].map((status) => ({ status })),
+  )("identifies marked $status challenges without retrying and keeps edge metadata", async ({
+    status,
+  }) => {
     for (const ray of [undefined, "a4d0830ba9d11e2d-SIN"]) {
-      const http = (async () =>
-        new Response("<html>Just a moment...</html>", {
-          status: 403,
+      let calls = 0;
+      const http = (async () => {
+        calls++;
+        return new Response("<html>Just a moment...</html>", {
+          status,
           headers: {
             "content-type": "text/html",
             "cf-mitigated": "challenge",
+            "retry-after": "0",
             ...(ray ? { "cf-ray": ray } : {}),
           },
-        })) as HttpFetch;
+        });
+      }) as HttpFetch;
       const err = await fetchWhoami(
         "https://api.wego.com",
         "tok",
@@ -81,6 +89,7 @@ describe("edge error metadata", () => {
       expect(err.rayId).toBe(ray);
       expect(err.traceId).toBeUndefined();
       expect(err.code).toBeUndefined();
+      expect(calls).toBe(1);
     }
   });
 
