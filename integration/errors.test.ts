@@ -21,6 +21,70 @@ async function placesAnswering(...answers: Answer[]) {
 }
 
 describe("error classes", () => {
+  it("reports a hotel-search edge challenge without asking a signed-in caller to log in", async () => {
+    signIn(s.home);
+    const requests: { method: string; path: string; token: string | null }[] =
+      [];
+    const edge = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req) {
+        requests.push({
+          method: req.method,
+          path: new URL(req.url).pathname,
+          token: req.headers.get("authorization"),
+        });
+        return new Response("<html><title>Just a moment...</title></html>", {
+          status: 403,
+          headers: {
+            "content-type": "text/html",
+            "cf-mitigated": "challenge",
+            "cf-ray": "a4d0830ba9d11e2d-SIN",
+          },
+        });
+      },
+    });
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await s.run(
+          [
+            "hotels",
+            "search",
+            "AUH",
+            "2027-01-17",
+            "2027-01-22",
+            "--adults",
+            "2",
+            "--children",
+            "1",
+            "--children-ages",
+            "10",
+            "--rooms",
+            "1",
+          ],
+          { env: { WEGO_API_URL: String(edge.url) } },
+        );
+        expect(result.code).toBe(6);
+        expect(result.out).toBe("");
+        expect(result.err).toContain("Cloudflare challenged");
+        expect(result.err).toContain("cf_ray=a4d0830ba9d11e2d-SIN");
+        expect(result.err).toContain("feedback");
+        expect(result.err).not.toContain("wego login");
+        expect(result.err).not.toContain("trace_id=");
+        expect(result.err).not.toContain("<html>");
+      }
+      expect(requests).toEqual(
+        Array.from({ length: 2 }, () => ({
+          method: "POST",
+          path: "/v1/hotels/searches",
+          token: "Bearer access-1",
+        })),
+      );
+    } finally {
+      edge.stop(true);
+    }
+  });
+
   it("a persistent 401 with no refresh token exits 3 and names login", async () => {
     signIn(s.home, { accessToken: "access-revoked" });
     s.fake({ accept: [] });
@@ -49,12 +113,16 @@ describe("error classes", () => {
 
   it("a 400 exits 6 and prints the API's detail and trace id", async () => {
     const { result } = await placesAnswering(
-      problem(400, "validation_failed", "query is too short"),
+      problem(400, "validation_failed", "query is too short", {
+        "cf-ray": "api-ray-SIN",
+      }),
     );
     expect(result.code).toBe(6);
     expect(result.out).toBe("");
     expect(result.err).toContain("query is too short");
     expect(result.err).toContain("trace-400");
+    expect(result.err).toContain("cf_ray=api-ray-SIN");
+    expect(result.err).not.toContain("Cloudflare challenged");
   });
 
   it("a 429 is retried after Retry-After, then succeeds", async () => {

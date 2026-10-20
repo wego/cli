@@ -96,6 +96,8 @@ export interface ApiHttpErrorFields {
   code?: string;
   detail?: string;
   traceId?: string;
+  edgeChallenge?: boolean;
+  rayId?: string;
   retryAfterSeconds?: number;
   bodyParseError?: boolean;
 }
@@ -115,6 +117,8 @@ export class ApiHttpError extends Error {
   readonly code?: string;
   readonly detail?: string;
   readonly traceId?: string;
+  readonly edgeChallenge: boolean;
+  readonly rayId?: string;
   readonly retryAfterSeconds?: number;
   readonly bodyParseError: boolean;
 
@@ -130,6 +134,8 @@ export class ApiHttpError extends Error {
     this.code = fields.code;
     this.detail = fields.detail;
     this.traceId = fields.traceId;
+    this.edgeChallenge = fields.edgeChallenge ?? false;
+    this.rayId = fields.rayId;
     this.retryAfterSeconds = fields.retryAfterSeconds;
     this.bodyParseError = fields.bodyParseError ?? false;
   }
@@ -195,6 +201,8 @@ async function readApiError(
     code: parsed.code,
     detail: parsed.detail,
     traceId: res.headers.get("x-trace-id") ?? parsed.traceId,
+    edgeChallenge: res.headers.get("cf-mitigated") === "challenge",
+    rayId: res.headers.get("cf-ray") ?? undefined,
     retryAfterSeconds: parseRetryAfter(res.headers.get("retry-after")),
     bodyParseError: parsed.bodyParseError,
   });
