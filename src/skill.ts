@@ -1090,7 +1090,10 @@ async function uninstall(deps: SkillDeps, opts: SkillOptions): Promise<number> {
 export async function skill(args: string[], deps: SkillDeps): Promise<number> {
   const sub = args[0];
   // `wego skill --help`/`-h`/`help` prints usage on stdout with exit 0 (CLI-3).
-  if (isHelpArg(args)) {
+  // The token right after a sub (`skill install --help`) is that leaf's help —
+  // same convention as the flights/hotels leaf dispatchers, which call
+  // `isHelpArg` on their own arg list after the group stripped the sub.
+  if (isHelpArg(args) || isHelpArg(args.slice(1))) {
     deps.log(SKILL_USAGE);
     return 0;
   }

@@ -104,6 +104,8 @@ describe("the entrypoint", () => {
       ["update", "--help"],
       ["uninstall", "--help"],
       ["skill", "--help"],
+      ["skill", "install", "--help"],
+      ["skill", "list", "help"],
     ]) {
       const result = await s.run(args, { env: NO_BACKEND });
       expect({ args, code: result.code }).toEqual({ args, code: 0 });
