@@ -113,6 +113,17 @@ describe("the entrypoint", () => {
     }
   });
 
+  it("rejects --help on an unknown skill sub-command", async () => {
+    // `skill instal --help` is a typo, not a help request: it must fail so a
+    // script can detect the unknown sub-command.
+    const result = await s.run(["skill", "instal", "--help"], {
+      env: NO_BACKEND,
+    });
+    expect(result.code).toBe(1);
+    // parseSkillArgs sees `--help` before the sub dispatch names the typo.
+    expect(result.err).toMatch(/Unknown option: --help/);
+  });
+
   it("lists the skill's installs with no backend configured", async () => {
     const result = await s.run(["skill", "list"], { env: NO_BACKEND });
     expect(result.code).toBe(0);

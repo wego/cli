@@ -1086,14 +1086,20 @@ async function uninstall(deps: SkillDeps, opts: SkillOptions): Promise<number> {
   return reportOutcomes(deps, outcomes);
 }
 
+const SUB_COMMANDS = new Set(["install", "list", "path", "uninstall"]);
+
 /** `wego skill <sub> …` — dispatch to the sub-command handlers. */
 export async function skill(args: string[], deps: SkillDeps): Promise<number> {
   const sub = args[0];
   // `wego skill --help`/`-h`/`help` prints usage on stdout with exit 0 (CLI-3).
   // The token right after a sub (`skill install --help`) is that leaf's help —
   // same convention as the flights/hotels leaf dispatchers, which call
-  // `isHelpArg` on their own arg list after the group stripped the sub.
-  if (isHelpArg(args) || isHelpArg(args.slice(1))) {
+  // `isHelpArg` on their own arg list after the group stripped the sub. Gate it
+  // on a real sub so `skill instal --help` still fails as an unknown command.
+  if (
+    isHelpArg(args) ||
+    (sub !== undefined && SUB_COMMANDS.has(sub) && isHelpArg(args.slice(1)))
+  ) {
     deps.log(SKILL_USAGE);
     return 0;
   }
