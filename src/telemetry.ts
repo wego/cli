@@ -1,4 +1,5 @@
 import { EXIT } from "./error-report";
+import { SKILL_SUB_COMMANDS } from "./skill";
 import { isProdTarget, type Target } from "./target";
 
 /** One `cli_command_ran` event per invocation. See `docs/telemetry.md`. */
@@ -47,7 +48,7 @@ const SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = {
     "share",
   ],
   hotels: ["search", "results", "details", "reviews", "rooms", "booking-link"],
-  skill: ["list", "install", "path", "uninstall"],
+  skill: SKILL_SUB_COMMANDS,
   // `list`/`set`/`unset` only. The VALUE a `set` carries is the second
   // positional, which no allowlist reads, so a user's currency never leaves.
   config: ["list", "set", "unset"],

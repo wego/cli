@@ -1086,55 +1086,64 @@ async function uninstall(deps: SkillDeps, opts: SkillOptions): Promise<number> {
   return reportOutcomes(deps, outcomes);
 }
 
-const SUB_COMMANDS = new Set(["install", "list", "path", "uninstall"]);
+/** The one list of `wego skill` sub-commands; telemetry reports the same set. */
+export const SKILL_SUB_COMMANDS = [
+  "install",
+  "list",
+  "path",
+  "uninstall",
+] as const;
+type SkillSub = (typeof SKILL_SUB_COMMANDS)[number];
+const SKILL_SUB_SET: ReadonlySet<string> = new Set(SKILL_SUB_COMMANDS);
+
+function isSkillSub(sub: string | undefined): sub is SkillSub {
+  return sub !== undefined && SKILL_SUB_SET.has(sub);
+}
 
 /** `wego skill <sub> …` — dispatch to the sub-command handlers. */
 export async function skill(args: string[], deps: SkillDeps): Promise<number> {
   const sub = args[0];
-  // `wego skill --help`/`-h`/`help` prints usage on stdout with exit 0 (CLI-3).
-  // The token right after a sub (`skill install --help`) is that leaf's help —
-  // same convention as the flights/hotels leaf dispatchers, which call
-  // `isHelpArg` on their own arg list after the group stripped the sub. Gate it
-  // on a real sub so `skill instal --help` still fails as an unknown command.
-  if (
-    isHelpArg(args) ||
-    (sub !== undefined && SUB_COMMANDS.has(sub) && isHelpArg(args.slice(1)))
-  ) {
+  // `wego skill --help`/`-h`/`help` prints the skill usage on stdout with exit
+  // 0 (CLI-3). The token right after a sub (`skill install --help`) asks for
+  // the same usage, the convention the flights/hotels leaf dispatchers use on
+  // their own arg list after the group stripped the sub.
+  if (isHelpArg(args) || (isSkillSub(sub) && isHelpArg(args.slice(1)))) {
     deps.log(SKILL_USAGE);
     return 0;
   }
-  let opts: SkillOptions;
-  try {
-    // Inside the try because `list` reads the overlay, so it can fail.
-    if (sub === "list") {
-      await list(deps, args.slice(1));
-      return 0;
-    }
-    opts = parseSkillArgs(args.slice(1));
-  } catch (err) {
-    deps.error(err instanceof Error ? err.message : String(err));
+  // Name the typo before leaf parsing, so `skill instal --help` is an unknown
+  // sub-command, not a flag error.
+  if (!isSkillSub(sub)) {
+    deps.error(
+      sub ? `Unknown skill sub-command: ${sub}\n${SKILL_USAGE}` : SKILL_USAGE,
+    );
     return 1;
   }
   try {
     switch (sub) {
-      case "install":
+      case "list":
+        // `list` reads the overlay, so it can fail.
+        await list(deps, args.slice(1));
+        return 0;
+      case "install": {
+        const opts = parseSkillArgs(args.slice(1));
         // `--owned-only` is the CLI surface of the `refreshOnly` dep: same
         // target selection, same never-create rule, one implementation.
         return await install(
           opts.ownedOnly ? { ...deps, refreshOnly: true } : deps,
           opts,
         );
+      }
       case "path":
-        return printPath(deps, opts);
+        return printPath(deps, parseSkillArgs(args.slice(1)));
       case "uninstall":
-        return await uninstall(deps, opts);
-      default:
-        deps.error(
-          sub
-            ? `Unknown skill sub-command: ${sub}\n${SKILL_USAGE}`
-            : SKILL_USAGE,
-        );
+        return await uninstall(deps, parseSkillArgs(args.slice(1)));
+      default: {
+        // A new SKILL_SUB_COMMANDS entry without a case fails this check.
+        const unhandled: never = sub;
+        deps.error(`Unknown skill sub-command: ${unhandled}\n${SKILL_USAGE}`);
         return 1;
+      }
     }
   } catch (err) {
     // `resolveSkill` throws on an unknown / ambiguous id — surface it as a usage
