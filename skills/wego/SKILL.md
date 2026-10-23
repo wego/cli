@@ -25,17 +25,13 @@ Translate the user's travel request into `wego <sub>` commands, parse their JSON
 
 ## Operating contract
 
-1. Every command here is `wego <sub>`, installed from `https://api.wego.com/install`. Keep that one command for the whole workflow. It reads live inventory and prices, so quote what it returns rather than estimating, and never invent a figure it did not give you.
-2. Check availability with `wego version`. If it is missing, offer the official installer; do not run a remote installer without the user's approval:
-
-   ```bash
-   curl -fsSL https://api.wego.com/install | bash
-   ```
+1. Every command here is `wego <sub>`, the Wego CLI documented at https://docs.wego.com/cli. Keep that one command for the whole workflow. It reads live inventory and prices, so quote what it returns rather than estimating, and never invent a figure it did not give you.
+2. Check availability with `wego version`. If it is missing, the user installs it, not you: tell them the `wego` CLI is not installed, link the install instructions at https://docs.wego.com/cli#install, and wait for them to confirm it is installed before you continue. Never download or run an installer yourself.
 
    When the CLI is already present but the user wants the latest, or its syntax
    looks out of date, `wego update --check` reports whether a newer build exists
    (read-only, no approval needed). Self-replacing the installed binary is a
-   significant action, like install: get the user's approval before running the
+   significant action: get the user's approval before running the
    self-replacing `wego update -y` (add `-y` since an agent shell
    isn't a TTY). It verifies the download against the published checksums and
    needs no reinstall. A from-source run prints a "reinstall" hint instead
@@ -44,10 +40,10 @@ Translate the user's travel request into `wego <sub>` commands, parse their JSON
    Both forms follow the release ring the **installer** recorded, and name it in
    what they print. An install with no record – installed before the record
    existed, or with the record deleted – refuses both forms with exit code 6 and
-   says to reinstall with the `curl` line above. If the user **directly asked** to
+   prints a reinstall command. If the user **directly asked** to
    update or check, that exit 6 means the requested action failed: state that
-   result and offer the reinstall for their approval, do not report the update as
-   done. Only when the check was an optional preflight for another task is it safe
+   result, give the user that reinstall command to run themselves (as with a
+   missing CLI), and do not report the update as done. Only when the check was an optional preflight for another task is it safe
    to note the refusal and carry on.
 
    An installed CLI also **announces a new release itself**: any command except
@@ -74,7 +70,7 @@ Translate the user's travel request into `wego <sub>` commands, parse their JSON
    wego config set locale ar
    ```
 
-   `wego config set` writes to the user's own machine, so it needs their word – the same rule as installing or updating the CLI. If they decline, say "just this once", or do not answer, write nothing and pass `--currency` / `--site` / `--locale` on each command for that session instead. Once the values are stored, later sessions read them from `wego config list` and ask nothing.
+   `wego config set` writes to the user's own machine, so it needs their word – the same rule as updating the CLI. If they decline, say "just this once", or do not answer, write nothing and pass `--currency` / `--site` / `--locale` on each command for that session instead. Once the values are stored, later sessions read them from `wego config list` and ask nothing.
 10. Preserve currency, market and locale throughout a funnel. With a stored setting, every command inherits it, so a read no longer reverts to USD – but an explicit flag still wins for that one command, and mixing the two inside one funnel is how a riyal price ends up compared against a dollar price. **A `searchId` remembers no currency.** So a search created with an explicit `--currency` must carry that same `--currency` on every later `results` / `trip` / `fares` read of it: omit it and the read is repriced into the stored preference, or into the API's USD when nothing is stored, and the two snapshots stop being comparable. Every read echoes the `currencyCode` it priced in – compare it against the one the search reported before you quote a number. **Every priced read echoes a `currencyCodeSource` beside that `currencyCode`** – both `search`es, both `results` reads, `trip`, `fares`, and both `rooms` forms – naming the layer that decided the unit: `explicit` (a `--currency` on that command), `setting` (the user's stored currency), or `default` (nobody chose one, so the API priced in USD). Read it before you quote the first number: on `default`, state the currency instead of letting the digits imply it, and offer contract item 9's one question; on `setting`, name the stored currency rather than presenting it as a choice made for this trip. It names the unit the command **asked** for, so when the top-level `currencyCode` differs from `metadata.currencyCode`, the price was not converted into the currency asked for: say that, rather than quoting the number as if it were in the requested currency. Every `*Source` field is **top level and there is exactly one per knob** – the CLI strips the API's own request-scoped copies from `metadata` before printing, so a payload never carries two answers to "who decided". There is no locale equivalent, by design: locale changes the language of the text, not the number, so no CLI output carries a `localeSource`. It still has to be asked for. When the user asks for their answers in another language, pass `--locale` on the reads whose text you will quote back to them, because the names in a Wego answer, the airlines, cities, airports, countries and holidays, come back in the language the read asked for. Translating them yourself puts your wording in front of someone who may be matching it against a booking page. Codes and keys do not move with the locale, so nothing you thread through the funnel changes: an English query still resolves `RUH` under `--locale ar`, and `results[].key` stays the same slug. Report the market when it was not explicit: `flights search` and `hotels search` echo a top-level `siteCode` beside a top-level `siteCodeSource` of `explicit`, `setting`, `account`, or `default`; `info schedules` reports the same top-level `siteCodeSource`, while its market value stays at `metadata.siteCode` – an echo only, since a published timetable does not vary by market. Confirm with the user when it reads `default`, or when the account market clearly mismatches the request (for example AED pricing against a `US` account). Do not infer a currency from the route, the destination, or a nationality. Market cannot change on `results` – a different market means a new search – and it must be re-supplied to the stateless `booking-link`.
 11. Never claim that a booking, reservation, payment, cancellation, or modification occurred. This CLI searches and generates checkout links only.
 12. Creating a search and reading a hotel's rooms are metered. This API is a research preview, so those limits are deliberate and fairly tight (the current figures are at https://docs.wego.com/api/rate-limits/) – say so whenever one is reached, including one you waited out and worked around (see Finish the answer). Plan inside that budget rather than discovering it: never open one search per airport, per date, or per hotel. When a request implies many, run a small first batch, present it, and ask the user which to expand – that is also a better conversation than a wall of options. Reads against an existing `searchId` (`results`, `trip`, `fares`) are far cheaper than a new search, so refine an existing search instead of creating another whenever the constraint can be expressed as a flag. `hotels rooms` is the one read that always mints a search of its own, one per hotel, so open it for the hotels the user actually picked rather than sweeping a results page with it.
@@ -594,9 +590,9 @@ final answer rather than only in the transcript behind it.
 
 | Situation | Action |
 |---|---|
-| CLI missing | Offer the installer from operating contract item 2 and wait for approval before running it. |
+| CLI missing | Operating contract item 2: link the install instructions for the user to follow, and wait for them to confirm before continuing. |
 | CLI outdated, or a stderr line says a new version is available | Operating contract item 2 covers both: `update --check` is read-only, the self-replacing `update -y` needs the user's approval, and a from-source run prints a reinstall hint instead. The stderr notice is not an error and not a cue to stop, so finish the request first, then offer the update once. |
-| This skill itself looks stale, or the user wants it in another agent | `wego skill list` shows what is installable (offline, no auth) and `wego skill install` refreshes this file in place – it fetches the current published body, checksum-verifies it, and falls back to the copy baked into the binary when the network is unavailable, so it never fails on a down remote. Writing files needs the user's approval first, like install. To set the skill up for another coding agent, that same subcommand takes `--agent <name>` (repeatable, `'*'` for all) and `-g` for a user-wide install; omitted, it targets the agents already present. |
+| This skill itself looks stale, or the user wants it in another agent | `wego skill list` shows what is installable (offline, no auth) and `wego skill install` refreshes this file in place – it fetches the current published body, checksum-verifies it, and falls back to the copy baked into the binary when the network is unavailable, so it never fails on a down remote. Writing files needs the user's approval first, like an update. To set the skill up for another coding agent, that same subcommand takes `--agent <name>` (repeatable, `'*'` for all) and `-g` for a user-wide install; omitted, it targets the agents already present. |
 | Not authenticated | Run `wego login`, wait for the browser flow, verify with `wego whoami`, then resume. If stderr says no browser is on this machine, or that this terminal cannot read a paste, see Login environments below – that login needs the user's own terminal. |
 | Ambiguous place | Clarify using `places` candidates and `disambiguationHint`. |
 | Empty snapshot or empty page, in either vertical | Settled snapshots and empty pages is the whole recovery: re-settle with `--wait`, read `hasMore` / `totalCandidates` / `totalBeforeFilters` before calling anything a no-match, and never turn a settled zero into "no such flight exists" or "no hotels exist". Page on with `--page` / `--page-size` when candidates remain. |
