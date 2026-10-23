@@ -104,10 +104,29 @@ describe("the entrypoint", () => {
       ["update", "--help"],
       ["uninstall", "--help"],
       ["skill", "--help"],
+      ["skill", "install", "--help"],
+      ["skill", "install", "-h"],
+      ["skill", "list", "help"],
+      ["skill", "path", "--help"],
+      ["skill", "uninstall", "--help"],
     ]) {
       const result = await s.run(args, { env: NO_BACKEND });
       expect({ args, code: result.code }).toEqual({ args, code: 0 });
       expect(result.out).toMatch(/Usage:/);
+    }
+  });
+
+  it("names an unknown skill sub-command whatever args follow", async () => {
+    // `skill instal --help` is a typo, not a help request or a flag error: it
+    // must fail naming the bad sub so a script can detect it.
+    for (const args of [
+      ["skill", "instal"],
+      ["skill", "instal", "--help"],
+      ["skill", "instal", "foo", "bar"],
+    ]) {
+      const result = await s.run(args, { env: NO_BACKEND });
+      expect({ args, code: result.code }).toEqual({ args, code: 1 });
+      expect(result.err).toMatch(/Unknown skill sub-command: instal/);
     }
   });
 
