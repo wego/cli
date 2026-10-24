@@ -80,6 +80,7 @@ const EXIT_BY_PROBLEM_CODE = new Map<string, number>(
  *  binary was compiled before. Split out of `exitCodeForError` to keep that
  *  dispatcher within the cognitive-complexity gate. */
 function exitCodeForHttpError(err: ApiHttpError): number {
+  if (err.edgeChallenge) return EXIT.PERMANENT;
   const byCode =
     err.code === undefined ? undefined : EXIT_BY_PROBLEM_CODE.get(err.code);
   if (byCode !== undefined) return byCode;
@@ -116,6 +117,7 @@ function formatHttpError(err: ApiHttpError, prog: string): string {
   const parts = [err.message];
   if (err.bodyParseError) parts.push("(unparseable error body)");
   if (err.traceId) parts.push(`trace_id=${err.traceId}`);
+  if (err.rayId) parts.push(`cf_ray=${err.rayId}`);
   if (err.retryAfterSeconds != null) {
     parts.push(`retry after ${err.retryAfterSeconds}s`);
   }
@@ -156,6 +158,11 @@ function rateLimitRemedy(err: ApiHttpError, prog: string): string[] {
  * the remedy is already right.
  */
 function authRemedy(err: ApiHttpError, prog: string): string[] {
+  if (err.edgeChallenge) {
+    return [
+      `Cloudflare challenged this request before it reached the API; logging in again will not solve the challenge. Report this with \`${prog} feedback --message "..."\` and include the cf_ray if shown`,
+    ];
+  }
   if (err.code === "insufficient_scope") {
     return [
       `not authorized for this operation – \`${prog} login\` would re-request the same scopes, so ask for this access to be granted to your Wego account`,
