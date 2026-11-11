@@ -89,6 +89,35 @@ describe("plugin.json conformance (Agent Plugins §5.2)", () => {
   });
 });
 
+describe("mcp.json conformance (Agent Plugins)", () => {
+  const mcp = JSON.parse(
+    readFileSync(join(cliRoot, "plugin/mcp.json"), "utf8"),
+  );
+
+  it("uses the same schema version as plugin.json", () => {
+    expect(mcp.$schema).toBe(
+      (manifest.$schema as string).replace(
+        "/plugin.schema.json",
+        "/mcp.schema.json",
+      ),
+    );
+  });
+
+  it("has closed field sets and exactly one server named wego", () => {
+    expect(Object.keys(mcp).sort()).toEqual(["$schema", "mcpServers"]);
+    expect(Object.keys(mcp.mcpServers)).toEqual(["wego"]);
+    expect(Object.keys(mcp.mcpServers.wego).sort()).toEqual(["type", "url"]);
+  });
+
+  it("uses the public HTTPS endpoint over streamable HTTP without headers", () => {
+    const server = mcp.mcpServers.wego;
+    expect(server.type).toBe("streamable-http");
+    expect(server.url).toBe("https://mcp.wego.com/public-app/v1/mcp");
+    expect(new URL(server.url).protocol).toBe("https:");
+    expect(Object.hasOwn(server, "headers")).toBe(false);
+  });
+});
+
 /**
  * SHA-256 of the canonical Apache 2.0 text, over LF line endings.
  *

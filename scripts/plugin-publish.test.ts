@@ -14,7 +14,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -133,6 +132,9 @@ describe("publish-plugin against a file:// bare repo", () => {
     // The bytes are the source's, not a rendering of them.
     expect(remote.read("plugin.json")).toBe(
       readFileSync(join(cliRoot, "plugin/plugin.json"), "utf8"),
+    );
+    expect(remote.read("mcp.json")).toBe(
+      readFileSync(join(cliRoot, "plugin/mcp.json"), "utf8"),
     );
     expect(remote.read("skills/wego/SKILL.md")).toBe(
       readFileSync(join(cliRoot, "skills/wego/SKILL.md"), "utf8"),
@@ -371,9 +373,10 @@ describe("unexpectedPluginFiles", () => {
 });
 
 describe("pluginPublishPlan", () => {
-  it("publishes the manifest, the readme, the licence, and one SKILL.md per skill", () => {
+  it("publishes the manifest, MCP config, readme, licence, and one SKILL.md per skill", () => {
     expect(PLAN).toEqual([
       { from: "plugin/plugin.json", to: "plugin.json" },
+      { from: "plugin/mcp.json", to: "mcp.json" },
       { from: "plugin/README.md", to: "README.md" },
       { from: "plugin/LICENSE", to: "LICENSE" },
       { from: "skills/wego/SKILL.md", to: "skills/wego/SKILL.md" },

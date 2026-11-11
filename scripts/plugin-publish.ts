@@ -48,7 +48,7 @@ export interface PluginPublishPair {
  * The published set is a DATA structure rather than a sequence of copy calls, so
  * the three things that need it can share one answer: the publisher copies it,
  * `--print-plan` prints it, and the after-clone predicate uses its destinations
- * as the expected set. Adding `mcp.json` later is one entry here; relocating the
+ * as the expected set. Adding a published file is one entry here; relocating the
  * sources is {@link PLUGIN_SOURCE_DIR}. Neither touches publisher logic.
  *
  * The skill body is included because the plugin repo is where third-party
@@ -68,6 +68,7 @@ export function pluginPublishPlan(
 ): PluginPublishPair[] {
   return [
     { from: `${PLUGIN_SOURCE_DIR}/plugin.json`, to: "plugin.json" },
+    { from: `${PLUGIN_SOURCE_DIR}/mcp.json`, to: "mcp.json" },
     { from: `${PLUGIN_SOURCE_DIR}/README.md`, to: "README.md" },
     { from: `${PLUGIN_SOURCE_DIR}/LICENSE`, to: "LICENSE" },
     ...skillIds.map((id) => ({
