@@ -11,7 +11,7 @@ Use the CLI or Wego MCP tools as Operating contract item 2 picks. Read their res
 **Where things are.** Read the operating contract first, then jump to the vertical the request needs:
 
 - **Operating contract** – preflight, metering, currency, the rules that bind every command. Always applies.
-- **Without the CLI (Wego MCP tools)** – what changes when Operating contract item 2 picks the MCP tools, and which tasks need the CLI.
+- **Without the CLI (Wego MCP tools)** – what still applies when Operating contract item 2 picks the MCP tools, and what to do when no tool covers the task.
 - **Gather inputs** / **Resolve places** – turning a request into codes and dates.
 - **Reference lookups (`wego info`)** – holidays, visa-free, timetables, nearby airports, and which backend this binary resolved. No search, no price, no expiring id.
 - **Settled snapshots and empty pages** – what an empty result means, and what it never means. Both funnels depend on it; read it before you report a no-match.
@@ -29,7 +29,7 @@ Use the CLI or Wego MCP tools as Operating contract item 2 picks. Read their res
 1. Every command here is `wego <sub>`, the Wego CLI documented at https://agents.wego.com/cli. Keep to the path item 2 picks for the whole workflow. Both the CLI and the MCP tools read live inventory and prices. On either path, quote what it returns rather than estimating, and never invent a figure it did not give you.
 2. Pick the path before the first travel call, with `wego version`:
    - **It works:** use the CLI. The rest of this file applies as written.
-   - **The CLI is not usable** (you cannot run a command, or `wego` is missing) **and the Wego MCP tools are present** (`flights_search`, `hotels_search`, `places_find_location` and the rest; your client may add a prefix to the names): use the MCP tools now, and do not wait for an install. See **Without the CLI (Wego MCP tools)**. If you can run commands, tell the user once that the `wego` CLI does more, with a link to https://agents.wego.com/cli#install.
+   - **The CLI is not usable** (you cannot run a command, or `wego` is missing) **and the Wego MCP tools are present** (`flights_search`, `hotels_search`, `places_find_location` and the rest; your client may add a prefix to the names): use the MCP tools now, and do not wait for an install. See **Without the CLI (Wego MCP tools)** for the rules that still apply and what to do when no tool covers the task.
    - **Neither:** if you can run commands, the user installs the CLI, not you: tell them the `wego` CLI is not installed, link the install instructions at https://agents.wego.com/cli#install, and wait for them to confirm it is installed before you continue. Never download or run an installer yourself. If you cannot run commands, tell the user to connect the Wego MCP server at https://mcp.wego.com/public-app/v1/mcp (no sign-in needed) in their agent's connector or MCP settings, then ask again.
 
    When the CLI is already present but the user wants the latest, or its syntax
@@ -86,22 +86,8 @@ Use the CLI or Wego MCP tools as Operating contract item 2 picks. Read their res
 Use this section only when Operating contract item 2 picked the MCP tools. Each tool describes its own arguments, polling and paging, so read the tool rather than mapping `wego` flags onto it.
 
 - **Still applies:** contract items 6, 7, 8, 11 and 12. Quote only what a tool returned, keep the ids it returned for follow-ups, present a ranked comparison, never claim a booking, and plan inside the search limits.
-- **Does not apply:** login, `whoami`, `update`, `skill`, the exit codes, and every `wego` command line in this file. The tools need no sign-in.
-- **No stored preferences.** Ask contract item 9's one question when the user has not named a currency or market. Pass `currencyCode`, `siteCode` and `locale` only to tools whose input schemas accept each value, and keep each value the same across those calls in a funnel.
-- **Links:** a `flights_search` trip carries a `handoffUrl`, its search carries a `resultUrl` that opens the same search on wego.com, and a `hotels_get_rooms` rate carries a `bookingUrl`. Hand them over as returned.
 
-These tasks need the CLI, because no MCP tool covers them:
-
-| Task | CLI command |
-|---|---|
-| Visa-free destinations for a passport | `info visa-free` |
-| One flight's fare options, baggage and refundability | `flights trip`, `flights fares` |
-| What a journey is like to sit through | `flights experience` |
-| A hotel's description and amenities, and its guest reviews | `hotels details`, `hotels reviews` |
-| Stored currency, market and language | `config` |
-| Feedback to the Wego team | `feedback` |
-
-For one of these, tell the user this connection cannot do it. If you can run commands, add that the `wego` CLI can, with a link to https://agents.wego.com/cli#install. If you cannot, give the wego.com link from the last result (`resultUrl`, `handoffUrl` or `bookingUrl`) where they can read it themselves. Never fill the gap from memory.
+If no Wego MCP tool covers the task, tell the user this connection cannot do it, and never fill the gap from memory. If you can run commands, add that the `wego` CLI can, with a link to https://agents.wego.com/cli#install.
 
 ## Gather inputs
 
@@ -616,7 +602,7 @@ final answer rather than only in the transcript behind it.
 
 | Situation | Action |
 |---|---|
-| CLI missing, or you cannot run commands | Operating contract item 2: if the Wego MCP tools are present, use them now and do not wait. If they are not, link the install instructions when you can run commands and wait for the user to confirm, or tell the user how to connect the Wego MCP server when you cannot. |
+| CLI missing, or you cannot run commands | Operating contract item 2: if the Wego MCP tools are present, use them now and do not wait; see Without the CLI (Wego MCP tools) when no tool covers the task. If they are not, link the install instructions when you can run commands and wait for the user to confirm, or tell the user how to connect the Wego MCP server when you cannot. |
 | CLI outdated, or a stderr line says a new version is available | Operating contract item 2 covers both: `update --check` is read-only, the self-replacing `update -y` needs the user's approval, and a from-source run prints a reinstall hint instead. The stderr notice is not an error and not a cue to stop, so finish the request first, then offer the update once. |
 | This skill itself looks stale, or the user wants it in another agent | `wego skill list` shows what is installable (offline, no auth) and `wego skill install` refreshes this file in place – it fetches the current published body, checksum-verifies it, and falls back to the copy baked into the binary when the network is unavailable, so it never fails on a down remote. Writing files needs the user's approval first, like an update. To set the skill up for another coding agent, that same subcommand takes `--agent <name>` (repeatable, `'*'` for all) and `-g` for a user-wide install; omitted, it targets the agents already present. |
 | Not authenticated | Run `wego login`, wait for the browser flow, verify with `wego whoami`, then resume. If stderr says no browser is on this machine, or that this terminal cannot read a paste, see Login environments below – that login needs the user's own terminal. |
