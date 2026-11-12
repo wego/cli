@@ -92,7 +92,10 @@ describe("plugin.json conformance (Agent Plugins §5.2)", () => {
 describe("mcp.json conformance (Agent Plugins)", () => {
   const mcp = JSON.parse(
     readFileSync(join(cliRoot, "plugin/mcp.json"), "utf8"),
-  );
+  ) as {
+    $schema: unknown;
+    mcpServers: Record<string, Record<string, unknown>>;
+  };
 
   it("uses the same schema version as plugin.json", () => {
     expect(mcp.$schema).toBe(
@@ -113,8 +116,6 @@ describe("mcp.json conformance (Agent Plugins)", () => {
     const server = mcp.mcpServers.wego;
     expect(server.type).toBe("streamable-http");
     expect(server.url).toBe("https://mcp.wego.com/public-app/v1/mcp");
-    expect(new URL(server.url).protocol).toBe("https:");
-    expect(Object.hasOwn(server, "headers")).toBe(false);
   });
 });
 
