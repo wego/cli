@@ -58,6 +58,67 @@ afterAll(() => {
   globalThis.fetch = realFetch;
 });
 
+describe("edge error metadata", () => {
+  it.each(
+    [401, 403, 404, 429, 503].map((status) => ({ status })),
+  )("identifies marked $status challenges without retrying and keeps edge metadata", async ({
+    status,
+  }) => {
+    for (const ray of [undefined, "a4d0830ba9d11e2d-SIN"]) {
+      let calls = 0;
+      const http = (async () => {
+        calls++;
+        return new Response("<html>Just a moment...</html>", {
+          status,
+          headers: {
+            "content-type": "text/html",
+            "cf-mitigated": "challenge",
+            "retry-after": "0",
+            ...(ray ? { "cf-ray": ray } : {}),
+          },
+        });
+      }) as HttpFetch;
+      const err = await fetchWhoami(
+        "https://api.wego.com",
+        "tok",
+        undefined,
+        http,
+      ).catch((e) => e);
+      expect(err).toBeInstanceOf(ApiHttpError);
+      expect(err.edgeChallenge).toBe(true);
+      expect(err.rayId).toBe(ray);
+      expect(err.traceId).toBeUndefined();
+      expect(err.code).toBeUndefined();
+      expect(calls).toBe(1);
+    }
+  });
+
+  it("does not classify ordinary API errors behind Cloudflare as challenges", async () => {
+    const http = (async () =>
+      new Response(
+        JSON.stringify({ code: "insufficient_scope", trace_id: "body-trace" }),
+        {
+          status: 403,
+          headers: {
+            "content-type": "application/problem+json",
+            "cf-ray": "ordinary-ray",
+            "x-trace-id": "api-trace",
+          },
+        },
+      )) as HttpFetch;
+    const err = await fetchWhoami(
+      "https://api.wego.com",
+      "tok",
+      undefined,
+      http,
+    ).catch((e) => e);
+    expect(err.edgeChallenge).toBe(false);
+    expect(err.rayId).toBe("ordinary-ray");
+    expect(err.traceId).toBe("api-trace");
+    expect(err.code).toBe("insufficient_scope");
+  });
+});
+
 describe("USER_AGENT", () => {
   it("is the Wego-CLI product token, so apps/api can classify the caller", () => {
     expect(USER_AGENT).toMatch(/^Wego-CLI\/\S+$/);
