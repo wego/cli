@@ -6,9 +6,9 @@ are both open source.
 
 Made by [Wego](https://www.wego.com), the travel search engine and online travel
 agency for the Middle East, North Africa and beyond. Docs, quickstart and use cases
-live at [docs.wego.com](https://docs.wego.com); the CLI reference is at
-[docs.wego.com/cli](https://docs.wego.com/cli) and the HTTP contract at
-[docs.wego.com/api](https://docs.wego.com/api).
+live at [agents.wego.com](https://agents.wego.com); the CLI reference is at
+[agents.wego.com/cli](https://agents.wego.com/cli) and the HTTP contract at
+[agents.wego.com/api](https://agents.wego.com/api).
 
 The `wego` command is a public OAuth + PKCE client. It logs you in against
 `auth.wego.com` in your own browser, stores the token on your machine, and drives
@@ -44,7 +44,7 @@ download.
 ## Install
 
 ```bash
-curl -fsSL https://docs.wego.com/cli/install | bash
+curl -fsSL https://agents.wego.com/cli/install | bash
 ```
 
 To read the install script before you run it, leave off `| bash`.
@@ -87,7 +87,7 @@ Install one by naming it, and you are done — the installer records the ring an
 `wego update` follows it from then on:
 
 ```bash
-curl -fsSL 'https://docs.wego.com/cli/install?ring=next' | bash
+curl -fsSL 'https://agents.wego.com/cli/install?ring=next' | bash
 ```
 
 That is all most people ever need.
