@@ -36,15 +36,11 @@ Add the skill to your agent from this repository:
 npx --yes skills add https://github.com/wego/skills --skill wego
 ```
 
-Install the CLI. The skill offers this itself when the command is missing, and
-asks for your approval before running it:
+Install the CLI by following
+[docs.wego.com/cli](https://docs.wego.com/cli#install). The skill never installs
+it for you: when the command is missing, it links those instructions and waits.
 
-```bash
-curl -fsSL https://docs.wego.com/cli/install | bash
-```
-
-The CLI's source is at [github.com/wego/cli](https://github.com/wego/cli). To
-read the install script before you run it, leave off `| bash`.
+The CLI's source is at [github.com/wego/cli](https://github.com/wego/cli).
 
 If you already have the CLI, it carries the same skill and can install it for you:
 
@@ -110,8 +106,8 @@ forward exactly as returned.
 - **Nothing is ever booked.** The skill searches, compares, and generates
   checkout links. No booking, payment, cancellation or change happens through it,
   and it never reports one that did.
-- The skill asks the user before it installs or updates the CLI, and before it
-  writes pricing preferences to their machine.
+- The skill never installs the CLI. It asks the user before it updates the CLI,
+  and before it writes pricing preferences to their machine.
 - Login completes in the user's own browser. The skill never asks for an access
   token, and never reads or prints the credentials file.
 - Every price comes from the response that carried it, and each priced read names
