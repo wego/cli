@@ -163,4 +163,23 @@ describe("help shape", () => {
     expect(UNINSTALL_USAGE).toMatch(/--dir skill install is not touched/);
     expect(TELEMETRY_USAGE).toContain("WEGO_CLI_TELEMETRY");
   });
+
+  // Issue #105. `?stops=` is a set filter: the values are OR'd against the
+  // trip-level stop count, so `--stops 1` selects one-stop trips and drops
+  // every nonstop. Calling it a "max" sent callers to the one spelling that
+  // silently discards the fastest itineraries on the route, and the failure is
+  // invisible downstream - the page is valid, totalCandidates is large, and
+  // nothing says a category was removed. Pin BOTH halves of the fix: that the
+  // bound word is gone, and that the enumerate-from-0 recipe is present. A
+  // description that only stopped lying would leave the flag correct and still
+  // unusable for the constraint callers actually state.
+  it("--stops reads as a set with the at-most recipe, never as a bound", () => {
+    const line = RESULTS_USAGE.split("\n").find((l) =>
+      l.startsWith("  --stops "),
+    );
+    expect(line).toBeDefined();
+    expect(line).not.toMatch(/\b(Max|Maximum|Up to|No more than)\b/);
+    expect(line).toContain("Exact stop counts");
+    expect(line).toContain("0,1");
+  });
 });
