@@ -7,8 +7,10 @@ name: release-please
 # and updates `package.json` and `.release-please-manifest.json`.
 #
 # Merging that PR is the release. release-please then creates the `vX.Y.Z` tag and
-# the GitHub Release. The tag push starts `release-cli.yml`. That workflow has no
-# `workflow_call` and no `workflow_dispatch`, so the tag is the only way in.
+# a draft GitHub Release (`draft` and `force-tag-creation` in
+# release-please-config.json). The tag push starts `release-cli.yml`. That workflow
+# has no `workflow_call` and no `workflow_dispatch`, so the tag is the only way in.
+# Its `announce` job publishes the draft once `cli/next` serves the build.
 #
 # The tag must be pushed with an App token. A tag created with the workflow token
 # does not start a workflow (GitHub recursion guard).
@@ -55,6 +57,31 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # A draft release gets no tag from GitHub until it is published. Only
+      # `force-tag-creation` (release-please >= 17.2.0) creates it. An older
+      # release-please ignores the key without a warning, creates a tagless draft
+      # and labels the PR `autorelease: tagged`, so the label check below passes
+      # while `release-cli.yml` never starts. Check the tag itself.
+      - name: Refuse a release whose tag does not exist
+        if: steps.release.outputs.release_created == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TAG: ${{ steps.release.outputs.tag_name }}
+        with:
+          script: |
+            const tag = process.env.TAG;
+            try {
+              await github.rest.git.getRef({ ...context.repo, ref: `tags/${tag}` });
+              core.info(`ok: ${tag} exists, so release-cli.yml starts.`);
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              core.setFailed(
+                `release-please created the ${tag} release but no ${tag} tag exists, so release-cli.yml will not start and nothing is published. ` +
+                  `The draft release gets no tag until it is published. Check that the release-please bundled in the pinned action is >= 17.2.0 ` +
+                  `(it provides force-tag-creation), then push the tag on the release commit with the App token.`,
+              );
+            }
 
       # release-please can merge a release PR, create no tag, and exit 0. Then
       # `release-cli.yml` never starts and nothing is published. It also opens no

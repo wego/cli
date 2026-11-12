@@ -825,10 +825,21 @@ jobs:
           name: cli-checksums
           path: dist
 
-      # The human record. Idempotent: a release that already has SHA256SUMS.txt is
-      # skipped; one without it gets the asset attached; a missing release is
-      # created. release-please normally creates the release, so the create branch
-      # is a fallback. Notes span prev_tag to this tag.
+      # The human record, and the only place a CLI release becomes public.
+      #
+      # release-please creates the release as a draft (`draft` and
+      # `force-tag-creation` in release-please-config.json). It can only create a
+      # release at merge, before anything is built, and has no option to publish it
+      # later or to keep it off "Latest". This step does both, after `release` has
+      # moved `cli/next`: a published release means its binaries are on `cli/next`,
+      # and a failed run leaves a draft. `release-badge.yml` is the only thing that
+      # makes a release "Latest".
+      #
+      # Idempotent. Done means published with SHA256SUMS.txt uploaded. A draft that
+      # already has the asset is a run that failed between upload and publish, and
+      # is published now. A half-uploaded asset is replaced. A missing release is
+      # created as a draft, so every path uploads before it publishes. Notes span
+      # prev_tag to this tag.
       - name: GitHub Release (changelog + record)
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -838,9 +849,13 @@ jobs:
           script: |
             const fs = require("node:fs");
             const tag = process.env.TAG;
-            // Always a plain X.Y.Z: `prepare` refuses a prerelease.
-            const prerelease = false;
             const { owner, repo } = context.repo;
+            // Only an `uploaded` asset counts. A failed upload (502) can leave an
+            // empty asset in the `starter` state, and a same-name upload is refused
+            // until it is deleted.
+            const MANIFEST = "SHA256SUMS.txt";
+            const hasManifest = (r) =>
+              r.assets.some((a) => a.name === MANIFEST && a.state === "uploaded");
 
             // Notes from prev_tag to this tag. prev_tag is computed once, in
             // `prepare`. Every PR in this repository is a CLI PR, so no path filter.
@@ -853,35 +868,64 @@ jobs:
               return gen.body;
             };
 
-            let release;
-            try {
-              const { data } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-              release = data;
-              if (release.assets.some((a) => a.name === "SHA256SUMS.txt")) {
-                core.info(`Release ${tag} already complete — skipping.`);
-                return;
-              }
-              core.info(`Release ${tag} exists but missing SHA256SUMS.txt — attaching.`);
-            } catch (e) {
-              if (e.status !== 404) throw e;
-              const rel = await github.rest.repos.createRelease({
+            // Not getReleaseByTag: it returns published releases only, so it cannot
+            // see the draft. This job's `contents: write` token lists drafts.
+            // GitHub allows several drafts on one tag, so refuse to guess.
+            const all = await github.paginate(github.rest.repos.listReleases, {
+              owner, repo, per_page: 100,
+            });
+            const matches = all.filter((r) => r.tag_name === tag);
+            if (matches.length > 1) {
+              core.setFailed(
+                `${matches.length} releases carry ${tag} (ids ${matches.map((r) => r.id).join(", ")}). ` +
+                  `Delete all but one, then re-run this job.`,
+              );
+              return;
+            }
+            let release = matches[0];
+
+            if (release && !release.draft && hasManifest(release)) {
+              core.info(`Release ${tag} already complete, skipping.`);
+              return;
+            }
+
+            if (!release) {
+              core.info(`No release for ${tag}. Creating it as a draft.`);
+              ({ data: release } = await github.rest.repos.createRelease({
                 owner, repo,
                 tag_name: tag,
                 name: tag,
-                prerelease,
-                make_latest: prerelease ? "false" : "true",
+                draft: true,
                 body: await anchoredNotes(),
-              });
-              release = rel.data;
+              }));
             }
-            // github-script runs at the workspace root.
-            await github.rest.repos.uploadReleaseAsset({
-              owner, repo,
-              release_id: release.id,
-              name: "SHA256SUMS.txt",
-              data: fs.readFileSync("dist/SHA256SUMS.txt"),
-            });
-            core.info(`Release ${tag} ready (SHA256SUMS.txt attached).`);
+
+            if (!hasManifest(release)) {
+              for (const stale of release.assets.filter((a) => a.name === MANIFEST)) {
+                core.info(`Deleting ${MANIFEST} left in state '${stale.state}' by an earlier upload.`);
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: stale.id });
+              }
+              // github-script runs at the workspace root.
+              await github.rest.repos.uploadReleaseAsset({
+                owner, repo,
+                release_id: release.id,
+                name: MANIFEST,
+                data: fs.readFileSync(`dist/${MANIFEST}`),
+              });
+            }
+
+            // A pre-release: on `cli/next`, not yet on `cli/stable`. Never "Latest"
+            // here; `release-badge.yml` moves the badge after a promote.
+            if (release.draft) {
+              await github.rest.repos.updateRelease({
+                owner, repo,
+                release_id: release.id,
+                draft: false,
+                prerelease: true,
+                make_latest: "false",
+              });
+            }
+            core.info(`Release ${tag} published as a pre-release (SHA256SUMS.txt attached).`);
 
   # The post-pointer checks for darwin-arm64: SMOKE 3, 4, 5, the 1.1.0 hop and
   # SMOKE 6. This job exists because `src/update.ts` has a darwin-only branch
