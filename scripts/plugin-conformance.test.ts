@@ -71,7 +71,7 @@ describe("plugin.json conformance (Agent Plugins §5.2)", () => {
   });
 
   it("points at the docs site and the published repo", () => {
-    expect(manifest.homepage).toBe("https://docs.wego.com");
+    expect(manifest.homepage).toBe("https://agents.wego.com");
     expect(manifest.repository).toBe("https://github.com/wego/skills");
   });
 

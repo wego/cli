@@ -6,9 +6,9 @@ source.
 
 Made by [Wego](https://www.wego.com), the travel search engine and online travel
 agency for the Middle East, North Africa and beyond. Docs, quickstart and use cases
-live at [docs.wego.com](https://docs.wego.com); the CLI reference is at
-[docs.wego.com/cli](https://docs.wego.com/cli) and the HTTP contract at
-[docs.wego.com/api](https://docs.wego.com/api).
+live at [agents.wego.com](https://agents.wego.com); the CLI reference is at
+[agents.wego.com/cli](https://agents.wego.com/cli) and the HTTP contract at
+[agents.wego.com/api](https://agents.wego.com/api).
 
 The skill takes a travel request in plain language and works it against live
 inventory. It resolves places, searches and compares flights and hotels, reads
@@ -22,23 +22,29 @@ authorization, credential storage, API access, one JSON envelope, and metering.
 
 ## Works with
 
-Any agent that supports [skills](https://agentskills.io/) and a machine or
-sandbox to run [our CLI](https://docs.wego.com/cli). Claude Code, Codex, Cursor,
-OpenClaw, Hermes and Pi, to name a few.
+Any agent that supports [skills](https://agentskills.io/). On a machine or sandbox
+that can run commands, the skill uses [our CLI](https://agents.wego.com/cli):
+Claude Code, Codex, Cursor, OpenClaw, Hermes and Pi, to name a few. Without one,
+it uses the Wego MCP server that comes with the plugin, at
+`https://mcp.wego.com/public-app/v1/mcp`, which needs no sign-in.
 
 ## Install
 
-The skill drives the `wego` CLI, so both need to be present. Either order works.
+On an agent that can run commands, the skill uses the `wego` CLI, so both need
+to be present, in either order. On an agent that cannot, the skill uses the Wego
+MCP server instead: connect `https://mcp.wego.com/public-app/v1/mcp` in the
+agent's connector or MCP settings. No sign-in is needed.
 
-Add the skill to your agent from this repository:
+The following command adds the skill only; it does not connect an MCP server:
 
 ```bash
 npx --yes skills add https://github.com/wego/skills --skill wego
 ```
 
 Install the CLI by following
-[docs.wego.com/cli](https://docs.wego.com/cli#install). The skill never installs
-it for you: when the command is missing, it links those instructions and waits.
+[agents.wego.com/cli](https://agents.wego.com/cli#install). The skill never installs
+it for you. When the command is missing it uses the Wego MCP tools if they are
+connected, and otherwise links those instructions and waits.
 
 The CLI's source is at [github.com/wego/cli](https://github.com/wego/cli).
 
