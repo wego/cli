@@ -23,14 +23,14 @@ authorization, credential storage, API access, one JSON envelope, and metering.
 ## Works with
 
 Any agent that supports [skills](https://agentskills.io/). On a machine or sandbox
-that can run commands, the skill drives [our CLI](https://agents.wego.com/cli):
+that can run commands, the skill uses [our CLI](https://agents.wego.com/cli):
 Claude Code, Codex, Cursor, OpenClaw, Hermes and Pi, to name a few. Without one,
-it uses the Wego MCP server the plugin declares, at
+it uses the Wego MCP server that comes with the plugin, at
 `https://mcp.wego.com/public-app/v1/mcp`, which needs no sign-in.
 
 ## Install
 
-On an agent that can run commands, the skill drives the `wego` CLI, so both need
+On an agent that can run commands, the skill uses the `wego` CLI, so both need
 to be present, in either order. On an agent that cannot, the skill uses the Wego
 MCP server instead: connect `https://mcp.wego.com/public-app/v1/mcp` in the
 agent's connector or MCP settings. No sign-in is needed.
