@@ -6,9 +6,10 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SKILLS } from "../src/skill-embed";
 import { useScenario } from "./harness/scenario";
 import { json } from "./harness/wego";
 
@@ -25,15 +26,30 @@ describe("skill", () => {
     expect(json<{ id: string }[]>(result).map((e) => e.id)).toEqual(["wego"]);
   });
 
-  it("installs the embedded skill, identical to skills/wego/SKILL.md", async () => {
+  it("installs every embedded skill file byte for byte", async () => {
     const result = await s.run(["skill", "install", "-y", "--embedded"]);
     expect(result.code).toBe(0);
+    const installedDir = join(s.home.dir, ".claude/skills/wego");
+    expect(
+      readdirSync(installedDir, { recursive: true, encoding: "utf8" })
+        .filter((path) => statSync(join(installedDir, path)).isFile())
+        .sort(),
+    ).toEqual(
+      [".wego-skill-owner", ...SKILLS[0].files.map(({ path }) => path)].sort(),
+    );
     expect(
       readFileSync(
         join(s.home.dir, ".claude", "skills", "wego", "SKILL.md"),
         "utf8",
       ),
     ).toBe(readFileSync(SHIPPED, "utf8"));
+    for (const { path } of SKILLS[0].files) {
+      expect(
+        readFileSync(join(s.home.dir, ".claude/skills/wego", path)),
+      ).toEqual(
+        readFileSync(new URL(`../skills/wego/${path}`, import.meta.url)),
+      );
+    }
   });
 
   it("rejects an unknown skill id and names `wego skill list`", async () => {

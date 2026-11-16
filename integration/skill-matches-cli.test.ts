@@ -1,7 +1,7 @@
 /**
  * The embedded skill only tells the agent to run what this binary has.
  *
- * `skills/wego/SKILL.md` is compiled into the binary and followed by the user's
+ * `skills/wego/references/cli.md` is compiled into the binary and followed by the user's
  * coding agent. When a command or flag is renamed and the skill is not, the agent
  * is told to run something that fails, and nothing else here notices: the
  * scenarios test the CLI, the skill evals in wego-ai run per release and cost
@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { makeHome, wego } from "./harness/wego";
 
 const SKILL = readFileSync(
-  fileURLToPath(new URL("../skills/wego/SKILL.md", import.meta.url)),
+  fileURLToPath(new URL("../skills/wego/references/cli.md", import.meta.url)),
   "utf8",
 );
 
@@ -103,7 +103,7 @@ describe("the skill matches the CLI", () => {
       );
       expect(
         missing,
-        `skills/wego/SKILL.md tells the agent to run \`${command}\`, but \`wego ${help?.path.join(" ")} --help\` has no ${missing.join(", ")}`,
+        `skills/wego/references/cli.md tells the agent to run \`${command}\`, but \`wego ${help?.path.join(" ")} --help\` has no ${missing.join(", ")}`,
       ).toEqual([]);
     });
   }

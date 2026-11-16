@@ -19,7 +19,7 @@ import {
   type SkillDeps,
   skill,
 } from "./skill";
-import type { SkillEntry } from "./skill-embed";
+import { SKILLS, type SkillEntry } from "./skill-embed";
 
 const BODY =
   "---\nname: wego\ndescription: Drive the Wego funnels.\n---\n\n# Wego CLI\n\nDrive the funnels.\n\n## Operating contract\n\n1. Drive it.\n";
@@ -54,7 +54,7 @@ function makeDeps(overrides: Partial<SkillDeps> & { body?: string } = {}): {
     {
       id: "wego",
       description: "Drive the Wego funnels.",
-      read: () => Promise.resolve(body ?? BODY),
+      files: [{ path: "SKILL.md", read: () => Promise.resolve(body ?? BODY) }],
     },
   ];
   const deps: SkillDeps = {
@@ -149,12 +149,12 @@ describe("resolveSkill (registry resolution)", () => {
     {
       id: "wego",
       description: "a",
-      read: () => Promise.resolve("a"),
+      files: [{ path: "SKILL.md", read: () => Promise.resolve("a") }],
     },
     {
       id: "other",
       description: "b",
-      read: () => Promise.resolve("b"),
+      files: [{ path: "SKILL.md", read: () => Promise.resolve("b") }],
     },
   ];
   const one = [two[0]];
@@ -390,7 +390,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       fetchRemoteSkill: (base, id) => {
         expect(base).toBe(URL);
         expect(id).toBe("wego");
-        return Promise.resolve(REMOTE);
+        return Promise.resolve({ "SKILL.md": REMOTE });
       },
     });
     expect(await skill(["install", "-y"], remote.deps)).toBe(0);
@@ -464,7 +464,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       const { deps } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
-        fetchRemoteSkill: () => Promise.resolve(REMOTE),
+        fetchRemoteSkill: () => Promise.resolve({ "SKILL.md": REMOTE }),
         requireRemote: true,
         refreshOnly: true,
       });
@@ -483,7 +483,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       const { deps } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
-        fetchRemoteSkill: () => Promise.resolve(REMOTE),
+        fetchRemoteSkill: () => Promise.resolve({ "SKILL.md": REMOTE }),
         requireRemote: true,
         refreshOnly: true,
       });
@@ -510,7 +510,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       const { deps } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
-        fetchRemoteSkill: () => Promise.resolve(REMOTE),
+        fetchRemoteSkill: () => Promise.resolve({ "SKILL.md": REMOTE }),
         requireRemote: true,
       });
       expect(await skill(["install", "-y"], deps)).toBe(0);
@@ -530,7 +530,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
-        fetchRemoteSkill: () => Promise.resolve(REMOTE),
+        fetchRemoteSkill: () => Promise.resolve({ "SKILL.md": REMOTE }),
         requireRemote: true,
         refreshOnly: true,
       });
@@ -607,7 +607,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       const { deps } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
-        fetchRemoteSkill: () => Promise.resolve(REMOTE),
+        fetchRemoteSkill: () => Promise.resolve({ "SKILL.md": REMOTE }),
       });
 
       expect(await skill(["install", "-y", "--keep-local-edits"], deps)).toBe(
@@ -648,7 +648,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       const { deps, out } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
-        fetchRemoteSkill: () => Promise.resolve(REMOTE),
+        fetchRemoteSkill: () => Promise.resolve({ "SKILL.md": REMOTE }),
       });
 
       expect(await skill(["install", "-y"], deps)).toBe(0);
@@ -668,7 +668,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       const { deps, out } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
-        fetchRemoteSkill: () => Promise.resolve(REMOTE),
+        fetchRemoteSkill: () => Promise.resolve({ "SKILL.md": REMOTE }),
       });
 
       expect(await skill(["install", "-y", "--keep-local-edits"], deps)).toBe(
@@ -685,7 +685,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       const { deps } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
-        fetchRemoteSkill: () => Promise.resolve(REMOTE),
+        fetchRemoteSkill: () => Promise.resolve({ "SKILL.md": REMOTE }),
       });
 
       expect(await skill(["install", "-y", "--keep-local-edits"], deps)).toBe(
@@ -699,7 +699,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       const { deps } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
-        fetchRemoteSkill: () => Promise.resolve(REMOTE),
+        fetchRemoteSkill: () => Promise.resolve({ "SKILL.md": REMOTE }),
       });
 
       expect(
@@ -763,7 +763,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       const { deps } = makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
-        fetchRemoteSkill: () => Promise.resolve(REMOTE),
+        fetchRemoteSkill: () => Promise.resolve({ "SKILL.md": REMOTE }),
       });
       await skill(["install", "-y"], deps);
 
@@ -863,7 +863,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       skillUrl: URL,
       fetchRemoteSkill: () => {
         called = true;
-        return Promise.resolve(REMOTE);
+        return Promise.resolve({ "SKILL.md": REMOTE });
       },
     });
     expect(await skill(["install", "-y", "--embedded"], deps)).toBe(0);
@@ -878,7 +878,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       skillUrl: undefined,
       fetchRemoteSkill: () => {
         called = true;
-        return Promise.resolve(REMOTE);
+        return Promise.resolve({ "SKILL.md": REMOTE });
       },
     });
     expect(await skill(["install", "-y"], deps)).toBe(0);
@@ -891,7 +891,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       makeDeps({
         body: EMBEDDED,
         skillUrl: URL,
-        fetchRemoteSkill: () => Promise.resolve(REMOTE),
+        fetchRemoteSkill: () => Promise.resolve({ "SKILL.md": REMOTE }),
       });
     expect(await skill(["install", "-y"], mk().deps)).toBe(0);
     const second = mk();
@@ -906,7 +906,7 @@ describe("skill install (Part B – remote body, fail-closed fallback)", () => {
       skillUrl: URL,
       fetchRemoteSkill: () => {
         called = true;
-        return Promise.resolve(REMOTE);
+        return Promise.resolve({ "SKILL.md": REMOTE });
       },
     });
     // The only non-install sub-command that resolves a skill: it reports a
@@ -1341,5 +1341,237 @@ describe("skill install --owned-only with NO channel configured (the shipped wir
     expect(await skill(["install", "--owned-only", "-y"], deps)).toBe(0);
     expect(await readFile(userSkillFile(), "utf8")).toBe(STALE);
     expect(out.join("\n")).toMatch(/could not verify/);
+  });
+});
+
+describe("skill file sets", () => {
+  const paths = SKILLS[0].files.map(({ path }) => path);
+  const body = (path: string, revision: string) => `${path}\n${revision}\n`;
+  const digest = (text: string) =>
+    new Bun.CryptoHasher("sha256").update(text).digest("hex");
+  const dir = () => join(home, ".claude", "skills", "wego");
+  function setDeps(revision: string, overrides: Partial<SkillDeps> = {}) {
+    return makeDeps({
+      skills: [
+        {
+          id: "wego",
+          description: "File set",
+          files: paths.map((path) => ({
+            path,
+            read: async () => body(path, revision),
+          })),
+        },
+      ],
+      ...overrides,
+    });
+  }
+  async function expectSet(revision: string) {
+    for (const path of paths)
+      expect(await readFile(join(dir(), path), "utf8")).toBe(
+        body(path, revision),
+      );
+  }
+  async function oldInstall() {
+    await mkdir(dir(), { recursive: true });
+    await writeFile(userSkillFile(), body("SKILL.md", "old"));
+    await writeFile(
+      ownerMarker(),
+      `${digest(body("SKILL.md", "old"))}\nring=stable\nsource=embedded\n`,
+    );
+  }
+
+  it("installs the complete set and records every digest after the compatible first line", async () => {
+    const { deps } = setDeps("new", { ring: "stable" });
+    expect(await skill(["install", "-y"], deps)).toBe(0);
+    await expectSet("new");
+    const marker = await readFile(ownerMarker(), "utf8");
+    expect(marker.split("\n")[0]).toBe(digest(body("SKILL.md", "new")));
+    expect(markerRing(marker)).toBe("stable");
+    expect(markerSource(marker)).toBe("embedded");
+    expect(
+      marker.split("\n").filter((line) => line.startsWith("file=")),
+    ).toEqual(paths.map((path) => `file=${digest(body(path, "new"))} ${path}`));
+  });
+
+  for (const mode of ["owned-only", "refreshOnly"]) {
+    it(`upgrades a v1.4.1 marker to the full set under ${mode}`, async () => {
+      await oldInstall();
+      const { deps } = setDeps("new", {
+        ring: "stable",
+        refreshOnly: mode === "refreshOnly",
+      });
+      expect(
+        await skill(
+          ["install", "-y", ...(mode === "owned-only" ? ["--owned-only"] : [])],
+          deps,
+        ),
+      ).toBe(0);
+      await expectSet("new");
+      expect(
+        (await readFile(ownerMarker(), "utf8"))
+          .split("\n")
+          .filter((line) => line.startsWith("file=")),
+      ).toHaveLength(paths.length);
+    });
+  }
+
+  for (const path of paths) {
+    it(`preserves an edit to ${path} unattended and reports its foreground replacement`, async () => {
+      await skill(["install", "-y"], setDeps("old").deps);
+      await writeFile(join(dir(), path), "local edit\n");
+      const before = await readFile(ownerMarker(), "utf8");
+      const refresh = setDeps("new", { refreshOnly: true });
+      expect(await skill(["install", "-y"], refresh.deps)).toBe(0);
+      expect(await readFile(join(dir(), path), "utf8")).toBe("local edit\n");
+      expect(await readFile(ownerMarker(), "utf8")).toBe(before);
+      expect(refresh.out.join("\n")).toContain("local modifications");
+      const keep = setDeps("new");
+      expect(
+        await skill(["install", "-y", "--keep-local-edits"], keep.deps),
+      ).toBe(0);
+      expect(await readFile(join(dir(), path), "utf8")).toBe("local edit\n");
+      const foreground = setDeps("new");
+      expect(await skill(["install", "-y"], foreground.deps)).toBe(0);
+      expect(foreground.out.join("\n")).toContain(
+        "Replaced a locally modified copy",
+      );
+      await expectSet("new");
+    });
+  }
+
+  it("preserves unrecorded references during a legacy refresh and reports replacement in the foreground", async () => {
+    await oldInstall();
+    const reference = paths[1];
+    await mkdir(join(dir(), "references"), { recursive: true });
+    await writeFile(join(dir(), reference), "user reference\n");
+    const refresh = setDeps("new");
+    expect(await skill(["install", "-y", "--owned-only"], refresh.deps)).toBe(
+      0,
+    );
+    expect(await readFile(join(dir(), reference), "utf8")).toBe(
+      "user reference\n",
+    );
+    const foreground = setDeps("new");
+    expect(await skill(["install", "-y"], foreground.deps)).toBe(0);
+    expect(foreground.out.join("\n")).toContain(
+      "Replaced a locally modified copy",
+    );
+    await expectSet("new");
+  });
+
+  it("does not short-circuit when only a reference differs", async () => {
+    await skill(["install", "-y"], setDeps("old").deps);
+    const next = setDeps("old");
+    next.deps.skills[0].files[1].read = async () => "new reference\n";
+    expect(await skill(["install", "-y"], next.deps)).toBe(0);
+    expect(await readFile(join(dir(), paths[1]), "utf8")).toBe(
+      "new reference\n",
+    );
+    expect(next.out.join("\n")).not.toContain("already up to date");
+  });
+
+  it("leaves the old set and marker intact and removes temps after mid-staging failure", async () => {
+    await skill(["install", "-y"], setDeps("old").deps);
+    const marker = await readFile(ownerMarker(), "utf8");
+    await writeFile(join(dir(), `${paths[2]}.tmp.${process.pid}`), "blocked\n");
+    const failed = setDeps("new");
+    expect(await skill(["install", "-y"], failed.deps)).toBe(1);
+    await expectSet("old");
+    expect(await readFile(ownerMarker(), "utf8")).toBe(marker);
+    expect(
+      (await readdir(dir(), { recursive: true })).filter((name) =>
+        name.includes(".tmp."),
+      ),
+    ).toEqual([]);
+  });
+
+  it("removes recorded stale files but keeps user-added files", async () => {
+    await skill(["install", "-y"], setDeps("old").deps);
+    const stale = "references/retired.md";
+    await writeFile(join(dir(), stale), "retired\n");
+    await writeFile(join(dir(), "references/personal.md"), "personal\n");
+    await writeFile(
+      ownerMarker(),
+      (await readFile(ownerMarker(), "utf8")) +
+        `file=${digest("retired\n")} ${stale}\n`,
+    );
+    expect(await skill(["install", "-y"], setDeps("new").deps)).toBe(0);
+    expect(await exists(join(dir(), stale))).toBe(false);
+    expect(await readFile(join(dir(), "references/personal.md"), "utf8")).toBe(
+      "personal\n",
+    );
+    await expectSet("new");
+    expect(await skill(["uninstall"], setDeps("new").deps)).toBe(0);
+    expect(await readFile(join(dir(), "references/personal.md"), "utf8")).toBe(
+      "personal\n",
+    );
+    for (const path of paths)
+      expect(await exists(join(dir(), path))).toBe(false);
+    expect(await exists(ownerMarker())).toBe(false);
+  });
+
+  it("removes recorded stale files and empty directories on uninstall even without SKILL.md", async () => {
+    await skill(["install", "-y"], setDeps("old").deps);
+    await writeFile(join(dir(), "references/retired.md"), "retired\n");
+    await writeFile(
+      ownerMarker(),
+      (await readFile(ownerMarker(), "utf8")) +
+        `file=${digest("retired\n")} references/retired.md\n`,
+    );
+    await rm(userSkillFile());
+    expect(await skill(["uninstall"], setDeps("old").deps)).toBe(0);
+    expect(await readdir(join(dir(), ".."))).not.toContain("wego");
+  });
+
+  it("removes an empty references directory when the new set no longer uses it", async () => {
+    await skill(["install", "-y"], setDeps("old").deps);
+    expect(
+      await skill(["install", "-y"], makeDeps({ body: "entry only\n" }).deps),
+    ).toBe(0);
+    expect(await readdir(dir())).not.toContain("references");
+    expect(await readFile(userSkillFile(), "utf8")).toBe("entry only\n");
+  });
+
+  const incompleteRemotes: (Record<string, string> | null)[] = [
+    null,
+    {},
+    { "SKILL.md": "remote entry\n" },
+  ];
+  for (const remote of incompleteRemotes) {
+    it(`never mixes an incomplete remote set with embedded files (${JSON.stringify(remote)})`, async () => {
+      const { deps } = setDeps("embedded", {
+        skillUrl: "https://example.test/skill",
+        fetchRemoteSkill: async () => remote,
+      });
+      expect(await skill(["install", "-y"], deps)).toBe(0);
+      await expectSet("embedded");
+      expect(markerSource(await readFile(ownerMarker(), "utf8"))).toBe(
+        "embedded",
+      );
+    });
+  }
+
+  it("installs a complete verified remote set without embedded content", async () => {
+    const remote = Object.fromEntries(
+      paths.map((path) => [path, body(path, "remote")]),
+    );
+    const { deps } = setDeps("embedded", {
+      skillUrl: "https://example.test/skill",
+      fetchRemoteSkill: async () => remote,
+    });
+    expect(await skill(["install", "-y"], deps)).toBe(0);
+    await expectSet("remote");
+  });
+
+  it("leaves an existing set untouched when a required remote set is incomplete", async () => {
+    await skill(["install", "-y"], setDeps("old").deps);
+    const { deps } = setDeps("embedded", {
+      skillUrl: "https://example.test/skill",
+      fetchRemoteSkill: async () => ({ "SKILL.md": "incomplete\n" }),
+      requireRemote: true,
+      refreshOnly: true,
+    });
+    expect(await skill(["install", "-y"], deps)).toBe(0);
+    await expectSet("old");
   });
 });
