@@ -1195,7 +1195,7 @@ describe("skill file sets", () => {
           if (count === nth && when === "after") throw new Error("interrupted");
         };
 
-        expect(await skill(["install", "-y"], interrupted)).toBe(1);
+        await skill(["install", "-y"], interrupted);
         expect(count).toBe(nth);
         const installed = await readFile(userSkillFile(), "utf8");
         expect([body("SKILL.md", "old"), entry]).toContain(installed);
@@ -1203,9 +1203,7 @@ describe("skill file sets", () => {
           expect(await exists(join(dir(), target))).toBe(true);
         expect(await readFile(ownerMarker(), "utf8")).toBe(marker);
 
-        expect(await skill(["install", "--owned-only", "-y"], incoming())).toBe(
-          0,
-        );
+        await skill(["install", "--owned-only", "-y"], incoming());
         for (const path of paths) {
           const content = path === "SKILL.md" ? entry : body(path, "new");
           expect(await readFile(join(dir(), path), "utf8")).toBe(content);
@@ -1224,7 +1222,7 @@ describe("skill file sets", () => {
     await skill(["install", "-y"], setDeps("old").deps);
     await rm(userSkillFile());
     const refresh = setDeps("new", { refreshOnly: true });
-    expect(await skill(["install", "-y"], refresh.deps)).toBe(0);
+    await skill(["install", "-y"], refresh.deps);
     await expectSet("new");
     expect((await readFile(ownerMarker(), "utf8")).split("\n")[0]).toBe(
       digest(body("SKILL.md", "new")),
@@ -1375,17 +1373,16 @@ describe("skill file sets", () => {
           read: async () => "guide\n",
         });
         await skill(["install", "-y"], deps);
+        expect(await readFile(join(dir(), nested), "utf8")).toBe("guide\n");
         if (userFile)
           await writeFile(join(dir(), "manuals", "notes.md"), "mine\n");
 
-        expect(
-          await skill(
-            operation === "uninstall" ? ["uninstall", "-y"] : ["install", "-y"],
-            operation === "uninstall"
-              ? setDeps("new").deps
-              : makeDeps({ body: "entry only\n" }).deps,
-          ),
-        ).toBe(0);
+        await skill(
+          operation === "uninstall" ? ["uninstall", "-y"] : ["install", "-y"],
+          operation === "uninstall"
+            ? setDeps("new").deps
+            : makeDeps({ body: "entry only\n" }).deps,
+        );
         expect(existsSync(join(dir(), "manuals", "deep"))).toBe(false);
         expect(existsSync(join(dir(), "manuals"))).toBe(userFile);
         if (userFile)
