@@ -343,10 +343,13 @@ On an install that is allowed to replace the skill, the installer writes the new
 set and removes paths recorded by the old marker but absent from the new set.
 Unrecorded user files stay. Edits to any recorded file stop unattended refresh.
 An install that stops between renames, followed by an update to a later release,
-has two outcomes. If the later release's reference files equal the bytes already
-on disk, the update completes with no manual step. If they differ, an unattended
-update skips the skill as locally modified, and `wego skill install` replaces the
-set. That command overwrites local edits, so the user backs them up first.
+completes when each file that the stopped install already replaced, `SKILL.md`
+included, is the same in the later release. If one of those files changed in the
+later release, an unattended update skips the skill as locally modified, and
+`wego skill install` replaces the set. That command overwrites local edits, so
+the user backs them up first. One exception: under a marker that v1.4.1 wrote, a
+replaced reference file never blocks the update while `SKILL.md` still matches
+that marker.
 
 The publisher never deletes files. For a rename or removal, manually `git rm` the
 old path in `wego/skills`, then commit and push that removal before publication.
