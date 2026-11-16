@@ -217,35 +217,36 @@ independent.
 
 ## 5 · The agent skill, when you have more than one install
 
-The skill is written under `$HOME` — `~/.claude/skills/wego`, plus any other agent
-directory the CLI detects — so **the config root does not isolate it**. All your
-installs share one skill file, and the last writer wins.
+The skill is written under `$HOME`: `~/.claude/skills/wego`, plus any other agent
+directory the CLI detects. **The config root does not isolate it.** All your
+installs share the same skill directory. The last writer wins for unmodified
+files. `SKILL.md` is the entry file, with CLI and MCP instructions in
+`references/cli.md` and `references/mcp.md`.
 
 Two things write it: `wego skill install`, and `update`, which re-installs the skill
 from the binary it just swapped in. `WEGO_CLI_INSTALL_SKILL=0` in the section 3
 recipe covers the install step, not the update step.
 
-The body names `wego` throughout, so by default your agent drives your *normal*
-install whichever install wrote the file. What differs is which build's commands the
-file describes — an `edge` body can document a subcommand your `stable` binary does
-not have.
+The skill names `wego` throughout, so by default your agent drives your *normal*
+install whichever install wrote the files. The CLI reference describes the
+writer's commands. An `edge` reference can document a subcommand your `stable`
+binary does not have.
 
 If the install you actually work in is `wego-edge`, say so in the skill:
 
 ```bash
-perl -pi -e 's/\bwego (?=[a-z<])/wego-edge /g' ~/.claude/skills/wego/SKILL.md
+perl -pi -e 's/\bwego (?=[a-z<])/wego-edge /g' ~/.claude/skills/wego/SKILL.md ~/.claude/skills/wego/references/*.md
 ```
 
-Then fix the two places a rename cannot repair — the installer URL in rule 1 and the
-`curl … | bash` block in rule 2. Both describe a fresh single install, and on this
-machine running that installer would replace your `wego` with a different ring. The
-honest instruction there is to ask you to reinstall rather than to install anything.
+Keep the entry file's installation guidance consistent with your chosen ring.
+The normal stable installer would replace your `wego` with a different ring.
+Use the section 3 recipe if you need to reinstall `wego-edge`.
 
-Your edit then sticks: a modified body reads as a local modification, and every
-unattended writer stands down rather than destroy it. The cost is that it also stops
-picking up new command documentation — to take a newer body, run `wego-edge skill
-install --force` and redo the two steps. A foreground `wego skill install` that you
-type still overwrites, and tells you it replaced something it had not written.
+An edit to any skill file counts as a local modification, so unattended installs
+leave the set alone. You also stop picking up new command documentation. To take
+a newer set, run `wego-edge skill install --force` and redo your edits. A
+foreground `wego skill install` still overwrites and reports the local
+modification.
 
 ---
 

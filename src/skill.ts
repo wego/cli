@@ -197,7 +197,7 @@ export const SKILL_USAGE = usage({
     ],
     [
       "--keep-local-edits",
-      `install: skip a SKILL.md edited since ${PROG} wrote it.`,
+      `install: skip a skill with any file edited since ${PROG} wrote it.`,
     ],
     [
       "--owned-only",

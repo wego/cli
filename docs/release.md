@@ -202,7 +202,7 @@ anything that can write checks on this repository could use it. The check's link
 points at the private wego-ai run, which org members can open.
 
 What the smoke runs: the install with its signed record; that the binary is the
-tag (its version, the commit its signed build record names, and the embedded skill equal to the tag's
+tag (its version, the commit its signed build record names, and the embedded skill entry file equal to the tag's
 `skills/wego/SKILL.md`); `whoami`, `places` and the four `info` commands; three
 real error responses; flights and hotels round trips to a booking link, judged
 tolerantly because staging's inventory varies; and timings, report-only.
@@ -332,6 +332,55 @@ promote is walked again.
 
 Then the plugin publishes to `wego/skills` from the tag's own tree.
 
+### Add or rename a skill file
+
+Update the static imports and the `files` list in `src/skill-embed.ts` when you add,
+rename, or remove a file under `skills/wego/`. This list feeds embedding,
+installation, publication, and verification. The tracked-file test in
+`src/skill-embed.test.ts` requires the list to match `git ls-files skills/wego`.
+
+On an install that is allowed to replace the skill, the installer writes the new
+set and removes paths recorded by the old marker but absent from the new set.
+Unrecorded user files stay. Edits to any recorded file stop unattended refresh.
+
+The publisher never deletes files. For a rename or removal, manually `git rm` the
+old path in `wego/skills`, then commit and push that removal before publication.
+Otherwise the publisher refuses the stray path, and the verifier fails because
+the tracked path is outside the publish plan.
+
+### Promote a tag from before the skill split
+
+A pre-split tag embeds only `skills/wego/SKILL.md`. A promote uses that tag's
+publisher and file list, not the list on `main`. Before publishing its plugin,
+manually remove the two references in `wego/skills`, then commit and push:
+
+```bash
+git rm -- skills/wego/references/cli.md skills/wego/references/mcp.md
+```
+
+The publisher never deletes those references for you. Leaving them tracked makes
+the one-file publisher refuse publication. Check that tag's `--print-plan` for
+other tracked paths to remove too. For example, v1.4.1's plan also omits
+`mcp.json`.
+
+For a local install with an unmodified split skill, `wego update` runs the old
+binary's `skill install --owned-only -y` after replacing the binary. The old
+installer, as in v1.4.1, reads marker line 1 and checks only `SKILL.md` for edits.
+It writes its one-file skill and stamps a marker with the digest, `ring=`, and
+`source=`, but no `file=` records. Both reference files remain on disk as stale
+files, even though the old skill no longer links them. A rollback to that binary
+has the same local effect.
+
+**Returning to a split release does not refresh this skill unattended.** Its
+`SKILL.md` differs from the new entry file, so the byte-identical shortcut does
+not apply. The new installer finds reference files with no marker records,
+classifies the set as locally modified, and skips it under `--owned-only` or
+`--keep-local-edits`. The binary update still succeeds, but the skill stays old.
+After returning to a split release, review any local edits, then deliberately run
+`wego skill install -y` with that binary. The foreground install replaces the set
+and restores the per-file marker records. It reports that it replaced a locally
+modified copy.
+
 ---
 
 ## A rollback
@@ -401,9 +450,11 @@ pointer — the pin serves it the frozen prefix whatever `stable` names — so a
 rollback can neither strand those installs nor rescue them. Blocking one on a
 pre-existing condition it cannot affect would only extend the outage.
 
-**No plugin publish.** The SKILL.md ships embedded in the binary and `update`
+**No plugin publish.** The skill files ship embedded in the binary and `update`
 re-runs the freshly swapped binary's own `skill install --owned-only`, so a
-machine taking the rollback gets that release's skills automatically.
+machine taking the rollback refreshes an unmodified owned skill. The
+[pre-split tag caveat](#promote-a-tag-from-before-the-skill-split) also applies to
+rollbacks across the split.
 `wego/skills` serves third-party discovery, which never follows `cli/stable`; it
 sits one version ahead until the next forward promote resynchronises it.
 
@@ -628,7 +679,7 @@ lane-scoped, and they sit on `stable-promote` alone: the promote lane is the onl
 one that publishes a plugin.
 
 `WEGO_CLI_SKILL_ORIGIN` is still referenced by `release-cli.yml` and **does
-nothing**. The skill channel did not move to this repository: the body ships
+nothing**. The skill channel did not move to this repository: the files ship
 embedded in the binary, and `readReleaseEnvSpec` bakes no skill address under any
 name. `release-config.test.ts` asserts a lingering value is ignored rather than
 honoured. Removing the dead reference is tracked as wego/foundations#139.
