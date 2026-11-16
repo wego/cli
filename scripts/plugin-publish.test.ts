@@ -14,7 +14,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -25,6 +24,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { SKILLS } from "../src/skill-embed";
 import { cleanupWorkspaces, git, workspaces } from "./plugin-fixtures";
 import {
   nonRegularTrackedFiles,
@@ -33,7 +33,7 @@ import {
 } from "./plugin-publish";
 
 const cliRoot = join(import.meta.dir, "..");
-const PLAN = pluginPublishPlan(["wego"]);
+const PLAN = pluginPublishPlan(SKILLS);
 
 afterEach(cleanupWorkspaces);
 
@@ -140,6 +140,11 @@ describe("publish-plugin against a file:// bare repo", () => {
     expect(remote.read("skills/wego/SKILL.md")).toBe(
       readFileSync(join(cliRoot, "skills/wego/SKILL.md"), "utf8"),
     );
+    for (const { path } of SKILLS[0].files.slice(1)) {
+      expect(remote.read(`skills/wego/${path}`)).toBe(
+        readFileSync(join(cliRoot, "skills/wego", path), "utf8"),
+      );
+    }
   });
 
   it("case 2 - steady state: a second run makes no commit", () => {
@@ -178,19 +183,20 @@ describe("publish-plugin against a file:// bare repo", () => {
     expect(remote.tracked()).toEqual(EXPECTED);
   });
 
-  it("case 4 - stray file: refuses, names it, and changes nothing", () => {
+  it.each([
+    "hand-written-note.md",
+    "skills/wego/references/old.md",
+  ])("case 4 - stray file %s: refuses, names it, and changes nothing", (stray) => {
     const remote = bareRepo((checkout) => {
-      writeFileSync(
-        join(checkout, "hand-written-note.md"),
-        "somebody edited the repo\n",
-      );
+      mkdirSync(dirname(join(checkout, stray)), { recursive: true });
+      writeFileSync(join(checkout, stray), "somebody edited the repo\n");
     });
     const before = remote.headCount();
 
     const r = publish(remote.url);
     expect(r.code).toBe(1);
     expect(r.err).toContain("REFUSED");
-    expect(r.err).toContain("hand-written-note.md");
+    expect(r.err).toContain(stray);
     // It names the way out rather than only the problem.
     expect(r.err).toContain("git rm");
     // The pasteable clone must name its destination directory. Without it the
@@ -199,7 +205,8 @@ describe("publish-plugin against a file:// bare repo", () => {
     expect(r.err).toContain(`git clone '${remote.url}' skills && cd skills`);
     // Fail-closed means the remote is untouched, not partially written.
     expect(remote.headCount()).toBe(before);
-    expect(remote.tracked()).toEqual(["hand-written-note.md"]);
+    expect(remote.tracked()).toEqual([stray]);
+    expect(remote.read(stray)).toBe("somebody edited the repo\n");
   });
 });
 
@@ -363,24 +370,52 @@ describe("unexpectedPluginFiles", () => {
   it("reports only the paths the plan does not write", () => {
     // `LICENSE` was the stray file here until the plan started writing it. A
     // published path is exactly the wrong example for this test, so the strays
-    // are two paths nothing publishes: one at the root, one under `skills/`.
+    // include the root, another skill, and this skill's references.
     expect(
       unexpectedPluginFiles(
-        [...EXPECTED, "CONTRIBUTING.md", "skills/other/SKILL.md"],
+        [
+          ...EXPECTED,
+          "CONTRIBUTING.md",
+          "skills/other/SKILL.md",
+          "skills/wego/references/old.md",
+        ],
         PLAN,
       ),
-    ).toEqual(["CONTRIBUTING.md", "skills/other/SKILL.md"]);
+    ).toEqual([
+      "CONTRIBUTING.md",
+      "skills/other/SKILL.md",
+      "skills/wego/references/old.md",
+    ]);
   });
 });
 
 describe("pluginPublishPlan", () => {
-  it("publishes the manifest, MCP config, readme, licence, and one SKILL.md per skill", () => {
-    expect(PLAN).toEqual([
+  it("publishes only plugin metadata when no skills are registered", () => {
+    expect(pluginPublishPlan([])).toEqual(
+      PLAN.filter(({ from }) => from.startsWith("plugin/")),
+    );
+  });
+
+  it("publishes the manifest, MCP config, readme, licence, and every listed skill file", () => {
+    expect(
+      pluginPublishPlan([
+        {
+          id: "first",
+          files: [{ path: "SKILL.md" }, { path: "references/one.md" }],
+        },
+        { id: "second", files: [{ path: "SKILL.md" }] },
+      ]),
+    ).toEqual([
       { from: "plugin/plugin.json", to: "plugin.json" },
       { from: "plugin/mcp.json", to: "mcp.json" },
       { from: "plugin/README.md", to: "README.md" },
       { from: "plugin/LICENSE", to: "LICENSE" },
-      { from: "skills/wego/SKILL.md", to: "skills/wego/SKILL.md" },
+      { from: "skills/first/SKILL.md", to: "skills/first/SKILL.md" },
+      {
+        from: "skills/first/references/one.md",
+        to: "skills/first/references/one.md",
+      },
+      { from: "skills/second/SKILL.md", to: "skills/second/SKILL.md" },
     ]);
   });
 

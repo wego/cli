@@ -35,7 +35,7 @@ import {
 const cliRoot = join(import.meta.dir, "..");
 // The SAME call the script makes. Hardcoding `["wego"]` would agree only
 // while SKILLS has one entry, and would then under-seed the remote.
-const PLAN = pluginPublishPlan(SKILLS.map((s) => s.id));
+const PLAN = pluginPublishPlan(SKILLS);
 
 afterEach(cleanupWorkspaces);
 
@@ -72,6 +72,7 @@ function seed(
   root: string,
   files: Record<string, string>,
   branch = "main",
+  edit?: (checkout: string) => void,
 ): void {
   const checkout = join(root, `seed-${Math.random().toString(36).slice(2)}`);
   git(root, "clone", url, checkout);
@@ -80,6 +81,7 @@ function seed(
     mkdirSync(join(full, ".."), { recursive: true });
     writeFileSync(full, body);
   }
+  edit?.(checkout);
   git(checkout, "add", "-A");
   git(
     checkout,
@@ -95,7 +97,7 @@ function seed(
   rmSync(checkout, { recursive: true, force: true });
 }
 
-/** The plan's three files with their real source bytes - a correct publish. */
+/** The plan's files with their real source bytes - a correct publish. */
 function sourceFiles(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const { from, to } of PLAN) {
@@ -128,6 +130,42 @@ function verify(
 }
 
 describe("verify-plugin-published against a file:// bare repo", () => {
+  it("rejects every extra tracked file below the published skill directory", () => {
+    const remote = bareRepo();
+    const extras = [
+      "skills/wego/references/old.md",
+      "skills/wego/unplanned.md",
+    ];
+    const files = sourceFiles();
+    for (const path of extras) files[path] = "not in the plan\n";
+    seed(remote.url, remote.root, files);
+
+    const r = verify(remote.url);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("FAILED");
+    for (const path of extras) expect(r.err).toContain(path);
+    expect(r.err).toContain("git rm");
+    expect(r.err).toContain("wego/skills");
+    expect(r.err).toContain("pluginPublishPlan()");
+    expect(r.err).not.toContain("EVERY published file is absent");
+    expect(remote.filesOn("main").sort()).toEqual(Object.keys(files).sort());
+  });
+
+  it("rejects a tracked symlink even when its bytes match source", () => {
+    const remote = bareRepo();
+    const { from, to } = PLAN[0];
+    seed(remote.url, remote.root, sourceFiles(), "main", (checkout) => {
+      rmSync(join(checkout, to));
+      symlinkSync(join(cliRoot, from), join(checkout, to));
+    });
+
+    const r = verify(remote.url);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("non-regular");
+    expect(r.err).toContain(to);
+    expect(r.err).not.toContain("differs at byte");
+  });
+
   it("passes when every published file matches source", () => {
     const remote = bareRepo();
     seed(remote.url, remote.root, sourceFiles());

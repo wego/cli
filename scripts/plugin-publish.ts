@@ -64,17 +64,19 @@ export interface PluginPublishPair {
  * source file" is the rule the after-clone predicate depends on.
  */
 export function pluginPublishPlan(
-  skillIds: readonly string[],
+  skills: readonly { id: string; files: readonly { path: string }[] }[],
 ): PluginPublishPair[] {
   return [
     { from: `${PLUGIN_SOURCE_DIR}/plugin.json`, to: "plugin.json" },
     { from: `${PLUGIN_SOURCE_DIR}/mcp.json`, to: "mcp.json" },
     { from: `${PLUGIN_SOURCE_DIR}/README.md`, to: "README.md" },
     { from: `${PLUGIN_SOURCE_DIR}/LICENSE`, to: "LICENSE" },
-    ...skillIds.map((id) => ({
-      from: `skills/${id}/SKILL.md`,
-      to: `skills/${id}/SKILL.md`,
-    })),
+    ...skills.flatMap(({ id, files }) =>
+      files.map(({ path }) => ({
+        from: `skills/${id}/${path}`,
+        to: `skills/${id}/${path}`,
+      })),
+    ),
   ];
 }
 
