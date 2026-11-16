@@ -788,9 +788,9 @@ async function installOne(
     // this for every detected dir, so hashing ahead of the early return would pay
     // for a digest that path discards.
     const digest = await sha256Hex(files["SKILL.md"]);
-    let markerReadFailed = false;
+    let markerUnreadable = false;
     const marker = await readIfExists(join(dir, MARKER_NAME)).catch(() => {
-      markerReadFailed = true;
+      markerUnreadable = true;
       return null;
     });
     const recorded = markerFiles(marker);
@@ -847,8 +847,6 @@ async function installOne(
       );
       return { dir, ok: true, message: `${file} already up to date.` };
     }
-    const markerUnreadable =
-      markerReadFailed || (marker !== null && markerBaseline(marker) === null);
     if (
       !opts.force &&
       (deps.refreshOnly || opts.keepLocalEdits) &&

@@ -497,12 +497,13 @@ describe("skill install (Part B – embedded files and edit protection)", () => 
       expect(await readFile(userSkillFile(), "utf8")).toBe("# hand edited\n");
     });
 
-    it("foreground install rebaselines a pre-baseline install", async () => {
+    it("the INSTALLER rebaselines a pre-baseline install, so preserving it cannot be permanent", async () => {
       // The other half of the rule above, and what keeps it from reintroducing
       // the staleness this feature exists to remove: nothing else ever writes a
       // baseline for a pre-marker install, so if the installer preserved it too,
-      // the refresh would freeze every existing machine forever. A deliberate
-      // foreground install adopts the dir and restores the baseline.
+      // the refresh would freeze every existing machine forever. `curl | bash`
+      // passes --keep-local-edits WITHOUT refreshOnly, and that combination
+      // adopts the dir: one loud overwrite buys a correct baseline from then on.
       const dir = join(home, ".claude", "skills", "wego");
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, "SKILL.md"), "# stale\n");
@@ -511,7 +512,9 @@ describe("skill install (Part B – embedded files and edit protection)", () => 
         body: FRESH,
       });
 
-      expect(await skill(["install", "-y"], deps)).toBe(0);
+      expect(await skill(["install", "-y", "--keep-local-edits"], deps)).toBe(
+        0,
+      );
       expect(await readFile(userSkillFile(), "utf8")).toBe(FRESH);
       // And the baseline now exists, so the next refresh can decide properly.
       const h = new Bun.CryptoHasher("sha256");

@@ -88,21 +88,39 @@ describe("third-review skill regressions", () => {
 
   for (const mode of ["unreadable", "truncated"]) {
     for (const flag of ["--owned-only", "--keep-local-edits"]) {
-      it(`names a ${mode} marker on ${flag} and leaves differing files alone`, async () => {
-        if (mode === "unreadable" && process.getuid?.() === 0) return;
-        await s.run(["skill", "install", "-y"]);
-        const reference = join(dir(), "references/cli.md");
-        writeFileSync(reference, "older reference\n");
-        if (mode === "unreadable") chmodSync(marker(), 0o000);
-        else writeFileSync(marker(), "1234\n");
-        const result = await s.run(["skill", "install", flag, "-y"]);
-        expect(result.code).toBe(0);
-        expect(result.out).toContain(`${marker()} could not be read`);
-        expect(result.out).toContain("skill install --force");
-        expect(result.out).not.toContain("predates the content baseline");
-        expect(readFileSync(reference, "utf8")).toBe("older reference\n");
-        chmodSync(marker(), 0o600);
-      });
+      it(
+        mode === "unreadable"
+          ? `names a ${mode} marker on ${flag} and leaves differing files alone`
+          : `handles a readable pre-baseline marker on ${flag} like main`,
+        async () => {
+          if (mode === "unreadable" && process.getuid?.() === 0) return;
+          await s.run(["skill", "install", "-y"]);
+          const reference = join(dir(), "references/cli.md");
+          writeFileSync(reference, "older reference\n");
+          if (mode === "unreadable") chmodSync(marker(), 0o000);
+          else writeFileSync(marker(), "1234\n");
+          const result = await s.run(["skill", "install", flag, "-y"]);
+          expect(result.code).toBe(0);
+          if (mode === "unreadable") {
+            expect(result.out).toContain(`${marker()} could not be read`);
+            expect(result.out).toContain("skill install --force");
+            expect(result.out).not.toContain("predates the content baseline");
+            expect(readFileSync(reference, "utf8")).toBe("older reference\n");
+          } else if (flag === "--owned-only") {
+            expect(result.out).toContain("predates the content baseline");
+            expect(readFileSync(reference, "utf8")).toBe("older reference\n");
+          } else {
+            expect(result.out).not.toContain("left alone");
+            expect(readFileSync(reference, "utf8")).toBe(
+              await SKILLS[0].files[1].read(),
+            );
+            expect(readFileSync(marker(), "utf8")).toStartWith(
+              `${digest(await SKILLS[0].files[0].read())}\n`,
+            );
+          }
+          chmodSync(marker(), 0o600);
+        },
+      );
     }
     it(`restamps a ${mode} marker when all files already match`, async () => {
       if (mode === "unreadable" && process.getuid?.() === 0) return;
@@ -123,11 +141,16 @@ describe("third-review skill regressions", () => {
     });
   }
 
-  it("repairs a missing file when the marker is invalid but all present files match", async () => {
+  it("repairs a missing file with the installer when a readable marker has no baseline", async () => {
     await s.run(["skill", "install", "-y"]);
     rmSync(join(dir(), "SKILL.md"));
     writeFileSync(marker(), "1234\n");
-    const result = await s.run(["skill", "install", "--owned-only", "-y"]);
+    const result = await s.run([
+      "skill",
+      "install",
+      "--keep-local-edits",
+      "-y",
+    ]);
     expect(result.code).toBe(0);
     for (const file of SKILLS[0].files)
       expect(readFileSync(join(dir(), file.path), "utf8")).toBe(
@@ -137,6 +160,30 @@ describe("third-review skill regressions", () => {
       `${digest(await SKILLS[0].files[0].read())}\n`,
     );
   });
+
+  for (const flag of ["--keep-local-edits", "--owned-only"]) {
+    it(`handles an empty pre-baseline marker with an old entry on ${flag}`, async () => {
+      mkdirSync(dir(), { recursive: true });
+      writeFileSync(join(dir(), "SKILL.md"), "# stale\n");
+      writeFileSync(marker(), "");
+      const result = await s.run(["skill", "install", "-y", flag]);
+      expect(result.code).toBe(0);
+      if (flag === "--owned-only") {
+        expect(result.out).toContain("predates the content baseline");
+        expect(readFileSync(join(dir(), "SKILL.md"), "utf8")).toBe("# stale\n");
+        expect(readFileSync(marker(), "utf8")).toBe("");
+      } else {
+        expect(result.out).not.toContain("left alone");
+        for (const file of SKILLS[0].files)
+          expect(readFileSync(join(dir(), file.path), "utf8")).toBe(
+            await file.read(),
+          );
+        expect(readFileSync(marker(), "utf8")).toStartWith(
+          `${digest(await SKILLS[0].files[0].read())}\n`,
+        );
+      }
+    });
+  }
 
   it("replaces a read-only marker atomically along with the skill files", async () => {
     if (process.getuid?.() === 0) return;
