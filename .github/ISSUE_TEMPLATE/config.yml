@@ -5,7 +5,7 @@
 blank_issues_enabled: true
 contact_links:
   - name: Using the CLI, or the Wego API
-    url: https://docs.wego.com/cli
+    url: https://agents.wego.com/cli
     about: Command reference, quickstart and the HTTP contract. Start here for how-to questions.
   - name: Proposing a change
     url: https://github.com/wego/cli/blob/main/CONTRIBUTING.md

@@ -46,7 +46,7 @@ The command's name on disk has nothing to do with it.
 ## 0 · Stable, the normal install
 
 ```bash
-curl -fsSL https://docs.wego.com/cli/install | bash
+curl -fsSL https://agents.wego.com/cli/install | bash
 wego login
 ```
 
@@ -75,7 +75,7 @@ For someone who wants the release candidate as their everyday CLI. Same command
 name, same directory, same login — only the ring differs:
 
 ```bash
-curl -fsSL 'https://docs.wego.com/cli/install?ring=next' | bash
+curl -fsSL 'https://agents.wego.com/cli/install?ring=next' | bash
 ```
 
 Because the config directory does not depend on the ring, **you stay logged in and
@@ -100,9 +100,9 @@ Reinstalling **is** the switch. It rewrites the binary and the ring record
 together, so they can never disagree:
 
 ```bash
-curl -fsSL 'https://docs.wego.com/cli/install?ring=edge' | bash   # onto edge
-curl -fsSL 'https://docs.wego.com/cli/install?ring=next' | bash   # onto next
-curl -fsSL  https://docs.wego.com/cli/install          | bash     # back to stable
+curl -fsSL 'https://agents.wego.com/cli/install?ring=edge' | bash   # onto edge
+curl -fsSL 'https://agents.wego.com/cli/install?ring=next' | bash   # onto next
+curl -fsSL  https://agents.wego.com/cli/install          | bash     # back to stable
 ```
 
 There is deliberately no `wego ring` command: the record is written by the one
@@ -127,7 +127,7 @@ for ring in next edge; do
   XDG_CONFIG_HOME="$root/config" \
   WEGO_CLI_INSTALL_DIR="$root/bin" \
   WEGO_CLI_INSTALL_SKILL=0 \
-    sh -c "curl -fsSL 'https://docs.wego.com/cli/install?ring=$ring' | sh"
+    sh -c "curl -fsSL 'https://agents.wego.com/cli/install?ring=$ring' | sh"
 
   # A launcher on your PATH, so you never have to remember the variables.
   mkdir -p "$HOME/.local/bin"
@@ -330,7 +330,7 @@ rules.
 
 ```bash
 WEGO_CLI_INSTALL_SKILL=0 \
-  sh -c "curl -fsSL https://docs.wego.com/cli/install | sh"
+  sh -c "curl -fsSL https://agents.wego.com/cli/install | sh"
 ```
 
 - `WEGO_CLI_INSTALL_SKILL=0` skips the agent-skill step, which has nothing to offer

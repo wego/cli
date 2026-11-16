@@ -71,7 +71,7 @@ describe("plugin.json conformance (Agent Plugins §5.2)", () => {
   });
 
   it("points at the docs site and the published repo", () => {
-    expect(manifest.homepage).toBe("https://docs.wego.com");
+    expect(manifest.homepage).toBe("https://agents.wego.com");
     expect(manifest.repository).toBe("https://github.com/wego/skills");
   });
 
@@ -80,6 +80,11 @@ describe("plugin.json conformance (Agent Plugins §5.2)", () => {
     expect(manifest.description as string).toMatch(
       /^Search and compare flights and hotels/,
     );
+  });
+
+  it("names both paths, the CLI and MCP, in the description", () => {
+    expect(manifest.description as string).toContain("CLI");
+    expect(manifest.description as string).toContain("MCP");
   });
 
   it("declares Apache-2.0 as an SPDX identifier", () => {

@@ -42,6 +42,21 @@ describe("readEmbeddedSkill", () => {
 });
 
 describe("SKILLS registry", () => {
+  it("parses frontmatter as three string fields matching the registry and scalar reader", () => {
+    const src = readFileSync(skillMd, "utf8");
+    const parsed = Bun.YAML.parse(frontmatter(src)) as Record<string, unknown>;
+    expect(Object.keys(parsed).sort()).toEqual([
+      "compatibility",
+      "description",
+      "name",
+    ]);
+    for (const key of ["name", "description", "compatibility"]) {
+      expect(typeof parsed[key]).toBe("string");
+      expect(parsed[key]).toBe(frontmatterField(src, key));
+    }
+    expect(parsed.description).toBe(SKILLS[0].description);
+  });
+
   it("registers exactly one skill today, id `wego`", () => {
     expect(SKILLS.map((s) => s.id)).toEqual(["wego"]);
   });
