@@ -24,14 +24,15 @@ authorization, credential storage, API access, one JSON envelope, and metering.
 
 Any agent that supports [skills](https://agentskills.io/). On a machine or sandbox
 that can run commands, the skill uses [our CLI](https://agents.wego.com/cli):
-Claude Code, Codex, Cursor, OpenClaw, Hermes and Pi, to name a few. Without one,
-it uses the Wego MCP server that comes with the plugin, at
+Claude Code, Codex, Cursor, OpenClaw, Hermes and Pi, to name a few. Where the
+agent cannot run the CLI, it uses the Wego MCP server that comes with the plugin, at
 `https://mcp.wego.com/public-app/v1/mcp`, which needs no sign-in.
 
 ## Install
 
 On an agent that can run commands, the skill uses the `wego` CLI, so both need
-to be present, in either order. On an agent that cannot, the skill uses the Wego
+to be present, in either order. On an agent that cannot run commands, or that
+cannot install the CLI or reach the network with it, the skill uses the Wego
 MCP server instead: connect `https://mcp.wego.com/public-app/v1/mcp` in the
 agent's connector or MCP settings.
 
@@ -43,8 +44,8 @@ npx --yes skills add https://github.com/wego/skills --skill wego
 
 Install the CLI by following
 [agents.wego.com/cli](https://agents.wego.com/cli#install). The skill never installs
-it for you. When the command is missing it uses the Wego MCP tools if they are
-connected, and otherwise links those instructions and waits.
+it for you. When the command is missing it links those instructions and waits,
+and uses the Wego MCP tools only if you say you cannot install the CLI there.
 
 The CLI's source is at [github.com/wego/cli](https://github.com/wego/cli).
 
