@@ -82,6 +82,11 @@ describe("plugin.json conformance (Agent Plugins §5.2)", () => {
     );
   });
 
+  it("names both paths, the CLI and MCP, in the description", () => {
+    expect(manifest.description as string).toContain("CLI");
+    expect(manifest.description as string).toContain("MCP");
+  });
+
   it("declares Apache-2.0 as an SPDX identifier", () => {
     // §5.2 types `license` as a string and does not constrain it, so the
     // constraint is ours: an SPDX id is the only spelling a consumer can match
