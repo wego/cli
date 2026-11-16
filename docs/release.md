@@ -342,6 +342,8 @@ installation, publication, and verification. The tracked-file test in
 On an install that is allowed to replace the skill, the installer writes the new
 set and removes paths recorded by the old marker but absent from the new set.
 Unrecorded user files stay. Edits to any recorded file stop unattended refresh.
+An install that stops between renames, followed by an update to a later release,
+leaves the skill old until the user runs `wego skill install`.
 
 The publisher never deletes files. For a rename or removal, manually `git rm` the
 old path in `wego/skills`, then commit and push that removal before publication.
