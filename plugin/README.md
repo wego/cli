@@ -33,7 +33,7 @@ it uses the Wego MCP server that comes with the plugin, at
 On an agent that can run commands, the skill uses the `wego` CLI, so both need
 to be present, in either order. On an agent that cannot, the skill uses the Wego
 MCP server instead: connect `https://mcp.wego.com/public-app/v1/mcp` in the
-agent's connector or MCP settings. No sign-in is needed.
+agent's connector or MCP settings.
 
 The following command adds the skill only; it does not connect an MCP server:
 
