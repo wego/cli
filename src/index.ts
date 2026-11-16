@@ -319,32 +319,8 @@ export async function run(rawArgv: string[], deps: RunDeps): Promise<number> {
   }
 }
 
-/** The `skill` command's dependency bundle. Factored out of `buildRealDeps` so
- *  the background refresh can build the same wiring with silenced io and a
- *  tighter fetch deadline, instead of duplicating it.
- *
- *  `timeoutMs` overrides `skill-remote.ts`'s 5s default: on the foreground
- *  `skill install` a slow-but-alive remote is worth waiting for, but on the
- *  background refresh it is pure added latency on someone else's command, so
- *  that caller gives up sooner. Giving up there means **leaving the installed
- *  file alone**, not falling back to the embedded copy — that caller also sets
- *  `requireRemote`, because the installed body may be newer than this binary's
- *  embed and a fallback would silently downgrade it. The two settings are why a
- *  short deadline is safe here: the cost of timing out is a skipped refresh, not
- *  a worse skill. */
-function buildSkillDeps(
-  io: CommandIo,
-  extra: {
-    timeoutMs?: number;
-    requireRemote?: boolean;
-    refreshOnly?: boolean;
-  } = {},
-) {
-  // ONE read of the record for both uses below. The ring the marker CLAIMS and the
-  // ring the body was FETCHED FROM are then the same fact by construction — they
-  // were two facts before (#1751), and the cross-channel guard compared the
-  // recorded one while the fetch obeyed a baked URL, so it could never see the
-  // disagreement it exists to catch.
+/** The skill command's embedded files and install dependencies. */
+function buildSkillDeps(io: CommandIo, extra: { refreshOnly?: boolean } = {}) {
   const ring = recordedRing();
   return {
     ...io,
@@ -356,9 +332,6 @@ function buildSkillDeps(
     homedir: () => homedir(),
     cwd: () => process.cwd(),
     confirm: confirmTty,
-    // The skill channel is gone: no `skillUrl` and no `fetchRemoteSkill` are
-    // supplied, so `install` always uses the copy embedded in this binary.
-    requireRemote: extra.requireRemote,
     refreshOnly: extra.refreshOnly,
   };
 }

@@ -10,6 +10,11 @@ const files = [
 ];
 const rewrites: { old: string; new: string; file: string }[] = [
   {
+    old: "| This skill itself looks stale, or the user wants it in another agent | `wego skill list` shows what is installable (offline, no auth) and `wego skill install` refreshes this file in place – it fetches the current published body, checksum-verifies it, and falls back to the copy baked into the binary when the network is unavailable, so it never fails on a down remote. Writing files needs the user's approval first, like an update. To set the skill up for another coding agent, that same subcommand takes `--agent <name>` (repeatable, `'*'` for all) and `-g` for a user-wide install; omitted, it targets the agents already present. |",
+    new: "| This skill itself looks stale, or the user wants it in another agent | `wego skill list` shows what is installable (offline, no auth) and `wego skill install` writes the skill files embedded in the running binary. Writing files needs the user's approval first, like an update. To set the skill up for another coding agent, that same subcommand takes `--agent <name>` (repeatable, `'*'` for all) and `-g` for a user-wide install; omitted, it targets the agents already present. |",
+    file: "skills/wego/references/cli.md",
+  },
+  {
     old: "**Where things are.** Read the operating contract first, then jump to the vertical the request needs:",
     "new":
       "**Where things are.** Read the operating contract first, then open only the reference for your path:",

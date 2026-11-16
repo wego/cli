@@ -1,12 +1,12 @@
 /**
  * `wego skill`: the agent skill embedded in the binary, installed into a throwaway
- * home. The installer's branches (ownership markers, remote bodies, agent paths)
+ * home. The installer's branches (ownership markers, edit protection, agent paths)
  * are `src/skill.test.ts`; here is proof the compiled binary carries the skill this
  * checkout ships, byte for byte.
  */
 
 import { describe, expect, it } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SKILLS } from "../src/skill-embed";
@@ -50,6 +50,33 @@ describe("skill", () => {
         readFileSync(new URL(`../skills/wego/${path}`, import.meta.url)),
       );
     }
+  });
+
+  it.each(
+    SKILLS[0].files.map(({ path }) => [path]),
+  )("names an edited %s when skipping and replacing it", async (path) => {
+    await s.run(["skill", "install", "-y"]);
+    const file = join(s.home.dir, ".claude/skills/wego", path);
+    writeFileSync(file, "local edit\n");
+
+    const skipped = await s.run([
+      "skill",
+      "install",
+      "--keep-local-edits",
+      "-y",
+    ]);
+    expect(skipped.code).toBe(0);
+    expect(skipped.out).toContain(`${path} has local modifications`);
+    if (path !== "SKILL.md")
+      expect(skipped.out).not.toContain("SKILL.md has local modifications");
+    expect(readFileSync(file, "utf8")).toBe("local edit\n");
+
+    const replaced = await s.run(["skill", "install", "-y"]);
+    expect(replaced.code).toBe(0);
+    expect(replaced.out).toContain(`Changed files: ${path}.`);
+    expect(readFileSync(file)).toEqual(
+      readFileSync(new URL(`../skills/wego/${path}`, import.meta.url)),
+    );
   });
 
   it("rejects an unknown skill id and names `wego skill list`", async () => {

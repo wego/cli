@@ -1,7 +1,7 @@
 /**
  * The embedded skill only tells the agent to run what this binary has.
  *
- * `skills/wego/references/cli.md` is compiled into the binary and followed by the user's
+ * The files in `skills/wego/` are compiled into the binary and followed by the user's
  * coding agent. When a command or flag is renamed and the skill is not, the agent
  * is told to run something that fails, and nothing else here notices: the
  * scenarios test the CLI, the skill evals in wego-ai run per release and cost
@@ -13,14 +13,12 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { SKILLS } from "../src/skill-embed";
 import { makeHome, wego } from "./harness/wego";
 
-const SKILL = readFileSync(
-  fileURLToPath(new URL("../skills/wego/references/cli.md", import.meta.url)),
-  "utf8",
-);
+const SKILL = (
+  await Promise.all(SKILLS[0].files.map(({ read }) => read()))
+).join("\n");
 
 /** Every `wego …` command line the skill shows: continuation lines joined, a
  *  trailing `# comment` dropped, runs of spaces collapsed. Inline code ends at
@@ -103,7 +101,7 @@ describe("the skill matches the CLI", () => {
       );
       expect(
         missing,
-        `skills/wego/references/cli.md tells the agent to run \`${command}\`, but \`wego ${help?.path.join(" ")} --help\` has no ${missing.join(", ")}`,
+        `skills/wego/ tells the agent to run \`${command}\`, but \`wego ${help?.path.join(" ")} --help\` has no ${missing.join(", ")}`,
       ).toEqual([]);
     });
   }
