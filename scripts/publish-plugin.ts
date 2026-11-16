@@ -44,7 +44,7 @@ const cliRoot = join(import.meta.dir, "..");
 const REPO = process.env.SKILLS_PLUGIN_REPO || "git@github.com:wego/skills.git";
 const TOKEN_NAME = PLUGIN_TOKEN_ENV;
 
-const plan = pluginPublishPlan(SKILLS.map((s) => s.id));
+const plan = pluginPublishPlan(SKILLS);
 
 // Every source is stat'd BEFORE anything else happens, `--print-plan` included.
 // Without this the flag would print the plan straight from a constant whether or

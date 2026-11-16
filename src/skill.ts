@@ -1,23 +1,21 @@
 import { existsSync } from "node:fs";
 import {
   mkdir,
+  open,
   readdir,
   readFile,
   rename,
   rm,
   rmdir,
-  writeFile,
+  stat,
 } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { isHelpArg } from "./commands";
 import { programName } from "./program-name";
 import type { SkillEntry } from "./skill-embed";
 import { usage } from "./usage";
 
-/** SHA256 of a UTF-8 body as lowercase hex. Recorded in the ownership marker to
- *  tell "wego wrote this" from "the operator edited it". Lived in
- *  `skill-remote.ts` in wego-ai, which shared it with the remote resolver; that
- *  module went with the skill channel and this is now its only caller. */
+/** SHA256 of a UTF-8 body, recorded in the ownership marker. */
 async function sha256Hex(body: string): Promise<string> {
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(body);
@@ -33,10 +31,8 @@ async function sha256Hex(body: string): Promise<string> {
  *    registry (`skill-embed.ts`); `wego skill list` prints them (offline,
  *    auth-free). install/path/uninstall take an optional `<skill-id>`
  *    defaulting to the sole registered skill.
- *  - **Remote-updatable** — `install` fetches the canonical body from a
- *    build-pinned Blob URL and verifies it fail-closed (`skill-remote.ts`),
- *    falling back to the embedded copy on any failure. No other sub-command
- *    reads a body at all — `path` resolves a target file, offline.
+ *  - **Embedded**: `install` writes the files baked into this binary.
+ *    `path` resolves the entry file offline.
  *  - **Multi-agent** — a vendored path table maps each agent to its skills dir,
  *    so a project install lands in `.claude/skills/<id>` **and** the shared
  *    `.agents/skills/<id>`; multi-target installs are best-effort.
@@ -71,43 +67,9 @@ export interface SkillDeps extends SkillIo {
   cwd: () => string;
   /** Confirm a filesystem write; bypassed when `-y`/`--yes` is passed. */
   confirm: (question: string) => Promise<boolean>;
-  /** This install's skill channel base — the **baked store origin** plus the ring
-   *  **recorded on this machine**, composed by `ring-follow.ts`'s
-   *  `skillBaseForRing` (#1751). Not baked whole: a channel compiled into the
-   *  binary is wrong on one side of every promote, since a promote moves a pointer
-   *  over the same bytes. `undefined` from source, an unbaked build, or an install
-   *  with no recorded ring ⇒ `install` uses the embedded copy. `install` composes
-   *  `<base>/<id>/…`. */
-  skillUrl?: string;
-  /** Install-only remote resolver (index.ts binds the real fetch+verify from
-   *  `skill-remote.ts`). Returns the **verified canonical** body, or `null` on
-   *  any failure (→ embedded fallback). Absent ⇒ always embedded. `install` is
-   *  the only caller — and it treats a REJECTION as a failure too, so a down
-   *  remote can never fail the install. */
-  fetchRemoteSkill?: (baseUrl: string, id: string) => Promise<string | null>;
-  /** Treat an unverifiable remote body as "do nothing" instead of falling back to
-   *  the embedded copy. Off (embedded fallback) for the foreground `skill
-   *  install`, where a fresh install needs *some* body and "never fails on a down
-   *  remote" is the contract. On for the **background refresh**, where a body
-   *  already exists and may be NEWER than the embedded one — a previous refresh
-   *  can have pulled a published body postdating this binary. Falling back there
-   *  would silently downgrade a good file and, because the throttle stamp is
-   *  already written, leave it downgraded for 24h. Nothing is strictly better
-   *  than older. */
-  requireRemote?: boolean;
-  /** Update only dirs that ALREADY carry an ownership marker; never create a new
-   *  target. Set by the same background caller as `requireRemote` (they are
-   *  independent policies — remote-failure handling vs target creation — but the
-   *  refresh needs both, and `index.ts` sets them together).
-   *
-   *  Without it the refresh's "refresh-only, never create" contract holds at the
-   *  CALL level but not at the WRITE level: ownership gates *whether* to run,
-   *  while `resolveTargets` re-runs auto-detect to decide *where*. So a
-   *  `~/.codex` created at any point after a Claude-only install would silently
-   *  acquire a skill and a marker on the next background refresh — a new
-   *  directory in someone's `$HOME`, for an agent they never ran `skill install`
-   *  for. The foreground install must keep creating targets; that is its job. */
+  /** Only update directories already owned by wego. */
   refreshOnly?: boolean;
+  rename?: typeof rename;
 }
 
 type Scope = "user" | "project";
@@ -128,8 +90,6 @@ interface SkillOptions {
   dir?: string;
   yes: boolean;
   force: boolean;
-  /** Skip the remote fetch and install the embedded copy (`--embedded`). */
-  embedded: boolean;
   /** Only refresh skill folders wego already owns; never create a new one
    *  (`--owned-only`).
    *
@@ -191,11 +151,11 @@ export const SKILL_USAGE = usage({
     ["--dir PATH", "Install under this skills folder."],
     [
       "--embedded",
-      "install: use the copy baked into this binary, no download.",
+      "Accepted for compatibility; install always writes the copy embedded in this binary.",
     ],
     [
       "--keep-local-edits",
-      `install: skip a SKILL.md edited since ${PROG} wrote it.`,
+      `install: skip a skill with any file edited since ${PROG} wrote it.`,
     ],
     [
       "--owned-only",
@@ -207,20 +167,8 @@ export const SKILL_USAGE = usage({
   ],
 });
 
-// A sibling ownership marker, answering two SEPARATE questions with the same
-// file. OWNERSHIP is presence-only: its presence means wego wrote the dir (so
-// an upgrade may overwrite it); its absence next to a SKILL.md means a foreign
-// / hand-authored file we refuse to clobber without --force. That check never
-// reads the file — accident-prevention in a cooperative environment,
-// deliberately forgeable, NOT a security control (the body's integrity is Part
-// B's SHA256 verify). The CONTENT is a separate signal on top: it holds the
-// SHA256 of the body wego last wrote (`stampOwnerMarker`), which
-// `localEditState` compares against what's on disk to tell "wego wrote this" from
-// "a human edited it" — the baseline an unattended caller needs before it can
-// safely overwrite. The legacy `.wego-skill-version` name (written by the #1188
-// binary) is still honored on read so those dirs aren't seen as foreign; it
-// predates the content baseline, so a marker under that name reads as
-// `"unknown"` (see `localEditState`).
+// Marker presence records ownership; its digests detect edits. Without a marker,
+// install adopts only identical files. Legacy markers have no content baseline.
 const MARKER_NAME = ".wego-skill-owner";
 const LEGACY_MARKER_NAME = ".wego-skill-version";
 
@@ -251,9 +199,7 @@ const VALUELESS_FLAGS: Record<string, (o: SkillOptions) => void> = {
   "--global": (o) => {
     o.scope = "user";
   },
-  "--embedded": (o) => {
-    o.embedded = true;
-  },
+  "--embedded": () => {},
   "--keep-local-edits": (o) => {
     o.keepLocalEdits = true;
   },
@@ -339,7 +285,6 @@ export function parseSkillArgs(args: string[]): SkillOptions {
     agents: [],
     yes: false,
     force: false,
-    embedded: false,
     keepLocalEdits: false,
     ownedOnly: false,
   };
@@ -487,9 +432,7 @@ function resolveTargets(
  *  write permission matters to `rename`). Every caller here already runs
  *  inside a try/catch that reports a per-target failure, so throwing surfaces
  *  the problem instead of writing over it — that IS "preserve the file when
- *  its edit state cannot be determined." `markerBaseline` is the one caller
- *  that wants unreadable folded into "unknown" (a lower-stakes heuristic, not
- *  file content), and it swallows explicitly for that reason. */
+ *  its edit state cannot be determined." An unreadable marker is handled separately. */
 async function readIfExists(path: string): Promise<string | null> {
   try {
     return await readFile(path, "utf8");
@@ -520,58 +463,38 @@ function hasOwnerMarker(dir: string): boolean {
  * destroy something the operator typed". An absent baseline is not a failure,
  * it is simply "unknown", and every caller must degrade to today's behaviour.
  */
-async function markerBaseline(dir: string): Promise<string | null> {
-  let raw: string | null;
-  try {
-    raw = await readIfExists(join(dir, MARKER_NAME));
-  } catch {
-    // Unlike SKILL.md itself, an unreadable MARKER degrades to "no baseline"
-    // same as a missing one: this is a lower-stakes heuristic signal, not the
-    // content an overwrite would destroy, and every caller already treats a
-    // null baseline as "unknown" (see the doc comment above).
-    return null;
-  }
-  // FIRST LINE, not the whole file: the marker grew an optional `ring=` line
-  // (`stampOwnerMarker`), and matching the digest against the whole trimmed body
-  // would read every ring-stamped marker as "no baseline" — silently disabling
-  // local-edit detection for exactly the installs that carry one.
+function markerBaseline(raw: string | null): string | null {
   const hex = raw?.split("\n", 1)[0]?.trim().toLowerCase();
   return hex !== undefined && /^[0-9a-f]{64}$/.test(hex) ? hex : null;
 }
 
-/**
- * Stamp the current ownership marker with `content`'s digest, and **retire any
- * legacy marker in the same dir**.
- *
- * Retiring matters because the two names are not merely aliases once mtimes are
- * load-bearing. The background refresh watches BOTH names and takes the OLDEST
- * mtime, so a legacy marker left behind by an upgraded install stays stale
- * forever while only this one gets restamped — and a stale marker keeps the
- * throttle window permanently open. The visible symptom is the one the explicit-
- * command guard is supposed to prevent: `skill install --embedded` completes,
- * then the very next ordinary command sees "stale" and pulls the remote body
- * over the embedded one the user explicitly asked for.
- *
- * Removing rather than restamping, because two files recording one fact is what
- * created the bug: any future write that updates one and not the other brings it
- * straight back. `uninstall` already deletes both names, so the legacy file is
- * long since ours to manage. The cost is that a rollback to a pre-rename binary
- * would no longer recognise the dir — but that fails loudly with the "not
- * installed by wego, re-run with --force" message, not silently.
- */
-async function stampOwnerMarker(
-  dir: string,
-  content: string,
+async function ownerMarkerBody(
+  files: Record<string, string>,
   ring?: string,
   source?: string,
-): Promise<void> {
-  const digest = await sha256Hex(content);
+): Promise<string> {
+  const digest = await sha256Hex(files["SKILL.md"]);
   const lines = [digest];
   if (ring) lines.push(`${MARKER_RING_PREFIX}${ring}`);
   if (source) lines.push(`${MARKER_SOURCE_PREFIX}${source}`);
-  await writeFile(
-    join(dir, MARKER_NAME),
-    lines.length > 1 ? `${lines.join("\n")}\n` : digest,
+  for (const [path, content] of Object.entries(files)) {
+    lines.push(`file=${await sha256Hex(content)} ${path}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/** Restamp without exposing a partially written ownership marker. */
+async function stampOwnerMarker(
+  dir: string,
+  files: Record<string, string>,
+  ring?: string,
+  source?: string,
+  renameFile: typeof rename = rename,
+): Promise<void> {
+  await writeFilesAtomic(
+    dir,
+    { [MARKER_NAME]: await ownerMarkerBody(files, ring, source) },
+    renameFile,
   );
   await rm(join(dir, LEGACY_MARKER_NAME), { force: true });
 }
@@ -581,18 +504,7 @@ async function stampOwnerMarker(
  *  and so a future third line cannot be mistaken for it. */
 const MARKER_RING_PREFIX = "ring=";
 
-/**
- * The marker's optional third line: WHERE the body wego wrote actually came from
- * — a ring name (`stable`) when it was fetched and verified from that channel, or
- * `embedded` when it came from this binary's own copy (issue #1751).
- *
- * Separate from `ring=`, which records which install's ring OWNS the dir. The two
- * are usually the same name and are still different facts: a `stable` install that
- * fell back to its embedded copy because the channel was unreachable owns the dir
- * as `stable` while the body on disk came from the binary. The install message
- * reports THIS one, because "which body is this" is the question the version stamp
- * used to answer wrongly.
- */
+/** New installs record `embedded`; readers tolerate historical channel names. */
 const MARKER_SOURCE_PREFIX = "source=";
 
 /** The body source recorded in a marker, or `null` when it names none (every
@@ -623,88 +535,168 @@ export function markerRing(raw: string | null): string | null {
   return line?.slice(MARKER_RING_PREFIX.length).trim() || null;
 }
 
-/**
- * Whether `dir`'s `SKILL.md` still holds exactly the bytes wego last wrote.
- *
- * `"unmodified"` / `"modified"` are only returned when a baseline exists;
- * `"unknown"` covers every dir installed before markers carried one (and any
- * unreadable file). `"unknown"` is genuinely undecidable, so the two unattended
- * callers answer it differently rather than sharing one guess — see `installOne`,
- * where the silent refresh preserves it and the installer rebaselines it.
- */
-async function localEditState(
-  dir: string,
-  existing: string | null,
-): Promise<"unmodified" | "modified" | "unknown"> {
-  const baseline = await markerBaseline(dir);
-  if (baseline === null || existing === null) return "unknown";
-  return (await sha256Hex(existing)) === baseline ? "unmodified" : "modified";
+function markerFiles(raw: string | null): Record<string, string> {
+  const files: Record<string, string> = {};
+  for (const line of raw?.split("\n") ?? []) {
+    const match = /^file=([0-9a-f]{64}) (.+)$/.exec(line.trim());
+    if (!match) continue;
+    const [, digest, path] = match;
+    if (
+      path.includes("\\") ||
+      path.split("/").some((part) => !part || part === "." || part === "..")
+    )
+      continue;
+    files[path] = digest;
+  }
+  return files;
 }
 
-/**
- * Write `file` via a sibling temp file + `rename`.
- *
- * `rename` within a directory is atomic, which matters twice here: a crash or
- * SIGINT mid-write can no longer leave a truncated `SKILL.md` behind (the
- * background refresh stamps its throttle marker BEFORE writing, so a corrupt
- * body would otherwise persist for the full 24h window with nothing to detect
- * it), and two concurrent `wego` processes racing the same path now interleave
- * at whole-file granularity instead of byte-level. The temp name carries the
- * pid so those two processes cannot collide on the temp file either.
- */
-async function writeFileAtomic(file: string, content: string): Promise<void> {
-  const tmp = `${file}.tmp.${process.pid}`;
+type LocalEdits = {
+  state: "unmodified" | "modified" | "unknown";
+  paths: string[];
+};
+
+async function localEditState(
+  current: Record<string, string | null>,
+  files: Record<string, string>,
+  recorded: Record<string, string>,
+  marker: string | null,
+): Promise<LocalEdits> {
+  const baseline = markerBaseline(marker);
+  if (baseline === null && Object.values(current).some((body) => body !== null))
+    return { state: "unknown", paths: [] };
+  const root = current["SKILL.md"];
+  const legacy =
+    !marker?.split("\n").some((line) => line.startsWith("file=")) &&
+    baseline !== null &&
+    root != null &&
+    (await sha256Hex(root)) === baseline;
+  const paths: string[] = [];
+  for (const [path, body] of Object.entries(current)) {
+    if (body === null || body === files[path]) continue;
+    if (legacy && path !== "SKILL.md") continue;
+    const digest = path === "SKILL.md" ? baseline : recorded[path];
+    if (!digest || (await sha256Hex(body)) !== digest) paths.push(path);
+  }
+  return { state: paths.length ? "modified" : "unmodified", paths };
+}
+
+/** Stage the whole set before replacing any installed file. */
+async function writeFilesAtomic(
+  dir: string,
+  files: Record<string, string>,
+  renameFile: typeof rename,
+  beforeMarker?: () => Promise<void>,
+): Promise<void> {
+  const order = (path: string) =>
+    path === MARKER_NAME ? 2 : path === "SKILL.md" ? 1 : 0;
+  const staged = Object.entries(files)
+    .sort(([a], [b]) => order(a) - order(b))
+    .map(([path, content]) => ({
+      file: join(dir, path),
+      tmp: `${join(dir, path)}.tmp.${process.pid}`,
+      content,
+    }));
+  const created: string[] = [];
   try {
-    // `wx` = create-exclusive: fail if the path already exists, and crucially do NOT
-    // follow it. A plain write follows a symlink, so anyone able to pre-create
-    // `SKILL.md.tmp.<pid>` in this dir could redirect the body somewhere else — the temp
-    // name is derived from a pid, so it is guessable. That needs write access to the
-    // user's own skill dir, which makes it hardening rather than a hole, but exclusive
-    // create costs nothing and turns the attempt into a per-target failure instead of a
-    // write-through. It also surfaces a leftover temp from a killed run rather than
-    // silently reusing it.
-    await writeFile(tmp, content, { flag: "wx" });
-    await rename(tmp, file);
+    for (const { file, tmp, content } of staged) {
+      await mkdir(dirname(file), { recursive: true });
+      const handle = await open(tmp, "wx");
+      created.push(tmp);
+      try {
+        await handle.writeFile(content);
+      } finally {
+        await handle.close();
+      }
+    }
+    for (const { file, tmp } of staged) {
+      if (file === join(dir, MARKER_NAME)) await beforeMarker?.();
+      await renameFile(tmp, file);
+    }
   } catch (err) {
-    await rm(tmp, { force: true }).catch(() => {});
+    await Promise.all(
+      created.map((tmp) => rm(tmp, { force: true }).catch(() => {})),
+    );
     throw err;
   }
 }
 
-/** Resolve the canonical install body: the verified remote copy when a URL is
- *  baked and `--embedded` wasn't passed, else the embedded copy. One body, shipped
- *  as published — there is no local rewrite between verification and the write. */
-async function resolveInstallBody(
-  deps: SkillDeps,
-  entry: SkillEntry,
-  opts: SkillOptions,
-): Promise<{ body: string; verified: boolean } | null> {
-  let canonical: string | null = null;
-  if (!opts.embedded && deps.skillUrl && deps.fetchRemoteSkill) {
-    // "install never fails on a down remote" is enforced HERE, not delegated to
-    // the injected resolver. `fetchRemoteSkill` is fail-closed-by-return today
-    // (it resolves null on every failure), but that is its contract, not a
-    // guarantee this composition can rely on: a resolver that REJECTS would
-    // otherwise turn a down remote into a hard install failure.
-    try {
-      canonical = await deps.fetchRemoteSkill(deps.skillUrl, entry.id);
-    } catch {
-      canonical = null;
+async function removeAbandonedTemps(
+  dir: string,
+  paths: Iterable<string>,
+): Promise<void> {
+  for (const path of paths) {
+    const parent = dirname(join(dir, path));
+    const entries = await readdir(parent, { withFileTypes: true }).catch(
+      (err) => {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw err;
+      },
+    );
+    const prefix = `${basename(path)}.tmp.`;
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.startsWith(prefix)) continue;
+      const suffix = entry.name.slice(prefix.length);
+      if (!/^\d+$/.test(suffix)) continue;
+      const pid = Number(suffix);
+      const file = join(parent, entry.name);
+      const age = Date.now() - (await stat(file)).mtimeMs;
+      if (
+        age <= 10 * 60 * 1000 &&
+        pid !== process.pid &&
+        Number.isSafeInteger(pid) &&
+        pid > 0 &&
+        pid <= 2147483647
+      ) {
+        try {
+          process.kill(pid, 0);
+          continue;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ESRCH") continue;
+        }
+      }
+      await rm(file, { force: true });
     }
   }
-  // `requireRemote` (background refresh) stops here rather than downgrading an
-  // existing, possibly-newer file to the embedded copy. The foreground install
-  // keeps the embedded fallback — it may be creating the file from nothing.
-  if (canonical === null && deps.requireRemote) return null;
-  // `verified` records WHERE the body came from, which the caller needs because
-  // the right answer differs per target: creating a file from nothing should use
-  // the embedded copy, while replacing an existing one with it may be a
-  // DOWNGRADE (an earlier refresh can have installed a published body that
-  // postdates this binary's embed). `requireRemote` decides that globally for the
-  // refresh; the installer needs it per-dir, so the fact travels instead.
-  const verified = canonical !== null;
-  if (canonical === null) canonical = await entry.read();
-  return { body: canonical, verified };
+}
+
+async function removeEmptyParents(
+  dir: string,
+  paths: Iterable<string>,
+): Promise<void> {
+  const parents = new Set<string>();
+  for (const path of paths) {
+    for (
+      let parent = dirname(join(dir, path));
+      parent !== dir;
+      parent = dirname(parent)
+    )
+      parents.add(parent);
+  }
+  for (const parent of [...parents].sort(
+    (a, b) => b.split(sep).length - a.split(sep).length,
+  )) {
+    try {
+      await rmdir(parent);
+    } catch (err) {
+      if (
+        !["ENOENT", "ENOTEMPTY", "EEXIST"].includes(
+          (err as NodeJS.ErrnoException).code ?? "",
+        )
+      )
+        throw err;
+    }
+  }
+}
+
+async function removeStaleFiles(
+  dir: string,
+  recorded: Record<string, string>,
+  files: Record<string, string>,
+): Promise<void> {
+  const stale = Object.keys(recorded).filter((path) => !(path in files));
+  for (const path of stale) await rm(join(dir, path), { force: true });
+  await removeEmptyParents(dir, stale);
 }
 
 type TargetOutcome = {
@@ -718,7 +710,7 @@ type TargetOutcome = {
  * Why an UNATTENDED caller must leave an existing `SKILL.md` alone, or `null` to
  * go ahead and write it.
  *
- * Split out of `installOne` because all three rules share one precondition — the
+ * Split out of `installOne` because both rules share one precondition — the
  * caller is unattended and `--force` was not passed — and reasoning about them
  * together is the point: each answers a different "is overwriting safe?" question
  * about the same file.
@@ -735,8 +727,7 @@ function unattendedSkipReason(
   deps: SkillDeps,
   opts: SkillOptions,
   file: string,
-  edit: "unmodified" | "modified" | "unknown",
-  verified: boolean,
+  edit: LocalEdits,
 ): string | null {
   if (opts.force) return null;
   const unattended = deps.refreshOnly === true || opts.keepLocalEdits;
@@ -746,8 +737,9 @@ function unattendedSkipReason(
   //    human typed: it produces no diff, no backup and no log line, so the edit
   //    is simply gone within 24h with nothing to notice. Ownership says we MAY
   //    write; it does not say the current bytes are ours to discard.
-  if (edit === "modified") {
-    return `${file} has local modifications – left alone. Run \`${programName()} skill install --force\` to replace it with the published copy.`;
+  if (edit.state === "modified") {
+    const plural = edit.paths.length > 1;
+    return `${edit.paths.map((path) => join(dirname(file), path)).join(", ")} ${plural ? "have" : "has"} local modifications – left alone. Run \`${programName()} skill install --force\` to replace ${plural ? "them" : "it"} with the copy in this binary.`;
   }
 
   // 2. A hand edit we CANNOT see. `"unknown"` means the dir predates the content
@@ -767,34 +759,10 @@ function unattendedSkipReason(
   //    staleness this feature exists to remove. The installer is a deliberate act,
   //    so one loud overwrite there buys a correct baseline from then on, and
   //    `wego skill install` fixes a machine by hand in the meantime.
-  if (edit === "unknown" && deps.refreshOnly === true) {
+  if (edit.state === "unknown" && deps.refreshOnly === true) {
     return `${file} predates the content baseline – left alone. Run \`${programName()} skill install\` to adopt it.`;
   }
 
-  // 3. Not an edit at all, but writing would still lose content: a channel is
-  //    configured, its fetch did not land, and the fallback body is the binary's
-  //    embed with a file already there. An earlier refresh may have installed a
-  //    published body postdating this build, so writing would DOWNGRADE it.
-  //    `requireRemote` gives the refresh this all-or-nothing, which the installer
-  //    cannot take — on a clean machine it must still create from nothing — hence
-  //    the per-target decision off `resolveInstallBody`'s `verified`. The edit
-  //    guard above does not cover this: the installed body matches its baseline,
-  //    so it is not an edit.
-  //
-  //    Scoped to a CONFIGURED channel, and that scoping is the whole of #24.
-  //    `verified` does double duty — it also labels the marker's provenance — and
-  //    is false whenever the body is the embed, including when there is no other
-  //    source it could have come from. This repository ships exactly that wiring:
-  //    the skill channel is gone and `index.ts` supplies neither `skillUrl` nor
-  //    `fetchRemoteSkill`, so the rule fired on every machine that already had
-  //    the skill and the post-update refresh could never write. With no channel
-  //    nothing on disk can postdate this binary's embed, so there is no newer
-  //    body to lose and the premise the rule is written on does not hold.
-  const channelConfigured =
-    deps.skillUrl !== undefined && deps.fetchRemoteSkill !== undefined;
-  if (!verified && channelConfigured) {
-    return `${file} left unchanged – could not verify the published copy, and the installed one may be newer than this binary's built-in copy.`;
-  }
   return null;
 }
 
@@ -803,24 +771,12 @@ function unattendedSkipReason(
  *  keep the other targets. */
 async function installOne(
   deps: SkillDeps,
-  content: string,
+  files: Record<string, string>,
   dir: string,
   opts: SkillOptions,
-  verified: boolean,
 ): Promise<TargetOutcome> {
   const file = join(dir, "SKILL.md");
-  // Provenance of the body about to be written (#1751). `verified` is true only
-  // when `resolveInstallBody` fetched AND checksum-verified it from the channel,
-  // so the recorded ring names where it came from; anything else is this binary's
-  // own embedded copy.
-  //
-  // `remote` covers a verified body whose ring we cannot name. Real wiring never
-  // produces it — `skillBaseForRing` yields no channel without a ring, so there is
-  // nothing to fetch from — but a caller that injects `skillUrl` directly can, and
-  // the honest answer there is "a channel, not this binary" rather than a ring name
-  // invented to fill the slot. The whole point of this field is that it never
-  // claims more than it knows.
-  const source = verified ? (deps.ring ?? "remote") : "embedded";
+  const source = "embedded";
   try {
     // Refresh mode updates what wego already owns and nothing else. `ok: true`
     // because skipping is the correct outcome here, not a failure — a run where
@@ -831,9 +787,44 @@ async function installOne(
     // After the skip, not before: the body is ~96KB and the silent refresh calls
     // this for every detected dir, so hashing ahead of the early return would pay
     // for a digest that path discards.
-    const digest = await sha256Hex(content);
-    const existing = await readIfExists(file);
-    if (existing === content) {
+    const digest = await sha256Hex(files["SKILL.md"]);
+    let markerUnreadable = false;
+    const marker = await readIfExists(join(dir, MARKER_NAME)).catch(() => {
+      markerUnreadable = true;
+      return null;
+    });
+    const recorded = markerFiles(marker);
+    const paths = new Set([...Object.keys(files), ...Object.keys(recorded)]);
+    const current = Object.fromEntries(
+      await Promise.all(
+        [...paths].map(
+          async (path) => [path, await readIfExists(join(dir, path))] as const,
+        ),
+      ),
+    );
+    const existingPath = [...paths].find((path) => current[path] !== null);
+    const differingPath = [...paths].find(
+      (path) => current[path] !== null && current[path] !== files[path],
+    );
+    const isUpdate = existingPath !== undefined;
+    if (
+      isUpdate &&
+      !hasOwnerMarker(dir) &&
+      !opts.force &&
+      differingPath !== undefined
+    ) {
+      return {
+        dir,
+        ok: false,
+        error: true,
+        message: `${join(dir, differingPath)} exists and was not installed by wego. Re-run with --force to overwrite it.`,
+      };
+    }
+    await removeAbandonedTemps(dir, [...paths, ...MARKER_NAMES]);
+    if (
+      Object.entries(files).every(([path, body]) => body === current[path]) &&
+      Object.keys(recorded).every((path) => path in files)
+    ) {
       // Byte-identical already — nothing to write. But a marker-less file that
       // happens to match canonical content would otherwise never get a marker,
       // so the NEXT body change would be refused as foreign and every future
@@ -843,39 +834,54 @@ async function installOne(
       // ownership of a dir wego didn't write. Accepted because (a) the bytes are
       // exactly what install would have written, so nothing of the author's is
       // lost or overwritten; (b) the marker is presence-only accident-prevention,
-      // not a security control (body integrity is the SHA256 verify); and (c) the
-      // alternative — never adopting — permanently degrades the upgrade path for a
+      // not a security control; and (c) never adopting degrades the upgrade path for a
       // file whose content we already own. `uninstall` stays conservative: it
-      // deletes only SKILL.md + the markers and leaves any other file in the dir,
+      // deletes only registered files + the markers and leaves other files,
       // so adoption never widens what a later removal touches.
-      await stampOwnerMarker(dir, content, deps.ring, source);
+      await stampOwnerMarker(
+        dir,
+        files,
+        deps.ring,
+        source,
+        deps.rename ?? rename,
+      );
       return { dir, ok: true, message: `${file} already up to date.` };
     }
-    const isUpdate = existing !== null;
-    if (isUpdate && !hasOwnerMarker(dir) && !opts.force) {
+    if (
+      !opts.force &&
+      (deps.refreshOnly || opts.keepLocalEdits) &&
+      markerUnreadable &&
+      differingPath !== undefined
+    ) {
       return {
         dir,
-        ok: false,
-        error: true,
-        message: `${file} exists and was not installed by wego. Re-run with --force to overwrite it.`,
+        ok: true,
+        message: `${join(dir, MARKER_NAME)} could not be read – left alone. Run \`${programName()} skill install --force\` to replace the skill with the copy in this binary.`,
       };
     }
-    // With a file already there, an unattended caller may have to leave it alone
-    // rather than write — three separate reasons, all in `unattendedSkipReason`.
-    // Gated on `existing !== null` because every one of them is about not losing
-    // content that is already on disk; creating from nothing is never a loss.
-    const edit = await localEditState(dir, existing);
-    if (existing !== null) {
-      const skip = unattendedSkipReason(deps, opts, file, edit, verified);
+    const edit: LocalEdits =
+      markerUnreadable && differingPath === undefined
+        ? { state: "unmodified", paths: [] }
+        : await localEditState(current, files, recorded, marker);
+    if (isUpdate) {
+      const skip = unattendedSkipReason(deps, opts, file, edit);
       if (skip !== null) return { dir, ok: true, message: skip };
     }
     await mkdir(dir, { recursive: true });
-    await writeFileAtomic(file, content);
+    await writeFilesAtomic(
+      dir,
+      {
+        ...files,
+        [MARKER_NAME]: await ownerMarkerBody(files, deps.ring, source),
+      },
+      deps.rename ?? rename,
+      () => removeStaleFiles(dir, recorded, files),
+    );
     // The marker now records WHAT we wrote, WHICH RING wrote it, and WHERE the
     // body came from — not merely that we wrote. Still presence-only for ownership
     // (`hasOwnerMarker` never reads it); the ring is read by the background refresh
     // alone, to tell a skill it maintains from one another channel's install owns.
-    await stampOwnerMarker(dir, content, deps.ring, source);
+    await rm(join(dir, LEGACY_MARKER_NAME), { force: true });
     return {
       dir,
       ok: true,
@@ -891,7 +897,7 @@ async function installOne(
       // it read "(v0.8.0)" just as confidently while writing a body from a retired
       // channel that the binary had never embedded (#1751). `SKILL.md` carries no
       // version of its own, so source + digest is the honest identity available.
-      message: `${isUpdate ? "Updated" : "Installed"} ${basename(dir)} skill → ${file} (${source}, ${digest.slice(0, 12)}).${edit === "modified" ? " Replaced a locally modified copy." : ""} Read that file to use it now, or restart your agent to pick it up automatically.`,
+      message: `${isUpdate ? "Updated" : "Installed"} ${basename(dir)} skill → ${file} (${source}, ${digest.slice(0, 12)}).${edit.state === "modified" ? ` Replaced a locally modified copy. Changed files: ${edit.paths.join(", ")}.` : ""} Read that file to use it now, or restart your agent to pick it up automatically.`,
     };
   } catch (err) {
     return {
@@ -921,20 +927,18 @@ function reportOutcomes(deps: SkillDeps, outcomes: TargetOutcome[]): number {
 
 async function install(deps: SkillDeps, opts: SkillOptions): Promise<number> {
   const entry = resolveSkill(deps.skills, opts.skillId);
-  const resolved = await resolveInstallBody(deps, entry, opts);
-  if (resolved === null) {
-    // Only reachable with `requireRemote` (the background refresh): the channel
-    // was unverifiable, so leave every target exactly as it is.
-    deps.log(
-      `Could not verify the published ${entry.id} skill – leaving the installed copy unchanged.`,
-    );
-    return 0;
-  }
+  const files = Object.fromEntries(
+    await Promise.all(
+      entry.files.map(async ({ path, read }) => [path, await read()] as const),
+    ),
+  );
   const leaf = entry.id;
   const targets = resolveTargets(deps, opts, leaf, false);
 
   if (!opts.yes) {
-    const list = targets.map((t) => `  ${join(t, "SKILL.md")}`).join("\n");
+    const list = targets
+      .flatMap((t) => entry.files.map(({ path }) => `  ${join(t, path)}`))
+      .join("\n");
     const ok = await deps.confirm(
       `Install the ${entry.id} agent skill to:\n${list}\n?`,
     );
@@ -946,9 +950,7 @@ async function install(deps: SkillDeps, opts: SkillOptions): Promise<number> {
 
   const outcomes: TargetOutcome[] = [];
   for (const dir of targets) {
-    outcomes.push(
-      await installOne(deps, resolved.body, dir, opts, resolved.verified),
-    );
+    outcomes.push(await installOne(deps, files, dir, opts));
   }
   return reportOutcomes(deps, outcomes);
 }
@@ -1034,26 +1036,51 @@ async function list(deps: SkillDeps, args: string[]): Promise<void> {
 async function uninstallOne(
   dir: string,
   opts: SkillOptions,
+  entry: SkillEntry,
 ): Promise<TargetOutcome> {
   const file = join(dir, "SKILL.md");
   try {
-    if ((await readIfExists(file)) === null) {
+    const recorded = markerFiles(
+      await readIfExists(join(dir, MARKER_NAME)).catch(() => null),
+    );
+    const paths = new Set([
+      ...entry.files.map(({ path }) => path),
+      ...Object.keys(recorded),
+    ]);
+    const existingPath = [...paths].find((path) => existsSync(join(dir, path)));
+    if (
+      !hasOwnerMarker(dir) &&
+      existingPath === undefined &&
+      (!opts.force || !existsSync(dir))
+    ) {
       return { dir, ok: true, message: `No wego skill installed at ${file}.` };
     }
     if (!hasOwnerMarker(dir) && !opts.force) {
+      const differingPath = (
+        await Promise.all(
+          entry.files.map(async ({ path, read }) => {
+            const current = await readIfExists(join(dir, path));
+            return current !== null && current !== (await read())
+              ? path
+              : undefined;
+          }),
+        )
+      ).find((path) => path !== undefined);
       return {
         dir,
         ok: false,
         error: true,
-        message: `${file} exists but was not installed by wego. Re-run with --force to remove it.`,
+        message: `${join(dir, differingPath ?? existingPath ?? "SKILL.md")} exists but was not installed by wego. Re-run with --force to remove it.`,
       };
     }
-    // Remove only what install writes (SKILL.md + either marker name), then drop
+    await removeAbandonedTemps(dir, [...paths, ...MARKER_NAMES]);
+    // Remove only registered or recorded files and both markers, then drop
     // the dir *only if it is now empty* — a `--force`-adopted dir's other files
     // are the user's and must be left intact.
-    await rm(file, { force: true });
+    for (const path of paths) await rm(join(dir, path), { force: true });
     await rm(join(dir, MARKER_NAME), { force: true });
     await rm(join(dir, LEGACY_MARKER_NAME), { force: true });
+    await removeEmptyParents(dir, paths);
     // Check emptiness explicitly rather than rm-and-swallow so a real fs error
     // (EACCES/…) propagates instead of masquerading as "adopted files remain".
     if ((await readdir(dir)).length === 0) {
@@ -1081,7 +1108,7 @@ async function uninstall(deps: SkillDeps, opts: SkillOptions): Promise<number> {
   const targets = resolveTargets(deps, opts, leaf, true);
   const outcomes: TargetOutcome[] = [];
   for (const dir of targets) {
-    outcomes.push(await uninstallOne(dir, opts));
+    outcomes.push(await uninstallOne(dir, opts, entry));
   }
   return reportOutcomes(deps, outcomes);
 }

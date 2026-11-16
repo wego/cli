@@ -42,17 +42,19 @@ import { Done, git } from "./plugin-git";
 import {
   describeMismatch,
   missingPlanSources,
+  nonRegularTrackedFiles,
   PLUGIN_TOKEN_ENV,
   pluginPublishPlan,
   publishGate,
   redactRemote,
+  unexpectedPluginFiles,
 } from "./plugin-publish";
 
 const cliRoot = join(import.meta.dir, "..");
 const REPO = process.env.SKILLS_PLUGIN_REPO || "git@github.com:wego/skills.git";
 const TOKEN_NAME = PLUGIN_TOKEN_ENV;
 
-const plan = pluginPublishPlan(SKILLS.map((s) => s.id));
+const plan = pluginPublishPlan(SKILLS);
 
 // Every source is stat'd BEFORE the gate and before any clone, exactly as
 // `publish-plugin.ts` does it. Without this a missing source throws ENOENT from
@@ -113,6 +115,26 @@ try {
     }
   }
 
+  const staged = git(repo, "ls-files", "-s");
+  const tracked = staged
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => line.slice(line.indexOf("\t") + 1));
+  const offenders = [
+    ...new Set([
+      ...unexpectedPluginFiles(tracked, plan),
+      ...nonRegularTrackedFiles(staged),
+    ]),
+  ];
+  if (offenders.length > 0) {
+    console.error(
+      `plugin verify FAILED: ${redactRemote(REPO)} holds unexpected or non-regular tracked entries:\n` +
+        offenders.map((path) => `  ${path}`).join("\n") +
+        "\nRemove unexpected files with `git rm` in wego/skills, or add them with source files to `pluginPublishPlan()` in scripts/plugin-publish.ts." +
+        "\nReplace non-regular entries with regular files.",
+    );
+  }
+
   if (failures.length > 0) {
     // The branch hint is earned ONLY when the clone shows every planned file
     // absent, which is the signature of a clone that landed on a ref the push
@@ -134,6 +156,8 @@ try {
     );
     throw new Done(1);
   }
+
+  if (offenders.length > 0) throw new Done(1);
 
   console.log(
     `plugin verify: ${plan.length} file(s) in ${redactRemote(REPO)} match source:\n` +

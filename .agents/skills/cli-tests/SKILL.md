@@ -65,8 +65,9 @@ it("prints the caller's identity", async () => {
 
 ### When a command or flag changes
 
-`skills/wego/SKILL.md` tells the user's agent which commands to run, and it ships
-inside the binary. `integration/skill-matches-cli.test.ts` fails when the skill
+`skills/wego/references/cli.md` tells the user's agent which commands to run. It
+ships inside the binary with the `SKILL.md` entry file and the MCP reference.
+`integration/skill-matches-cli.test.ts` fails when the CLI reference
 names a command that no longer answers `--help`, or a `--flag` its help does not
 list. Rename a flag, and update the skill in the same change. Whether the skill
 still leads the agent well is the evals' question, answered per release in wego-ai.

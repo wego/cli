@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readEmbeddedSkill, SKILLS } from "./skill-embed";
+import { SKILLS } from "./skill-embed";
 
 const cliRoot = join(import.meta.dir, "..");
 const skillMd = join(cliRoot, "skills/wego/SKILL.md");
@@ -30,18 +31,39 @@ function frontmatterField(src: string, name: string): string {
   return value;
 }
 
-describe("readEmbeddedSkill", () => {
+describe("embedded skill files", () => {
   it("returns the real SKILL.md body baked from the skill directory", async () => {
-    const body = await readEmbeddedSkill();
+    const body = await SKILLS[0].files[0].read();
     // Anchors from skills/wego/SKILL.md — proves the embed resolved to
     // the actual skill, not an empty/placeholder file.
     expect(body).toContain("# Wego CLI");
     expect(body).toContain("Operating contract");
+    expect(body).toContain(
+      "Items 3, 4, 5, 9 and 10 are CLI-only and live in [references/cli.md](references/cli.md).",
+    );
+    expect(body.split("\n").length).toBeLessThan(500);
     expect(body.length).toBeGreaterThan(500);
   });
 });
 
 describe("SKILLS registry", () => {
+  it("lists exactly the tracked files in each skill directory", () => {
+    for (const entry of SKILLS) {
+      const prefix = `skills/${entry.id}/`;
+      const tracked = execFileSync(
+        "git",
+        ["ls-files", "-z", `skills/${entry.id}`],
+        { cwd: cliRoot, encoding: "utf8" },
+      )
+        .split("\0")
+        .filter(Boolean)
+        .map((path) => path.slice(prefix.length))
+        .sort();
+      expect(entry.files[0].path).toBe("SKILL.md");
+      expect(entry.files.map(({ path }) => path).sort()).toEqual(tracked);
+    }
+  });
+
   it("parses frontmatter as three string fields matching the registry and scalar reader", () => {
     const src = readFileSync(skillMd, "utf8");
     const parsed = Bun.YAML.parse(frontmatter(src)) as Record<string, unknown>;
@@ -117,7 +139,12 @@ describe("SKILL.md dev/prod boundary", () => {
   ];
 
   it("contains no developer-local tokens (dev setup belongs in AGENTS.md)", () => {
-    const body = readFileSync(skillMd, "utf8").toLowerCase();
+    const body = SKILLS[0].files
+      .map(({ path }) =>
+        readFileSync(join(cliRoot, "skills/wego", path), "utf8"),
+      )
+      .join("\n")
+      .toLowerCase();
     const leaked = DEV_ONLY_TOKENS.filter((t) =>
       body.includes(t.toLowerCase()),
     );
@@ -131,7 +158,7 @@ describe("SKILL.md dev/prod boundary", () => {
 // install`/`print` work with no repo present. Cheap (sub-second compile of this
 // small CLI — Bun's bundler, not the heavy tsc), so it rides the normal suite.
 describe("skill embed in a compiled binary", () => {
-  it("bakes SKILL.md into `bun build --compile` output, served detached from source", () => {
+  it("bakes every skill file into `bun build --compile` output, served detached from source", () => {
     const work = mkdtempSync(join(tmpdir(), "wego-compile-"));
     const bin = join(work, "wego");
     try {
@@ -178,6 +205,11 @@ describe("skill embed in a compiled binary", () => {
       // to the on-disk source of truth.
       expect(installed.trimEnd()).toBe(readFileSync(skillMd, "utf8").trimEnd());
       expect(installed).toContain("# Wego CLI");
+      for (const { path } of SKILLS[0].files) {
+        expect(readFileSync(join(skillsRoot, "wego", path))).toEqual(
+          readFileSync(join(cliRoot, "skills/wego", path)),
+        );
+      }
 
       // A second install off the same repo-free binary must land on that same
       // leaf rather than minting one from the environment it was invoked in.
@@ -186,6 +218,11 @@ describe("skill embed in a compiled binary", () => {
         { cwd: work, stdout: "pipe", stderr: "pipe" },
       );
       expect(again.exitCode).toBe(0);
+      for (const { path } of SKILLS[0].files) {
+        expect(readFileSync(join(skillsRoot, "wego", path))).toEqual(
+          readFileSync(join(cliRoot, "skills/wego", path)),
+        );
+      }
       expect(
         readFileSync(join(skillsRoot, "wego", "SKILL.md"), "utf8").trimEnd(),
       ).toBe(readFileSync(skillMd, "utf8").trimEnd());

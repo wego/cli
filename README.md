@@ -38,7 +38,7 @@ non-production is how someone reads test inventory believing it is real.
 
 For agents: anything that supports [skills](https://agentskills.io/) and can run a
 binary — Claude Code, Codex, Cursor, OpenClaw, Hermes and Pi, to name a few. The
-CLI carries the skill body embedded, so `wego skill install` writes it without a
+CLI carries the skill files embedded, so `wego skill install` writes them without a
 download.
 
 ## Install
@@ -283,7 +283,7 @@ file is inert and `bun link` is the fallback. Copy `.env.local.example` to
 | `src/` | The CLI: command surface, OAuth, API client, config, telemetry |
 | `src/release-signing/` | Signature and certificate verification for release manifests |
 | `scripts/` | Release, publish, ring and conformance tooling, with its own tests |
-| `skills/wego/` | The skill body embedded into the binary |
+| `skills/wego/` | The skill entry file and CLI and MCP references embedded into the binary |
 | `plugin/` | The agent plugin manifest published to the skills repository |
 | `.github/workflows/` | CI, edge publish, release, promote |
 
