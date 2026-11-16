@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import {
   mkdir,
+  open,
   readdir,
   readFile,
   rename,
@@ -89,8 +90,6 @@ interface SkillOptions {
   dir?: string;
   yes: boolean;
   force: boolean;
-  /** Compatibility flag: all installs use the embedded copy. */
-  embedded: boolean;
   /** Only refresh skill folders wego already owns; never create a new one
    *  (`--owned-only`).
    *
@@ -152,7 +151,7 @@ export const SKILL_USAGE = usage({
     ["--dir PATH", "Install under this skills folder."],
     [
       "--embedded",
-      "install: use the copy baked into this binary, no download.",
+      "Accepted for compatibility; install always writes the copy embedded in this binary.",
     ],
     [
       "--keep-local-edits",
@@ -168,20 +167,8 @@ export const SKILL_USAGE = usage({
   ],
 });
 
-// A sibling ownership marker, answering two SEPARATE questions with the same
-// file. OWNERSHIP is presence-only: its presence means wego wrote the dir (so
-// an upgrade may overwrite it); its absence next to a SKILL.md means a foreign
-// / hand-authored file we refuse to clobber without --force. That check never
-// reads the file — accident-prevention in a cooperative environment,
-// deliberately forgeable, NOT a security control (the body's integrity is Part
-// B's SHA256 verify). The CONTENT is a separate signal on top: it holds the
-// SHA256 of the body wego last wrote (`stampOwnerMarker`), which
-// `localEditState` compares against what's on disk to tell "wego wrote this" from
-// "a human edited it" — the baseline an unattended caller needs before it can
-// safely overwrite. The legacy `.wego-skill-version` name (written by the #1188
-// binary) is still honored on read so those dirs aren't seen as foreign; it
-// predates the content baseline, so a marker under that name reads as
-// `"unknown"` (see `localEditState`).
+// Marker presence records ownership; its digests detect edits. Without a marker,
+// install adopts only identical files. Legacy markers have no content baseline.
 const MARKER_NAME = ".wego-skill-owner";
 const LEGACY_MARKER_NAME = ".wego-skill-version";
 
@@ -212,9 +199,7 @@ const VALUELESS_FLAGS: Record<string, (o: SkillOptions) => void> = {
   "--global": (o) => {
     o.scope = "user";
   },
-  "--embedded": (o) => {
-    o.embedded = true;
-  },
+  "--embedded": () => {},
   "--keep-local-edits": (o) => {
     o.keepLocalEdits = true;
   },
@@ -300,7 +285,6 @@ export function parseSkillArgs(args: string[]): SkillOptions {
     agents: [],
     yes: false,
     force: false,
-    embedded: false,
     keepLocalEdits: false,
     ownedOnly: false,
   };
@@ -484,25 +468,7 @@ function markerBaseline(raw: string | null): string | null {
   return hex !== undefined && /^[0-9a-f]{64}$/.test(hex) ? hex : null;
 }
 
-/**
- * Stamp the current ownership marker with `content`'s digest, and **retire any
- * legacy marker in the same dir**.
- *
- * Retiring matters because the two names are not merely aliases once mtimes are
- * load-bearing. The background refresh watches BOTH names and takes the OLDEST
- * mtime, so a legacy marker left behind by an upgraded install stays stale
- * forever while only this one gets restamped — and a stale marker keeps the
- * throttle window permanently open. The visible symptom is the one the explicit-
- * command guard is supposed to prevent: `skill install --embedded` completes,
- * then the next refresh treats the marker as stale again.
- *
- * Removing rather than restamping, because two files recording one fact is what
- * created the bug: any future write that updates one and not the other brings it
- * straight back. `uninstall` already deletes both names, so the legacy file is
- * long since ours to manage. The cost is that a rollback to a pre-rename binary
- * would no longer recognise the dir — but that fails loudly with the "not
- * installed by wego, re-run with --force" message, not silently.
- */
+/** Record the embedded files' digests and retire the legacy ownership marker. */
 async function stampOwnerMarker(
   dir: string,
   files: Record<string, string>,
@@ -608,18 +574,59 @@ async function writeFilesAtomic(
       tmp: `${join(dir, path)}.tmp.${process.pid}`,
       content,
     }));
+  const created: string[] = [];
   try {
     for (const { file, tmp, content } of staged) {
       await mkdir(dirname(file), { recursive: true });
-      await writeFile(tmp, content, { flag: "wx" });
+      const handle = await open(tmp, "wx");
+      created.push(tmp);
+      try {
+        await handle.writeFile(content);
+      } finally {
+        await handle.close();
+      }
     }
     for (const { file, tmp } of staged) await renameFile(tmp, file);
   } catch (err) {
     await Promise.all(
-      staged.map(({ tmp }) => rm(tmp, { force: true }).catch(() => {})),
+      created.map((tmp) => rm(tmp, { force: true }).catch(() => {})),
     );
     throw err;
   }
+}
+
+async function removeAbandonedTemps(
+  dir: string,
+  paths: Iterable<string>,
+): Promise<boolean> {
+  let removed = false;
+  for (const path of paths) {
+    const parent = dirname(join(dir, path));
+    const entries = await readdir(parent, { withFileTypes: true }).catch(
+      (err) => {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw err;
+      },
+    );
+    const prefix = `${basename(path)}.tmp.`;
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.startsWith(prefix)) continue;
+      const suffix = entry.name.slice(prefix.length);
+      if (!/^\d+$/.test(suffix)) continue;
+      const pid = Number(suffix);
+      if (pid !== process.pid) {
+        try {
+          process.kill(pid, 0);
+          continue;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ESRCH") continue;
+        }
+      }
+      await rm(join(parent, entry.name), { force: true });
+      removed = true;
+    }
+  }
+  return removed;
 }
 
 async function removeEmptyParents(
@@ -700,7 +707,8 @@ function unattendedSkipReason(
   //    is simply gone within 24h with nothing to notice. Ownership says we MAY
   //    write; it does not say the current bytes are ours to discard.
   if (edit.state === "modified") {
-    return `${edit.paths.map((path) => join(dirname(file), path)).join(", ")} has local modifications – left alone. Run \`${programName()} skill install --force\` to replace it with the published copy.`;
+    const plural = edit.paths.length > 1;
+    return `${edit.paths.map((path) => join(dirname(file), path)).join(", ")} ${plural ? "have" : "has"} local modifications – left alone. Run \`${programName()} skill install --force\` to replace ${plural ? "them" : "it"} with the copy in this binary.`;
   }
 
   // 2. A hand edit we CANNOT see. `"unknown"` means the dir predates the content
@@ -759,6 +767,24 @@ async function installOne(
         ),
       ),
     );
+    const existingPath = [...paths].find((path) => current[path] !== null);
+    const isUpdate = existingPath !== undefined;
+    if (
+      isUpdate &&
+      !hasOwnerMarker(dir) &&
+      !opts.force &&
+      Object.entries(current).some(
+        ([path, body]) => body !== null && body !== files[path],
+      )
+    ) {
+      return {
+        dir,
+        ok: false,
+        error: true,
+        message: `${join(dir, existingPath)} exists and was not installed by wego. Re-run with --force to overwrite it.`,
+      };
+    }
+    await removeAbandonedTemps(dir, paths);
     if (
       Object.entries(files).every(([path, body]) => body === current[path]) &&
       Object.keys(recorded).every((path) => path in files)
@@ -772,22 +798,12 @@ async function installOne(
       // ownership of a dir wego didn't write. Accepted because (a) the bytes are
       // exactly what install would have written, so nothing of the author's is
       // lost or overwritten; (b) the marker is presence-only accident-prevention,
-      // not a security control (body integrity is the SHA256 verify); and (c) the
-      // alternative — never adopting — permanently degrades the upgrade path for a
+      // not a security control; and (c) never adopting degrades the upgrade path for a
       // file whose content we already own. `uninstall` stays conservative: it
       // deletes only registered files + the markers and leaves other files,
       // so adoption never widens what a later removal touches.
       await stampOwnerMarker(dir, files, deps.ring, source);
       return { dir, ok: true, message: `${file} already up to date.` };
-    }
-    const isUpdate = Object.values(current).some((body) => body !== null);
-    if (isUpdate && !hasOwnerMarker(dir) && !opts.force) {
-      return {
-        dir,
-        ok: false,
-        error: true,
-        message: `${file} exists and was not installed by wego. Re-run with --force to overwrite it.`,
-      };
     }
     // With a file already there, an unattended caller may have to leave it alone
     // rather than write: two reasons, all in `unattendedSkipReason`.
@@ -860,7 +876,9 @@ async function install(deps: SkillDeps, opts: SkillOptions): Promise<number> {
   const targets = resolveTargets(deps, opts, leaf, false);
 
   if (!opts.yes) {
-    const list = targets.map((t) => `  ${join(t, "SKILL.md")}`).join("\n");
+    const list = targets
+      .flatMap((t) => entry.files.map(({ path }) => `  ${join(t, path)}`))
+      .join("\n");
     const ok = await deps.confirm(
       `Install the ${entry.id} agent skill to:\n${list}\n?`,
     );
@@ -962,15 +980,20 @@ async function uninstallOne(
 ): Promise<TargetOutcome> {
   const file = join(dir, "SKILL.md");
   try {
-    const recorded = markerFiles(await readIfExists(join(dir, MARKER_NAME)));
+    const recorded = markerFiles(
+      await readIfExists(join(dir, MARKER_NAME)).catch(() => null),
+    );
     const paths = new Set([
       ...entry.files.map(({ path }) => path),
       ...Object.keys(recorded),
     ]);
-    if (
-      !hasOwnerMarker(dir) &&
-      ![...paths].some((path) => existsSync(join(dir, path)))
-    ) {
+    const removedTemps = await removeAbandonedTemps(dir, paths);
+    const existingPath = [...paths].find((path) => existsSync(join(dir, path)));
+    if (!hasOwnerMarker(dir) && existingPath === undefined) {
+      if (removedTemps) {
+        await removeEmptyParents(dir, paths);
+        if ((await readdir(dir)).length === 0) await rmdir(dir);
+      }
       return { dir, ok: true, message: `No wego skill installed at ${file}.` };
     }
     if (!hasOwnerMarker(dir) && !opts.force) {
@@ -978,7 +1001,7 @@ async function uninstallOne(
         dir,
         ok: false,
         error: true,
-        message: `${file} exists but was not installed by wego. Re-run with --force to remove it.`,
+        message: `${join(dir, existingPath ?? "SKILL.md")} exists but was not installed by wego. Re-run with --force to remove it.`,
       };
     }
     // Remove only registered or recorded files and both markers, then drop

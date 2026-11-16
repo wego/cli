@@ -8,6 +8,8 @@ import {
   readFile,
   rename,
   rm,
+  rmdir,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -87,13 +89,12 @@ async function exists(path: string): Promise<boolean> {
 }
 
 describe("parseSkillArgs", () => {
-  it("defaults: user scope, no agents/yes/force/embedded/keep-local-edits/owned-only", () => {
+  it("defaults: user scope, no agents/yes/force/keep-local-edits/owned-only", () => {
     expect(parseSkillArgs([])).toEqual({
       scope: "user",
       agents: [],
       yes: false,
       force: false,
-      embedded: false,
       // Default OFF: an interactive `wego skill install` still replaces a modified
       // body and prints that it did. Only unattended callers ask to preserve it.
       keepLocalEdits: false,
@@ -123,7 +124,7 @@ describe("parseSkillArgs", () => {
     expect(parseSkillArgs(["--dir", "/tmp/x"]).dir).toBe("/tmp/x");
     expect(parseSkillArgs(["-g"]).scope).toBe("user");
     expect(parseSkillArgs(["--global"]).scope).toBe("user");
-    expect(parseSkillArgs(["--embedded"]).embedded).toBe(true);
+    expect(parseSkillArgs(["--embedded"])).toEqual(parseSkillArgs([]));
     expect(parseSkillArgs(["-a", "claude", "--agent", "codex"]).agents).toEqual(
       ["claude", "codex"],
     );
@@ -625,22 +626,21 @@ describe("skill install (Part B – embedded files and edit protection)", () => 
       );
     });
 
-    it("refuses a pre-existing temp path instead of writing through it", async () => {
+    it("refuses a pre-existing temp symlink instead of writing through it", async () => {
       // The temp name derives from the pid, so it is guessable. A plain write follows a
       // symlink, which would let anyone able to pre-create it redirect the body out of
       // the skill dir. `wx` (create-exclusive) makes that a per-target failure instead.
-      // Simulated with a plain file, which exercises the same exclusive-create refusal
-      // without needing a symlink target to point at.
       const dir = join(home, ".claude", "skills", "wego");
       await mkdir(dir, { recursive: true });
       const planted = join(dir, `SKILL.md.tmp.${process.pid}`);
-      await writeFile(planted, "squatted\n");
+      const target = join(home, "notes.md");
+      await writeFile(target, "mine\n");
+      await symlink(target, planted);
 
       const { deps, err } = makeDeps({ body: FRESH });
       expect(await skill(["install", "-y"], deps)).toBe(1);
       expect(err.join("\n")).toMatch(/Failed to install to/);
-      // The squatted path is cleaned up rather than left to poison the next run, and the
-      // real body was never written through it.
+      expect(await readFile(planted, "utf8")).toBe("mine\n");
       expect(await exists(join(dir, "SKILL.md"))).toBe(false);
     });
 
@@ -1304,11 +1304,14 @@ describe("skill file sets", () => {
   it("leaves the old set and marker intact and removes temps after mid-staging failure", async () => {
     await skill(["install", "-y"], setDeps("old").deps);
     const marker = await readFile(ownerMarker(), "utf8");
-    await writeFile(join(dir(), `${paths[2]}.tmp.${process.pid}`), "blocked\n");
+    const blocked = join(dir(), `${paths[2]}.tmp.${process.pid}`);
+    await mkdir(blocked);
     const failed = setDeps("new");
     expect(await skill(["install", "-y"], failed.deps)).toBe(1);
     await expectSet("old");
     expect(await readFile(ownerMarker(), "utf8")).toBe(marker);
+    expect(existsSync(blocked)).toBe(true);
+    await rmdir(blocked);
     expect(
       (await readdir(dir(), { recursive: true })).filter((name) =>
         name.includes(".tmp."),
@@ -1361,6 +1364,80 @@ describe("skill file sets", () => {
     ).toBe(0);
     expect(await readdir(dir())).not.toContain("references");
     expect(await readFile(userSkillFile(), "utf8")).toBe("entry only\n");
+  });
+
+  async function deadPid(): Promise<number> {
+    const child = Bun.spawn([process.execPath, "-e", ""], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    await child.exited;
+    return child.pid;
+  }
+
+  for (const kind of ["own", "dead"]) {
+    it(`cleans ${kind}-pid staging leftovers before install and uninstall`, async () => {
+      await skill(["install", "-y"], setDeps("old").deps);
+      const pid = kind === "own" ? process.pid : await deadPid();
+      const temps = paths.map((path) => join(dir(), `${path}.tmp.${pid}`));
+      for (const temp of temps) await writeFile(temp, "interrupted\n");
+
+      await skill(["install", "-y"], setDeps("new").deps);
+      await expectSet("new");
+      for (const temp of temps) {
+        expect(existsSync(temp)).toBe(false);
+        await writeFile(temp, "interrupted again\n");
+      }
+      await skill(["uninstall", "-y"], setDeps("new").deps);
+      expect(existsSync(dir())).toBe(false);
+    });
+  }
+
+  it("cleans abandoned temps even when staging never wrote a file or marker", async () => {
+    await mkdir(join(dir(), "references"), { recursive: true });
+    const pid = await deadPid();
+    for (const path of paths)
+      await writeFile(join(dir(), `${path}.tmp.${pid}`), "interrupted\n");
+    await skill(["uninstall", "-y"], setDeps("new").deps);
+    expect(existsSync(dir())).toBe(false);
+  });
+
+  it("preserves live-process temps and user-added neighboring files", async () => {
+    await skill(["install", "-y"], setDeps("old").deps);
+    const pid = await deadPid();
+    const kept = [
+      "notes.md",
+      "SKILL.md.bak",
+      `notes.md.tmp.${pid}`,
+      `SKILL.md.tmp.${pid}.bak`,
+      "SKILL.md.tmp.not-a-pid",
+      `SKILL.md.tmp.${process.ppid}`,
+    ];
+    for (const path of kept) await writeFile(join(dir(), path), "mine\n");
+    await skill(["install", "-y"], setDeps("new").deps);
+    for (const path of kept)
+      expect(await readFile(join(dir(), path), "utf8")).toBe("mine\n");
+    await skill(["uninstall", "-y"], setDeps("new").deps);
+    for (const path of kept)
+      expect(await readFile(join(dir(), path), "utf8")).toBe("mine\n");
+  });
+
+  it("cleans temps belonging to stale paths recorded by the marker", async () => {
+    await skill(["install", "-y"], setDeps("old").deps);
+    const stale = "manuals/deep/retired.md";
+    await mkdir(join(dir(), "manuals/deep"), { recursive: true });
+    await writeFile(
+      ownerMarker(),
+      (await readFile(ownerMarker(), "utf8")) +
+        `file=${digest("retired\n")} ${stale}\n`,
+    );
+    await writeFile(
+      join(dir(), `${stale}.tmp.${await deadPid()}`),
+      "interrupted\n",
+    );
+    await skill(["install", "-y"], setDeps("new").deps);
+    await expectSet("new");
+    expect(existsSync(join(dir(), "manuals"))).toBe(false);
   });
 
   for (const operation of ["replace", "uninstall"]) {
