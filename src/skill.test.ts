@@ -497,13 +497,12 @@ describe("skill install (Part B – embedded files and edit protection)", () => 
       expect(await readFile(userSkillFile(), "utf8")).toBe("# hand edited\n");
     });
 
-    it("the INSTALLER rebaselines a pre-baseline install, so preserving it cannot be permanent", async () => {
+    it("foreground install rebaselines a pre-baseline install", async () => {
       // The other half of the rule above, and what keeps it from reintroducing
       // the staleness this feature exists to remove: nothing else ever writes a
       // baseline for a pre-marker install, so if the installer preserved it too,
-      // the refresh would freeze every existing machine forever. `curl | bash`
-      // passes --keep-local-edits WITHOUT refreshOnly, and that combination
-      // adopts the dir: one loud overwrite buys a correct baseline from then on.
+      // the refresh would freeze every existing machine forever. A deliberate
+      // foreground install adopts the dir and restores the baseline.
       const dir = join(home, ".claude", "skills", "wego");
       await mkdir(dir, { recursive: true });
       await writeFile(join(dir, "SKILL.md"), "# stale\n");
@@ -512,9 +511,7 @@ describe("skill install (Part B – embedded files and edit protection)", () => 
         body: FRESH,
       });
 
-      expect(await skill(["install", "-y", "--keep-local-edits"], deps)).toBe(
-        0,
-      );
+      expect(await skill(["install", "-y"], deps)).toBe(0);
       expect(await readFile(userSkillFile(), "utf8")).toBe(FRESH);
       // And the baseline now exists, so the next refresh can decide properly.
       const h = new Bun.CryptoHasher("sha256");
@@ -1171,7 +1168,7 @@ describe("skill file sets", () => {
   }
 
   for (const when of ["before", "after"]) {
-    for (let nth = 1; nth <= paths.length; nth += 1) {
+    for (let nth = 1; nth <= paths.length + 1; nth += 1) {
       it.each([
         "legacy",
         "set",
@@ -1201,7 +1198,11 @@ describe("skill file sets", () => {
         expect([body("SKILL.md", "old"), entry]).toContain(installed);
         for (const [, target] of installed.matchAll(/\]\(([^)]+)\)/g))
           expect(await exists(join(dir(), target))).toBe(true);
-        expect(await readFile(ownerMarker(), "utf8")).toBe(marker);
+        if (nth === paths.length + 1 && when === "after") {
+          expect(await readFile(ownerMarker(), "utf8")).toStartWith(
+            `${digest(entry)}\n`,
+          );
+        } else expect(await readFile(ownerMarker(), "utf8")).toBe(marker);
 
         await skill(["install", "--owned-only", "-y"], incoming());
         for (const path of paths) {
@@ -1270,8 +1271,13 @@ describe("skill file sets", () => {
     });
   }
 
-  it("preserves unrecorded references during a legacy refresh and reports replacement in the foreground", async () => {
+  it("preserves unrecorded references with a per-file marker and reports replacement in the foreground", async () => {
     await oldInstall();
+    await writeFile(
+      ownerMarker(),
+      (await readFile(ownerMarker(), "utf8")) +
+        `file=${digest(body("SKILL.md", "old"))} SKILL.md\n`,
+    );
     const reference = paths[1];
     await mkdir(join(dir(), "references"), { recursive: true });
     await writeFile(join(dir(), reference), "user reference\n");
@@ -1393,13 +1399,39 @@ describe("skill file sets", () => {
     });
   }
 
-  it("cleans abandoned temps even when staging never wrote a file or marker", async () => {
+  it("preserves unowned staging temps unless uninstall is forced", async () => {
     await mkdir(join(dir(), "references"), { recursive: true });
     const pid = await deadPid();
     for (const path of paths)
       await writeFile(join(dir(), `${path}.tmp.${pid}`), "interrupted\n");
     await skill(["uninstall", "-y"], setDeps("new").deps);
+    for (const path of paths)
+      expect(await readFile(join(dir(), `${path}.tmp.${pid}`), "utf8")).toBe(
+        "interrupted\n",
+      );
+    await skill(["uninstall", "--force", "-y"], setDeps("new").deps);
     expect(existsSync(dir())).toBe(false);
+  });
+
+  it("aborts before any rename when staging the marker fails", async () => {
+    await skill(["install", "-y"], setDeps("old").deps);
+    const marker = await readFile(ownerMarker(), "utf8");
+    const blocked = `${ownerMarker()}.tmp.${process.pid}`;
+    await mkdir(blocked);
+    let renames = 0;
+    await skill(
+      ["install", "-y"],
+      setDeps("new", {
+        rename: async (from, to) => {
+          renames += 1;
+          await rename(from, to);
+        },
+      }).deps,
+    );
+    expect(renames).toBe(0);
+    await expectSet("old");
+    expect(await readFile(ownerMarker(), "utf8")).toBe(marker);
+    await rmdir(blocked);
   });
 
   it("preserves live-process temps and user-added neighboring files", async () => {

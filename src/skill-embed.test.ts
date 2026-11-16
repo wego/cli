@@ -38,6 +38,10 @@ describe("embedded skill files", () => {
     // the actual skill, not an empty/placeholder file.
     expect(body).toContain("# Wego CLI");
     expect(body).toContain("Operating contract");
+    expect(body).toContain(
+      "Items 3, 4, 5, 9 and 10 are CLI-only and live in [references/cli.md](references/cli.md).",
+    );
+    expect(body.split("\n").length).toBeLessThan(500);
     expect(body.length).toBeGreaterThan(500);
   });
 });

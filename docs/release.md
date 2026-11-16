@@ -371,18 +371,14 @@ It writes its one-file skill and stamps a marker with the digest, `ring=`, and
 files, even though the old skill no longer links them. A rollback to that binary
 has the same local effect.
 
-**Returning to a split release refreshes the skill unattended when the references
-match the incoming files.** The new installer accepts unrecorded references with
-identical bytes, replaces `SKILL.md`, and restores the per-file marker records.
-This works when the references are unchanged between the two split versions.
-
-If an unrecorded reference differs from the incoming file, the new installer
-classifies the set as locally modified. It skips the skill under `--owned-only`
-or `--keep-local-edits`, even if the difference came from a release rather than a
-local edit. The binary update still succeeds, but the skill stays old. Review
-those differences, then deliberately run `wego skill install -y` with the new
-binary to replace the set and restore the per-file marker records. The foreground
-install reports that it replaced a locally modified copy.
+**Returning to a split release refreshes the skill unattended when `SKILL.md`
+still matches the rollback marker's digest.** With no `file=` lines, that marker
+cannot distinguish old reference bytes from local reference edits. The new
+installer treats those references as owned, replaces the set even when reference
+content changed between releases, and restores the per-file marker records.
+Back up reference edits before rolling back: they cannot be protected once the
+old binary discards their digests. A locally edited `SKILL.md` still prevents
+unattended replacement. Markers with `file=` lines retain per-file edit protection.
 
 ---
 

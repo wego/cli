@@ -12,7 +12,9 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -26,6 +28,151 @@ const s = useScenario();
 const SHIPPED = fileURLToPath(
   new URL("../skills/wego/SKILL.md", import.meta.url),
 );
+
+const digest = (body: string) =>
+  new Bun.CryptoHasher("sha256").update(body).digest("hex");
+
+describe("third-review skill regressions", () => {
+  const dir = () => join(s.home.dir, ".claude", "skills", "wego");
+  const marker = () => join(dir(), ".wego-skill-owner");
+
+  for (const flag of ["--owned-only", "--keep-local-edits"]) {
+    it(`refreshes changed references after a digest-only rollback with ${flag}`, async () => {
+      await s.run(["skill", "install", "-y"]);
+      const old = "# v1.4.1 entry\n";
+      writeFileSync(join(dir(), "SKILL.md"), old);
+      writeFileSync(marker(), digest(old));
+      writeFileSync(
+        join(dir(), "references/cli.md"),
+        "previous split release reference\n",
+      );
+      const result = await s.run(["skill", "install", flag, "-y"]);
+      expect(result.code).toBe(0);
+      expect(result.out).not.toContain("local modifications");
+      for (const file of SKILLS[0].files)
+        expect(readFileSync(join(dir(), file.path), "utf8")).toBe(
+          await file.read(),
+        );
+      expect(readFileSync(marker(), "utf8")).toContain("file=");
+    });
+  }
+
+  it("does not touch a markerless directory containing only abandoned temps", async () => {
+    mkdirSync(dir(), { recursive: true });
+    const child = Bun.spawn([process.execPath, "-e", ""], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    await child.exited;
+    const temp = join(dir(), `SKILL.md.tmp.${child.pid}`);
+    writeFileSync(temp, "mine\n");
+    const result = await s.run(["skill", "uninstall", "-y"]);
+    expect(result.code).toBe(0);
+    expect(readFileSync(temp, "utf8")).toBe("mine\n");
+    expect(existsSync(dir())).toBe(true);
+  });
+
+  for (const operation of ["install", "uninstall"]) {
+    it(`names the differing reference rather than the identical entry on ${operation}`, async () => {
+      mkdirSync(join(dir(), "references"), { recursive: true });
+      writeFileSync(join(dir(), "SKILL.md"), await SKILLS[0].files[0].read());
+      const reference = join(dir(), "references/cli.md");
+      writeFileSync(reference, "mine\n");
+      const result = await s.run(["skill", operation, "-y"]);
+      expect(result.code).toBe(1);
+      expect(result.err).toContain(`${reference} exists`);
+      expect(result.err).not.toContain(`${join(dir(), "SKILL.md")} exists`);
+      expect(readFileSync(reference, "utf8")).toBe("mine\n");
+    });
+  }
+
+  for (const mode of ["unreadable", "truncated"]) {
+    for (const flag of ["--owned-only", "--keep-local-edits"]) {
+      it(`names a ${mode} marker on ${flag} and leaves differing files alone`, async () => {
+        if (mode === "unreadable" && process.getuid?.() === 0) return;
+        await s.run(["skill", "install", "-y"]);
+        const reference = join(dir(), "references/cli.md");
+        writeFileSync(reference, "older reference\n");
+        if (mode === "unreadable") chmodSync(marker(), 0o000);
+        else writeFileSync(marker(), "1234\n");
+        const result = await s.run(["skill", "install", flag, "-y"]);
+        expect(result.code).toBe(0);
+        expect(result.out).toContain(`${marker()} could not be read`);
+        expect(result.out).toContain("skill install --force");
+        expect(result.out).not.toContain("predates the content baseline");
+        expect(readFileSync(reference, "utf8")).toBe("older reference\n");
+        chmodSync(marker(), 0o600);
+      });
+    }
+    it(`restamps a ${mode} marker when all files already match`, async () => {
+      if (mode === "unreadable" && process.getuid?.() === 0) return;
+      await s.run(["skill", "install", "-y"]);
+      if (mode === "unreadable") chmodSync(marker(), 0o000);
+      else writeFileSync(marker(), "1234\n");
+      const result = await s.run(["skill", "install", "--owned-only", "-y"]);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain("up to date");
+      const installed = readFileSync(marker(), "utf8");
+      expect(installed).toStartWith(
+        `${digest(await SKILLS[0].files[0].read())}\n`,
+      );
+      for (const file of SKILLS[0].files)
+        expect(installed).toContain(
+          `file=${digest(await file.read())} ${file.path}`,
+        );
+    });
+  }
+
+  it("repairs a missing file when the marker is invalid but all present files match", async () => {
+    await s.run(["skill", "install", "-y"]);
+    rmSync(join(dir(), "SKILL.md"));
+    writeFileSync(marker(), "1234\n");
+    const result = await s.run(["skill", "install", "--owned-only", "-y"]);
+    expect(result.code).toBe(0);
+    for (const file of SKILLS[0].files)
+      expect(readFileSync(join(dir(), file.path), "utf8")).toBe(
+        await file.read(),
+      );
+    expect(readFileSync(marker(), "utf8")).toStartWith(
+      `${digest(await SKILLS[0].files[0].read())}\n`,
+    );
+  });
+
+  it("replaces a read-only marker atomically along with the skill files", async () => {
+    if (process.getuid?.() === 0) return;
+    await s.run(["skill", "install", "-y"]);
+    const old = "# old entry\n";
+    writeFileSync(join(dir(), "SKILL.md"), old);
+    writeFileSync(marker(), digest(old));
+    chmodSync(marker(), 0o400);
+    const result = await s.run(["skill", "install", "-y"]);
+    expect(result.code).toBe(0);
+    for (const file of SKILLS[0].files)
+      expect(readFileSync(join(dir(), file.path), "utf8")).toBe(
+        await file.read(),
+      );
+    expect(readFileSync(marker(), "utf8")).toContain("file=");
+  });
+
+  for (const operation of ["install", "uninstall"]) {
+    it(`reclaims old live-pid and invalid-pid temps on ${operation}, keeping fresh live-pid temps`, async () => {
+      await s.run(["skill", "install", "-y"]);
+      const stale = [
+        join(dir(), `SKILL.md.tmp.${process.pid}`),
+        join(dir(), ".wego-skill-owner.tmp.999999999999999999999999"),
+      ];
+      const fresh = join(dir(), `references/cli.md.tmp.${process.pid}`);
+      for (const path of [...stale, fresh])
+        writeFileSync(path, "interrupted\n");
+      const before = new Date(Date.now() - 11 * 60 * 1000);
+      utimesSync(stale[0], before, before);
+      const result = await s.run(["skill", operation, "-y"]);
+      expect(result.code).toBe(0);
+      for (const path of stale) expect(existsSync(path)).toBe(false);
+      expect(readFileSync(fresh, "utf8")).toBe("interrupted\n");
+    });
+  }
+});
 
 describe("skill", () => {
   it("lists the embedded skill as JSON", async () => {

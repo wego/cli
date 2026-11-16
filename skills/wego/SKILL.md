@@ -15,7 +15,7 @@ Use the CLI. Use the Wego MCP tools only in the cases Operating contract item 2 
 
 ## Operating contract
 
-Open [references/mcp.md](references/mcp.md) only when item 2 sends you to the MCP tools.
+Items 3, 4, 5, 9 and 10 are CLI-only and live in [references/cli.md](references/cli.md). Open [references/mcp.md](references/mcp.md) only when item 2 sends you to the MCP tools.
 
 **1.** Every command here is `wego <sub>`, the Wego CLI documented at https://agents.wego.com/cli. Keep to the path item 2 picks for the whole workflow. Both the CLI and the MCP tools read live inventory and prices. On either path, quote what it returns rather than estimating, and never invent a figure it did not give you.
 

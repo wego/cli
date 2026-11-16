@@ -7,7 +7,7 @@ import {
   rename,
   rm,
   rmdir,
-  writeFile,
+  stat,
 } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { isHelpArg } from "./commands";
@@ -468,13 +468,11 @@ function markerBaseline(raw: string | null): string | null {
   return hex !== undefined && /^[0-9a-f]{64}$/.test(hex) ? hex : null;
 }
 
-/** Record the embedded files' digests and retire the legacy ownership marker. */
-async function stampOwnerMarker(
-  dir: string,
+async function ownerMarkerBody(
   files: Record<string, string>,
   ring?: string,
   source?: string,
-): Promise<void> {
+): Promise<string> {
   const digest = await sha256Hex(files["SKILL.md"]);
   const lines = [digest];
   if (ring) lines.push(`${MARKER_RING_PREFIX}${ring}`);
@@ -482,7 +480,22 @@ async function stampOwnerMarker(
   for (const [path, content] of Object.entries(files)) {
     lines.push(`file=${await sha256Hex(content)} ${path}`);
   }
-  await writeFile(join(dir, MARKER_NAME), `${lines.join("\n")}\n`);
+  return `${lines.join("\n")}\n`;
+}
+
+/** Restamp without exposing a partially written ownership marker. */
+async function stampOwnerMarker(
+  dir: string,
+  files: Record<string, string>,
+  ring?: string,
+  source?: string,
+  renameFile: typeof rename = rename,
+): Promise<void> {
+  await writeFilesAtomic(
+    dir,
+    { [MARKER_NAME]: await ownerMarkerBody(files, ring, source) },
+    renameFile,
+  );
   await rm(join(dir, LEGACY_MARKER_NAME), { force: true });
 }
 
@@ -552,9 +565,16 @@ async function localEditState(
   const baseline = markerBaseline(marker);
   if (baseline === null && Object.values(current).some((body) => body !== null))
     return { state: "unknown", paths: [] };
+  const root = current["SKILL.md"];
+  const legacy =
+    !marker?.split("\n").some((line) => line.startsWith("file=")) &&
+    baseline !== null &&
+    root != null &&
+    (await sha256Hex(root)) === baseline;
   const paths: string[] = [];
   for (const [path, body] of Object.entries(current)) {
     if (body === null || body === files[path]) continue;
+    if (legacy && path !== "SKILL.md") continue;
     const digest = path === "SKILL.md" ? baseline : recorded[path];
     if (!digest || (await sha256Hex(body)) !== digest) paths.push(path);
   }
@@ -566,9 +586,12 @@ async function writeFilesAtomic(
   dir: string,
   files: Record<string, string>,
   renameFile: typeof rename,
+  beforeMarker?: () => Promise<void>,
 ): Promise<void> {
+  const order = (path: string) =>
+    path === MARKER_NAME ? 2 : path === "SKILL.md" ? 1 : 0;
   const staged = Object.entries(files)
-    .sort(([a], [b]) => Number(a === "SKILL.md") - Number(b === "SKILL.md"))
+    .sort(([a], [b]) => order(a) - order(b))
     .map(([path, content]) => ({
       file: join(dir, path),
       tmp: `${join(dir, path)}.tmp.${process.pid}`,
@@ -586,7 +609,10 @@ async function writeFilesAtomic(
         await handle.close();
       }
     }
-    for (const { file, tmp } of staged) await renameFile(tmp, file);
+    for (const { file, tmp } of staged) {
+      if (file === join(dir, MARKER_NAME)) await beforeMarker?.();
+      await renameFile(tmp, file);
+    }
   } catch (err) {
     await Promise.all(
       created.map((tmp) => rm(tmp, { force: true }).catch(() => {})),
@@ -598,8 +624,7 @@ async function writeFilesAtomic(
 async function removeAbandonedTemps(
   dir: string,
   paths: Iterable<string>,
-): Promise<boolean> {
-  let removed = false;
+): Promise<void> {
   for (const path of paths) {
     const parent = dirname(join(dir, path));
     const entries = await readdir(parent, { withFileTypes: true }).catch(
@@ -614,7 +639,15 @@ async function removeAbandonedTemps(
       const suffix = entry.name.slice(prefix.length);
       if (!/^\d+$/.test(suffix)) continue;
       const pid = Number(suffix);
-      if (pid !== process.pid) {
+      const file = join(parent, entry.name);
+      const age = Date.now() - (await stat(file)).mtimeMs;
+      if (
+        age <= 10 * 60 * 1000 &&
+        pid !== process.pid &&
+        Number.isSafeInteger(pid) &&
+        pid > 0 &&
+        pid <= 2147483647
+      ) {
         try {
           process.kill(pid, 0);
           continue;
@@ -622,11 +655,9 @@ async function removeAbandonedTemps(
           if ((err as NodeJS.ErrnoException).code !== "ESRCH") continue;
         }
       }
-      await rm(join(parent, entry.name), { force: true });
-      removed = true;
+      await rm(file, { force: true });
     }
   }
-  return removed;
 }
 
 async function removeEmptyParents(
@@ -757,7 +788,11 @@ async function installOne(
     // this for every detected dir, so hashing ahead of the early return would pay
     // for a digest that path discards.
     const digest = await sha256Hex(files["SKILL.md"]);
-    const marker = await readIfExists(join(dir, MARKER_NAME)).catch(() => null);
+    let markerReadFailed = false;
+    const marker = await readIfExists(join(dir, MARKER_NAME)).catch(() => {
+      markerReadFailed = true;
+      return null;
+    });
     const recorded = markerFiles(marker);
     const paths = new Set([...Object.keys(files), ...Object.keys(recorded)]);
     const current = Object.fromEntries(
@@ -768,23 +803,24 @@ async function installOne(
       ),
     );
     const existingPath = [...paths].find((path) => current[path] !== null);
+    const differingPath = [...paths].find(
+      (path) => current[path] !== null && current[path] !== files[path],
+    );
     const isUpdate = existingPath !== undefined;
     if (
       isUpdate &&
       !hasOwnerMarker(dir) &&
       !opts.force &&
-      Object.entries(current).some(
-        ([path, body]) => body !== null && body !== files[path],
-      )
+      differingPath !== undefined
     ) {
       return {
         dir,
         ok: false,
         error: true,
-        message: `${join(dir, existingPath)} exists and was not installed by wego. Re-run with --force to overwrite it.`,
+        message: `${join(dir, differingPath)} exists and was not installed by wego. Re-run with --force to overwrite it.`,
       };
     }
-    await removeAbandonedTemps(dir, paths);
+    await removeAbandonedTemps(dir, [...paths, ...MARKER_NAMES]);
     if (
       Object.entries(files).every(([path, body]) => body === current[path]) &&
       Object.keys(recorded).every((path) => path in files)
@@ -802,26 +838,52 @@ async function installOne(
       // file whose content we already own. `uninstall` stays conservative: it
       // deletes only registered files + the markers and leaves other files,
       // so adoption never widens what a later removal touches.
-      await stampOwnerMarker(dir, files, deps.ring, source);
+      await stampOwnerMarker(
+        dir,
+        files,
+        deps.ring,
+        source,
+        deps.rename ?? rename,
+      );
       return { dir, ok: true, message: `${file} already up to date.` };
     }
-    // With a file already there, an unattended caller may have to leave it alone
-    // rather than write: two reasons, all in `unattendedSkipReason`.
-    // Gated on an existing set because every one of them is about not losing
-    // content that is already on disk; creating from nothing is never a loss.
-    const edit = await localEditState(current, files, recorded, marker);
+    const markerUnreadable =
+      markerReadFailed || (marker !== null && markerBaseline(marker) === null);
+    if (
+      !opts.force &&
+      (deps.refreshOnly || opts.keepLocalEdits) &&
+      markerUnreadable &&
+      differingPath !== undefined
+    ) {
+      return {
+        dir,
+        ok: true,
+        message: `${join(dir, MARKER_NAME)} could not be read – left alone. Run \`${programName()} skill install --force\` to replace the skill with the copy in this binary.`,
+      };
+    }
+    const edit: LocalEdits =
+      markerUnreadable && differingPath === undefined
+        ? { state: "unmodified", paths: [] }
+        : await localEditState(current, files, recorded, marker);
     if (isUpdate) {
       const skip = unattendedSkipReason(deps, opts, file, edit);
       if (skip !== null) return { dir, ok: true, message: skip };
     }
     await mkdir(dir, { recursive: true });
-    await writeFilesAtomic(dir, files, deps.rename ?? rename);
+    await writeFilesAtomic(
+      dir,
+      {
+        ...files,
+        [MARKER_NAME]: await ownerMarkerBody(files, deps.ring, source),
+      },
+      deps.rename ?? rename,
+      () => removeStaleFiles(dir, recorded, files),
+    );
     // The marker now records WHAT we wrote, WHICH RING wrote it, and WHERE the
     // body came from — not merely that we wrote. Still presence-only for ownership
     // (`hasOwnerMarker` never reads it); the ring is read by the background refresh
     // alone, to tell a skill it maintains from one another channel's install owns.
-    await removeStaleFiles(dir, recorded, files);
-    await stampOwnerMarker(dir, files, deps.ring, source);
+    await rm(join(dir, LEGACY_MARKER_NAME), { force: true });
     return {
       dir,
       ok: true,
@@ -987,23 +1049,33 @@ async function uninstallOne(
       ...entry.files.map(({ path }) => path),
       ...Object.keys(recorded),
     ]);
-    const removedTemps = await removeAbandonedTemps(dir, paths);
     const existingPath = [...paths].find((path) => existsSync(join(dir, path)));
-    if (!hasOwnerMarker(dir) && existingPath === undefined) {
-      if (removedTemps) {
-        await removeEmptyParents(dir, paths);
-        if ((await readdir(dir)).length === 0) await rmdir(dir);
-      }
+    if (
+      !hasOwnerMarker(dir) &&
+      existingPath === undefined &&
+      (!opts.force || !existsSync(dir))
+    ) {
       return { dir, ok: true, message: `No wego skill installed at ${file}.` };
     }
     if (!hasOwnerMarker(dir) && !opts.force) {
+      const differingPath = (
+        await Promise.all(
+          entry.files.map(async ({ path, read }) => {
+            const current = await readIfExists(join(dir, path));
+            return current !== null && current !== (await read())
+              ? path
+              : undefined;
+          }),
+        )
+      ).find((path) => path !== undefined);
       return {
         dir,
         ok: false,
         error: true,
-        message: `${join(dir, existingPath ?? "SKILL.md")} exists but was not installed by wego. Re-run with --force to remove it.`,
+        message: `${join(dir, differingPath ?? existingPath ?? "SKILL.md")} exists but was not installed by wego. Re-run with --force to remove it.`,
       };
     }
+    await removeAbandonedTemps(dir, [...paths, ...MARKER_NAMES]);
     // Remove only registered or recorded files and both markers, then drop
     // the dir *only if it is now empty* — a `--force`-adopted dir's other files
     // are the user's and must be left intact.

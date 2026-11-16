@@ -29,7 +29,7 @@ const rewrites: { old: string; new: string; file: string }[] = [
   {
     old: "- **Without the CLI (Wego MCP tools)** – what still applies when Operating contract item 2 sends you to the MCP tools, and what to do when no tool covers the task.",
     "new":
-      "Open [references/mcp.md](references/mcp.md) only when item 2 sends you to the MCP tools.",
+      "Items 3, 4, 5, 9 and 10 are CLI-only and live in [references/cli.md](references/cli.md). Open [references/mcp.md](references/mcp.md) only when item 2 sends you to the MCP tools.",
     file: "skills/wego/SKILL.md",
   },
   {
