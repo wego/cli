@@ -371,15 +371,18 @@ It writes its one-file skill and stamps a marker with the digest, `ring=`, and
 files, even though the old skill no longer links them. A rollback to that binary
 has the same local effect.
 
-**Returning to a split release does not refresh this skill unattended.** Its
-`SKILL.md` differs from the new entry file, so the byte-identical shortcut does
-not apply. The new installer finds reference files with no marker records,
-classifies the set as locally modified, and skips it under `--owned-only` or
-`--keep-local-edits`. The binary update still succeeds, but the skill stays old.
-After returning to a split release, review any local edits, then deliberately run
-`wego skill install -y` with that binary. The foreground install replaces the set
-and restores the per-file marker records. It reports that it replaced a locally
-modified copy.
+**Returning to a split release refreshes the skill unattended when the references
+match the incoming files.** The new installer accepts unrecorded references with
+identical bytes, replaces `SKILL.md`, and restores the per-file marker records.
+This works when the references are unchanged between the two split versions.
+
+If an unrecorded reference differs from the incoming file, the new installer
+classifies the set as locally modified. It skips the skill under `--owned-only`
+or `--keep-local-edits`, even if the difference came from a release rather than a
+local edit. The binary update still succeeds, but the skill stays old. Review
+those differences, then deliberately run `wego skill install -y` with the new
+binary to replace the set and restore the per-file marker records. The foreground
+install reports that it replaced a locally modified copy.
 
 ---
 

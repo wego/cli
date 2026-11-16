@@ -671,7 +671,8 @@ async function localEditState(
     if (
       path !== "SKILL.md" &&
       !(path in recorded) &&
-      existsSync(join(dir, path))
+      existsSync(join(dir, path)) &&
+      (await readIfExists(join(dir, path))) !== files[path]
     )
       return "modified";
   }

@@ -1415,6 +1415,23 @@ describe("skill file sets", () => {
     });
   }
 
+  it("restores the full set unattended after an old binary rewrites the entry and marker", async () => {
+    expect(await skill(["install", "-y"], setDeps("new").deps)).toBe(0);
+    await oldInstall();
+    const refresh = setDeps("new", { ring: "stable", refreshOnly: true });
+
+    expect(await skill(["install", "-y"], refresh.deps)).toBe(0);
+    await expectSet("new");
+    const marker = await readFile(ownerMarker(), "utf8");
+    expect(marker.split("\n")[0]).toBe(digest(body("SKILL.md", "new")));
+    expect(markerRing(marker)).toBe("stable");
+    expect(markerSource(marker)).toBe("embedded");
+    expect(
+      marker.split("\n").filter((line) => line.startsWith("file=")),
+    ).toEqual(paths.map((path) => `file=${digest(body(path, "new"))} ${path}`));
+    expect(refresh.out.join("\n")).not.toContain("local modifications");
+  });
+
   for (const path of paths) {
     it(`preserves an edit to ${path} unattended and reports its foreground replacement`, async () => {
       await skill(["install", "-y"], setDeps("old").deps);
