@@ -21,6 +21,89 @@ async function placesAnswering(...answers: Answer[]) {
 }
 
 describe("error classes", () => {
+  it.each([
+    { method: "POST", status: 403 },
+    { method: "POST", status: 401 },
+    { method: "GET", status: 401 },
+    { method: "GET", status: 404 },
+    { method: "GET", status: 429 },
+    { method: "GET", status: 503 },
+  ])("reports a $method $status edge challenge without login, expiry or retry advice", async ({
+    method,
+    status,
+  }) => {
+    signIn(s.home);
+    const requests: { method: string; path: string; token: string | null }[] =
+      [];
+    const edge = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req) {
+        requests.push({
+          method: req.method,
+          path: new URL(req.url).pathname,
+          token: req.headers.get("authorization"),
+        });
+        return new Response("<html><title>Just a moment...</title></html>", {
+          status,
+          headers: {
+            "content-type": "text/html",
+            "cf-mitigated": "challenge",
+            "cf-ray": "a4d0830ba9d11e2d-SIN",
+            "retry-after": "0",
+          },
+        });
+      },
+    });
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await s.run(
+          method === "POST"
+            ? [
+                "hotels",
+                "search",
+                "AUH",
+                "2027-01-17",
+                "2027-01-22",
+                "--adults",
+                "2",
+                "--children",
+                "1",
+                "--children-ages",
+                "10",
+                "--rooms",
+                "1",
+              ]
+            : ["places", "London"],
+          {
+            env: {
+              WEGO_API_URL: String(edge.url),
+              WEGO_AUTH_TOKEN_URL: new URL("/oauth/token", edge.url).href,
+            },
+          },
+        );
+        expect(result.code).toBe(6);
+        expect(result.out).toBe("");
+        expect(result.err).toContain("Cloudflare challenged");
+        expect(result.err).toContain("cf_ray=a4d0830ba9d11e2d-SIN");
+        expect(result.err).toContain("feedback");
+        expect(result.err).not.toContain("wego login");
+        expect(result.err).not.toContain("trace_id=");
+        expect(result.err).not.toContain("<html>");
+        expect(result.err).not.toContain("expired");
+      }
+      expect(requests).toEqual(
+        Array.from({ length: 2 }, () => ({
+          method,
+          path: method === "POST" ? "/v1/hotels/searches" : "/v1/places",
+          token: "Bearer access-1",
+        })),
+      );
+    } finally {
+      edge.stop(true);
+    }
+  });
+
   it("a persistent 401 with no refresh token exits 3 and names login", async () => {
     signIn(s.home, { accessToken: "access-revoked" });
     s.fake({ accept: [] });
@@ -49,12 +132,16 @@ describe("error classes", () => {
 
   it("a 400 exits 6 and prints the API's detail and trace id", async () => {
     const { result } = await placesAnswering(
-      problem(400, "validation_failed", "query is too short"),
+      problem(400, "validation_failed", "query is too short", {
+        "cf-ray": "api-ray-SIN",
+      }),
     );
     expect(result.code).toBe(6);
     expect(result.out).toBe("");
     expect(result.err).toContain("query is too short");
     expect(result.err).toContain("trace-400");
+    expect(result.err).toContain("cf_ray=api-ray-SIN");
+    expect(result.err).not.toContain("Cloudflare challenged");
   });
 
   it("a 429 is retried after Retry-After, then succeeds", async () => {
