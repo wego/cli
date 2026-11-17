@@ -43,9 +43,9 @@ npx --yes skills add https://github.com/wego/skills --skill wego
 ```
 
 Install the CLI by following
-[agents.wego.com/cli](https://agents.wego.com/cli#install). The skill never installs
-it for you. When the command is missing it links those instructions and waits,
-and uses the Wego MCP tools only if you say you cannot install the CLI there.
+[agents.wego.com/cli](https://agents.wego.com/cli#install). When the command is
+missing, the skill asks if it may install the CLI and installs it on a yes. It
+uses the Wego MCP tools if you refuse or the install fails.
 
 The CLI's source is at [github.com/wego/cli](https://github.com/wego/cli).
 
@@ -113,8 +113,8 @@ forward exactly as returned.
 - **Nothing is ever booked.** The skill searches, compares, and generates
   checkout links. No booking, payment, cancellation or change happens through it,
   and it never reports one that did.
-- The skill never installs the CLI. It asks the user before it updates the CLI,
-  and before it writes pricing preferences to their machine.
+- The skill asks the user before it installs or updates the CLI, and before it
+  writes pricing preferences to their machine.
 - Login completes in the user's own browser. The skill never asks for an access
   token, and never reads or prints the credentials file.
 - Every price comes from the response that carried it, and each priced read names

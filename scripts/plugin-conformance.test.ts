@@ -219,7 +219,7 @@ describe("no published file pipes a download into a shell", () => {
   // `curl -fsSL https://api.wego.com/install | bash`, in the published SKILL.md
   // (foundations#111). The scanners read these files as text and re-scan on every
   // promote, so the line coming back costs the grade again. The skill links the
-  // install instructions for the user to follow instead.
+  // install instructions for the agent to open instead.
   const plan = pluginPublishPlan(SKILLS);
 
   it.each(plan.map((p) => [p.to, p.from]))("%s", (_to, from) => {

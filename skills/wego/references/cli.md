@@ -70,7 +70,7 @@ what they print. An install with no record – installed before the record
 existed, or with the record deleted – refuses both forms with exit code 6 and
 prints a reinstall command. If the user **directly asked** to
 update or check, that exit 6 means the requested action failed: state that
-result, give the user that reinstall command to run themselves (as with a
+result, offer to run that reinstall command and run it on a yes (as with a
 missing CLI), and do not report the update as done. Only when the check was an optional preflight for another task is it safe
 to note the refusal and carry on.
 
@@ -596,7 +596,7 @@ final answer rather than only in the transcript behind it.
 
 | Situation | Action |
 |---|---|
-| CLI missing, or you cannot run commands | [Pick the path](../SKILL.md#pick-the-path). If you cannot run commands, use the Wego MCP tools, or tell the user how to connect the Wego MCP server. If `wego` is missing, link the install instructions and wait for the user to confirm; use the MCP tools only if they say they cannot install it in this environment. See [mcp.md](mcp.md) when no tool covers the task. |
+| CLI missing, or you cannot run commands | [Pick the path](../SKILL.md#pick-the-path): if `wego` is missing, ask, install on a yes, then continue. See [mcp.md](mcp.md) when no tool covers the task. |
 | CLI outdated, or a stderr line says a new version is available | The Update the CLI section above covers both: `update --check` is read-only, the self-replacing `update -y` needs the user's approval, and a from-source run prints a reinstall hint instead. The stderr notice is not an error and not a cue to stop, so finish the request first, then offer the update once. |
 | This skill itself looks stale, or the user wants it in another agent | `wego skill list` shows what is installable (offline, no auth) and `wego skill install` writes the skill files embedded in the running binary. Writing files needs the user's approval first, like an update. To set the skill up for another coding agent, that same subcommand takes `--agent <name>` (repeatable, `'*'` for all) and `-g` for a user-wide install; omitted, it targets the agents already present. |
 | Not authenticated | Run `wego login`, wait for the browser flow, verify with `wego whoami`, then resume. If stderr says no browser is on this machine, or that this terminal cannot read a paste, see Login environments below – that login needs the user's own terminal. |
