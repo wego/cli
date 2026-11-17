@@ -134,6 +134,8 @@ interface Step {
   uses?: string;
   run?: string;
   env?: Record<string, unknown>;
+  if?: string;
+  with?: Record<string, unknown>;
 }
 interface Job {
   permissions?: Record<string, string>;
@@ -627,5 +629,80 @@ describe("every `bun install` goes through the composite action", () => {
   it("keeps HUSKY=0 on the composite action's install step", () => {
     const action = readFileSync(".github/actions/setup-bun/action.yml", "utf8");
     expect(action).toContain("HUSKY: 0");
+  });
+});
+
+/**
+ * A CLI RELEASE BECOMES PUBLIC ONLY AFTER `cli/next` SERVES IT, AND ONLY THE BADGE
+ * LANE MAKES ONE "LATEST".
+ *
+ * release-please's native part is two config keys: `draft`, and
+ * `force-tag-creation` so the draft still gets the tag that starts
+ * `release-cli.yml`. It has no option to publish later or to set `make_latest`,
+ * so `announce` publishes and `release-badge.yml` awards the badge.
+ *
+ * Every regression here still releases green:
+ *   - `draft` dropped ("why are releases drafts?") -> each tag is "Latest" at
+ *     birth and reads Pre-release before `cli/next` moves. Nothing fails.
+ *   - `force-tag-creation` dropped -> a tagless draft, `release-cli.yml` never
+ *     starts. The tag check in `release-please.yml` is the only thing that fails.
+ *   - `announce` back on getReleaseByTag -> it cannot see the draft, creates a
+ *     second release, and GitHub makes that one "Latest". Nothing fails.
+ *   - a lane other than the badge publishing with `make_latest: "true"`.
+ */
+describe("a CLI release becomes public only after cli/next moves", () => {
+  const scriptsOf = (steps: Step[] = []): string =>
+    steps.map((s) => String(s.with?.script ?? "")).join("\n");
+  const updateCalls = (script: string): string[] =>
+    script.match(/updateRelease\(\{[\s\S]*?\}\)/g) ?? [];
+
+  it("release-please creates a draft and still pushes the tag", () => {
+    const config = JSON.parse(
+      readFileSync("release-please-config.json", "utf8"),
+    );
+    expect(config.packages["."].draft).toBe(true);
+    expect(config.packages["."]["force-tag-creation"]).toBe(true);
+  });
+
+  it("announce finds the draft and publishes it as a pre-release, never Latest", () => {
+    const script = scriptsOf(lane("release-cli.yml").jobs.announce?.steps);
+    expect(script).not.toContain("repos.getReleaseByTag(");
+    expect(script).toContain("repos.listReleases");
+    const publish = updateCalls(script);
+    expect(publish.length).toBeGreaterThan(0);
+    for (const call of publish) {
+      expect(call).toContain("draft: false");
+      expect(call).toContain("prerelease: true");
+      expect(call).toContain('make_latest: "false"');
+    }
+  });
+
+  it('release-badge.yml is the only lane that sets make_latest: "true"', () => {
+    const awarding = readdirSync(".github/workflows")
+      .filter((f) => f.endsWith(".yml"))
+      .filter((f) =>
+        readFileSync(`.github/workflows/${f}`, "utf8").includes(
+          'make_latest: "true"',
+        ),
+      );
+    expect(awarding).toEqual(["release-badge.yml"]);
+  });
+
+  it("the badge publishes a draft before it makes it Latest", () => {
+    const script = scriptsOf(lane("release-badge.yml").jobs.reconcile?.steps);
+    const awards = updateCalls(script).filter((c) =>
+      c.includes('make_latest: "true"'),
+    );
+    expect(awards.length).toBeGreaterThan(0);
+    for (const call of awards) expect(call).toContain("draft: false");
+  });
+
+  it("release-please.yml fails a created release whose tag does not exist", () => {
+    const steps =
+      lane("release-please.yml").jobs["release-please"]?.steps ?? [];
+    const check = steps.find((s) =>
+      String(s.with?.script ?? "").includes("git.getRef"),
+    );
+    expect(check?.if).toContain("release_created");
   });
 });

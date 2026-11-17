@@ -2,10 +2,12 @@ name: Release badge
 
 # Keep the GitHub "Latest" badge on the release that `cli/stable` serves.
 #
-# GitHub gives "Latest" to every new full release at creation. release-please
-# creates the release minutes before publication and days before a promote, so the
-# badge can name a build that `cli/stable` does not serve. On 2026-09-16 it named
-# v1.3.0 for 90 minutes while `cli/stable` served v1.2.7.
+# GitHub gives "Latest" to every new full release at creation. release-please used
+# to create the release minutes before publication and days before a promote, so
+# the badge could name a build that `cli/stable` did not serve. On 2026-09-16 it
+# named v1.3.0 for 90 minutes while `cli/stable` served v1.2.7. release-please now
+# creates a draft, and `announce` in `release-cli.yml` publishes it as a
+# pre-release with `make_latest: "false"`, so no lane awards the badge but this one.
 #
 # Rule:
 #   the release `cli/stable` serves      full release, "Latest"
@@ -26,7 +28,9 @@ name: Release badge
 # nothing from the triggering run: no checkout, no artifact download, no
 # `github.event.*`. Keep it that way.
 on:
-  # A new release is created with "Latest".
+  # A release published by hand, which GitHub makes "Latest". `announce` publishes
+  # with the workflow token, which starts no workflow run; the `Release (cli)`
+  # completion below covers that path.
   release:
     types: [published]
 
@@ -126,10 +130,13 @@ jobs:
                 if (e.status !== 404) throw e;
               }
 
-              if (target.prerelease || latestTag !== target.tag_name) {
+              // `draft: false`: a draft cannot be "Latest". A tag whose run failed in
+              // `announce` stays a draft, and a rollback can still name it.
+              // `cli/stable` serves it, so publishing it here is correct.
+              if (target.draft || target.prerelease || latestTag !== target.tag_name) {
                 await github.rest.repos.updateRelease({
                   owner, repo, release_id: target.id,
-                  prerelease: false, make_latest: "true",
+                  draft: false, prerelease: false, make_latest: "true",
                 });
                 core.info(`${target.tag_name}: now "Latest" — cli/stable serves ${version}.`);
                 writes++;
