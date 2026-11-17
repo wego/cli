@@ -991,7 +991,7 @@ function infoAirportsNear(
  * question a target swap raises.
  *
  * **stdout is the JSON object on every path**, because `info *` is one of the
- * groups `SKILL.md`'s operating contract promises an agent it may `JSON.parse`
+ * groups the skill's CLI contract promises an agent it may `JSON.parse`
  * unconditionally — a table there would throw for the caller that trusted us.
  * The aligned text is a convenience, so it goes to **stderr**, which is where
  * every other human line in this CLI already goes. `--json` therefore means "the

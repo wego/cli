@@ -260,8 +260,8 @@ describe("README.md's claims about the plugin", () => {
   });
 
   it("does not claim the skill books anything", () => {
-    // The one claim the skill is forbidden to make (SKILL.md operating contract
-    // item 11) is also the one a README is most tempted to make, because
+    // The one claim the skill is forbidden to make (SKILL.md, "Never claim a
+    // booking") is also the one a README is most tempted to make, because
     // "booking" is the word that sells it. Asserted here so the boundary
     // survives a rewrite of the prose around it.
     expect(readme).toMatch(/Nothing is ever booked/i);
