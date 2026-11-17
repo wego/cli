@@ -43,8 +43,8 @@ Ask only for missing user-facing inputs. Do not ask the user for `searchId`, `tr
 
 ### Never claim a booking
 
-Never claim that a booking, reservation, payment, cancellation, or modification occurred. Wego searches and generates checkout links only, on either path.
+Never claim that a booking, reservation, payment, cancellation, or modification occurred. The CLI and the MCP tools search and generate checkout links only; the user completes any booking on the checkout page.
 
 ### Plan inside the search limits
 
-Creating a search and reading a hotel's rooms are metered. This API is a research preview, so those limits are deliberate and fairly tight (the current figures are at https://agents.wego.com/api/rate-limits/) – say so whenever one is reached, including one you waited out and worked around. Plan inside that budget rather than discovering it: never open one search per airport, per date, or per hotel. When a request implies many, run a small first batch, present it, and ask the user which to expand – that is also a better conversation than a wall of options. Reading more from an existing search is far cheaper than a new search, so refine an existing search instead of creating another whenever you can. Reading a hotel's rooms always costs a search of its own, one per hotel, so open rooms for the hotels the user actually picked rather than sweeping a results page.
+Creating a search and reading a hotel's rooms are metered. This API is a research preview, so those limits are deliberate and fairly tight (the current figures are at https://agents.wego.com/api/rate-limits/) – say so whenever one is reached, including one you waited out and worked around. Plan inside that budget rather than discovering it: never open one search per airport, per date, or per hotel. When a request implies many, run a small first batch, present it, and ask the user which to expand – that is also a better conversation than a wall of options.
