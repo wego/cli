@@ -10,10 +10,10 @@ Search flights and hotels on Wego and take the user from a request to a checkout
 
 ## Pick the path
 
-There are two paths: the `wego` CLI and the Wego MCP tools (`flights_search`, `hotels_search`, `places_find_location` and the rest; your client may add a prefix to the names). The CLI is the default, because it does more than the MCP tools. Use the MCP tools only in one of these three cases, never by preference:
+There are two paths: the `wego` CLI and the Wego MCP tools. The CLI is the default, because it does more than the MCP tools. Use the MCP tools only in one of these three cases, never by preference:
 
 - **You cannot run a command:** use the MCP tools. If they are not connected, tell the user to connect the Wego MCP server at https://mcp.wego.com/public-app/v1/mcp (no sign-in needed) in their agent's connector or MCP settings, then ask again.
-- **You can run a command and `wego` is missing:** the user installs the CLI, not you. Tell them the `wego` CLI is not installed, link the install instructions at https://agents.wego.com/cli#install, and wait for them to confirm it is installed before you continue. Never download or run an installer yourself. If the user says they cannot install it in this environment, use the MCP tools.
+- **You can run a command and `wego` is missing:** the user installs the CLI, not you. Tell them the `wego` CLI is not installed, link the install instructions at https://agents.wego.com/cli#install, and wait for them to confirm it is installed before you continue. If the user says they cannot install it in this environment, use the MCP tools.
 - **`wego` is installed but cannot reach the network:** a command exits `7` and its stderr reads `Cannot reach the Wego API at <url>`. Make the one bounded retry in [Recover safely](references/cli.md#recover-safely); if it fails the same way, use the MCP tools.
 
 In every other case `wego version` works: use the CLI. When a case sends you to the MCP tools and they are not connected, tell the user how to connect the Wego MCP server, as in the first case.
