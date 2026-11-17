@@ -36,10 +36,11 @@ describe("embedded skill files", () => {
     const body = await SKILLS[0].files[0].read();
     // Anchors from skills/wego/SKILL.md — proves the embed resolved to
     // the actual skill, not an empty/placeholder file.
-    expect(body).toContain("# Wego CLI");
-    expect(body).toContain("Operating contract");
+    expect(body).toContain("# Wego travel search");
+    expect(body).toContain("## Pick the path");
+    expect(body).toContain("## Rules on both paths");
     expect(body).toContain(
-      "Items 3, 4, 5, 9 and 10 are CLI-only and live in [references/cli.md](references/cli.md).",
+      "- CLI path: [references/cli.md](references/cli.md).",
     );
     expect(body.split("\n").length).toBeLessThan(500);
     expect(body.length).toBeGreaterThan(500);
@@ -204,7 +205,7 @@ describe("skill embed in a compiled binary", () => {
       // Nothing rewrites the body any more, so the written file is byte-identical
       // to the on-disk source of truth.
       expect(installed.trimEnd()).toBe(readFileSync(skillMd, "utf8").trimEnd());
-      expect(installed).toContain("# Wego CLI");
+      expect(installed).toContain("# Wego travel search");
       for (const { path } of SKILLS[0].files) {
         expect(readFileSync(join(skillsRoot, "wego", path))).toEqual(
           readFileSync(join(cliRoot, "skills/wego", path)),

@@ -219,7 +219,7 @@ describe("no published file pipes a download into a shell", () => {
   // `curl -fsSL https://api.wego.com/install | bash`, in the published SKILL.md
   // (foundations#111). The scanners read these files as text and re-scan on every
   // promote, so the line coming back costs the grade again. The skill links the
-  // install instructions for the user to follow instead.
+  // install instructions for the agent to open instead.
   const plan = pluginPublishPlan(SKILLS);
 
   it.each(plan.map((p) => [p.to, p.from]))("%s", (_to, from) => {
@@ -260,8 +260,8 @@ describe("README.md's claims about the plugin", () => {
   });
 
   it("does not claim the skill books anything", () => {
-    // The one claim the skill is forbidden to make (SKILL.md operating contract
-    // item 11) is also the one a README is most tempted to make, because
+    // The one claim the skill is forbidden to make (SKILL.md, "Never claim a
+    // booking") is also the one a README is most tempted to make, because
     // "booking" is the word that sells it. Asserted here so the boundary
     // survives a rewrite of the prose around it.
     expect(readme).toMatch(/Nothing is ever booked/i);

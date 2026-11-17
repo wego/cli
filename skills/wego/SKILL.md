@@ -4,34 +4,47 @@ description: Search and compare flights and hotels with live prices from Wego, f
 compatibility: Needs the wego CLI on PATH (check with `wego version`) with network access to api.wego.com. Where the environment cannot run the CLI, needs the Wego MCP server at https://mcp.wego.com/public-app/v1/mcp connected, with network access to mcp.wego.com.
 ---
 
-# Wego CLI and MCP tools
+# Wego travel search
 
-Use the CLI. Use the Wego MCP tools only in the cases Operating contract item 2 names. Read their results, retain the identifiers needed for follow-ups, and present human-readable choices. Drive the complete flight or hotel funnel from prompting; do not make the user learn command or tool syntax or copy internal IDs.
+Search flights and hotels on Wego and take the user from a request to a checkout link. Read the results, retain the identifiers needed for follow-ups, and present human-readable choices. Drive the complete flight or hotel funnel from prompting; do not make the user learn command or tool syntax or copy internal IDs.
 
-**Where things are.** Read the operating contract first, then open only the reference for your path:
+## Pick the path
+
+There are two paths: the `wego` CLI and the Wego MCP tools. The CLI is the default, because it does more than the MCP tools. Use the MCP tools only in one of these three cases, never by preference:
+
+- **You cannot run a command:** use the MCP tools. If they are not connected, tell the user to connect the Wego MCP server at https://mcp.wego.com/public-app/v1/mcp (no sign-in needed) in their agent's connector or MCP settings, then ask again.
+- **You can run a command and `wego` is missing:** install it for the user. Tell them the `wego` CLI is not installed and ask once if you may install it. On a yes, open https://agents.wego.com/cli#install, run the install command for their system, and check with `wego version`. If you cannot read that page, give the user the link. If the install is refused or fails, use the MCP tools.
+- **`wego` is installed but cannot reach the network:** a command exits `7` and its stderr reads `Cannot reach the Wego API at <url>`. Make the one bounded retry in [Recover safely](references/cli.md#recover-safely); if it fails the same way, use the MCP tools.
+
+In every other case `wego version` works: use the CLI. When a case sends you to the MCP tools and they are not connected, tell the user how to connect the Wego MCP server, as in the first case.
+
+Then open only the reference for your path, and keep to that path for the whole workflow:
 
 - CLI path: [references/cli.md](references/cli.md).
 - MCP path: [references/mcp.md](references/mcp.md).
 
-## Operating contract
+## Rules on both paths
 
-Items 3, 4, 5, 9 and 10 are CLI-only and live in [references/cli.md](references/cli.md). Open [references/mcp.md](references/mcp.md) only when item 2 sends you to the MCP tools.
+### Quote live results
 
-**1.** Every command here is `wego <sub>`, the Wego CLI documented at https://agents.wego.com/cli. Keep to the path item 2 picks for the whole workflow. Both the CLI and the MCP tools read live inventory and prices. On either path, quote what it returns rather than estimating, and never invent a figure it did not give you.
+Both the CLI and the MCP tools read live inventory and prices. Quote what they return rather than estimating, and never invent a figure they did not give you.
 
-**2.** The CLI is the default, because it does more than the Wego MCP tools (`flights_search`, `hotels_search`, `places_find_location` and the rest; your client may add a prefix to the names). Use the MCP tools only in one of these three cases, never by preference:
-   - **You cannot run a command:** use the MCP tools. If they are not connected, tell the user to connect the Wego MCP server at https://mcp.wego.com/public-app/v1/mcp (no sign-in needed) in their agent's connector or MCP settings, then ask again.
-   - **You can run a command and `wego` is missing:** the user installs the CLI, not you. Tell them the `wego` CLI is not installed, link the install instructions at https://agents.wego.com/cli#install, and wait for them to confirm it is installed before you continue. Never download or run an installer yourself. If the user says they cannot install it in this environment, use the MCP tools.
-   - **`wego` is installed but cannot reach the network:** a command exits `7` and its stderr reads `Cannot reach the Wego API at <url>`. Make the one bounded retry in [Recover safely](references/cli.md#recover-safely); if it fails the same way, use the MCP tools.
+### Keep inputs and IDs
 
-   In every other case `wego version` works: use the CLI and open [references/cli.md](references/cli.md). When a case sends you to the MCP tools, open [references/mcp.md](references/mcp.md). If they are not connected, tell the user how to connect the Wego MCP server, as in the first case.
+Retain the user's original search inputs and the IDs returned by each command or tool. Map follow-ups such as "option 2" back to the corresponding object in the most recent result.
 
-**6.** Retain the user's original search inputs and the IDs returned by each command. Map follow-ups such as "option 2" back to the corresponding object in the most recent result.
+### Present a ranked comparison
 
-**7.** Present a concise ranked comparison instead of raw JSON. Include only decision-relevant fields such as total price, duration, stops, baggage, rating, board, and refundability.
+Present a concise ranked comparison instead of raw JSON. Include only decision-relevant fields such as total price, duration, stops, baggage, rating, board, and refundability.
 
-**8.** Ask only for missing user-facing inputs. Do not ask the user for `searchId`, `tripId`, `fareId`, `fareOptionId`, `hotelId`, or `rateId` when they appeared in earlier output.
+### Ask only for user-facing inputs
 
-**11.** Never claim that a booking, reservation, payment, cancellation, or modification occurred. This CLI searches and generates checkout links only.
+Ask only for missing user-facing inputs. Do not ask the user for `searchId`, `tripId`, `fareId`, `fareOptionId`, `hotelId`, or `rateId` when they appeared in earlier output.
 
-**12.** Creating a search and reading a hotel's rooms are metered. This API is a research preview, so those limits are deliberate and fairly tight (the current figures are at https://agents.wego.com/api/rate-limits/) – say so whenever one is reached, including one you waited out and worked around (see [Finish the answer](references/cli.md#finish-the-answer)). Plan inside that budget rather than discovering it: never open one search per airport, per date, or per hotel. When a request implies many, run a small first batch, present it, and ask the user which to expand – that is also a better conversation than a wall of options. Reads against an existing `searchId` (`results`, `trip`, `fares`) are far cheaper than a new search, so refine an existing search instead of creating another whenever the constraint can be expressed as a flag. `hotels rooms` is the one read that always mints a search of its own, one per hotel, so open it for the hotels the user actually picked rather than sweeping a results page with it.
+### Never claim a booking
+
+Never claim that a booking, reservation, payment, cancellation, or modification occurred. The CLI and the MCP tools search and generate checkout links only; the user completes any booking on the checkout page.
+
+### Plan inside the search limits
+
+Creating a search and reading a hotel's rooms are metered. This API is a research preview, so those limits are deliberate and fairly tight (the current figures are at https://agents.wego.com/api/rate-limits/) – say so whenever one is reached, including one you waited out and worked around. Plan inside that budget rather than discovering it: never open one search per airport, per date, or per hotel. When a request implies many, run a small first batch, present it, and ask the user which to expand – that is also a better conversation than a wall of options. Refine an existing search instead of creating another whenever the CLI or the tool allows it.
