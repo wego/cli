@@ -1263,6 +1263,30 @@ describe("hotels share", () => {
     ]);
   });
 
+  it("accepts a city that Places reports by cityCode alone", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [
+        route("hotels-search-link"),
+        {
+          op: "getPlaces",
+          answers: [
+            answer("places", (b: { results: unknown[] }) => ({
+              ...b,
+              results: [
+                { id: 9, name: "Bangkok", type: "city", cityCode: "BKK" },
+              ],
+            })),
+          ],
+        },
+      ],
+    });
+    const result = await s.run(SHARE);
+
+    expect(result.code).toBe(0);
+    expect(fake.requests("getHotelSearchLink")).toHaveLength(1);
+  });
+
   it("refuses an airport code, which no hotel link can carry", async () => {
     signIn(s.home);
     const fake = s.fake({

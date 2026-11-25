@@ -1457,12 +1457,15 @@ async function unresolvedShareCodes(
         query: wanted,
         types,
       });
-      return results.some(
-        (place) =>
-          types.includes(place.type) &&
-          typeof place.code === "string" &&
-          place.code.toUpperCase() === wanted,
-      );
+      return results.some((place) => {
+        if (!types.includes(place.type)) return false;
+        // A city row may carry its code only as `cityCode`, as the API reads it.
+        const placeCode =
+          place.type === "city" ? (place.code ?? place.cityCode) : place.code;
+        return (
+          typeof placeCode === "string" && placeCode.toUpperCase() === wanted
+        );
+      });
     }),
   );
   return codes.filter((_, i) => !found[i]);
