@@ -1198,6 +1198,28 @@ describe("flights share", () => {
     expect(fake.requests("getFlightSearchLink")).toHaveLength(1);
   });
 
+  it("--from-city refuses a code that is only an airport", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [
+        route("flights-search-link"),
+        ...placesKnowing({ LHR: "airport", BKK: "city" }),
+      ],
+    });
+    const result = await s.run([
+      "flights",
+      "share",
+      "LHR",
+      "BKK",
+      "2099-09-15",
+      "--from-city",
+    ]);
+
+    expect(result.code).toBe(6);
+    expect(result.err).toContain('the from code "LHR" resolves to no city.');
+    expect(fake.requests("getFlightSearchLink")).toHaveLength(0);
+  });
+
   it("--help prints its usage on stdout with exit 0", async () => {
     const result = await s.run(["flights", "share", "--help"]);
     expect(result.code).toBe(0);

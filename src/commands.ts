@@ -1404,10 +1404,13 @@ async function flightsShare(
         config.apiBaseUrl,
         accessToken,
         [
-          { name: "from", code: params.from },
-          { name: "to", code: params.to },
+          {
+            name: "from",
+            code: params.from,
+            types: endpointTypes(params.fromCity),
+          },
+          { name: "to", code: params.to, types: endpointTypes(params.toCity) },
         ],
-        ["city", "airport"],
       );
       if (unresolved.length > 0) return { unresolved };
       return {
@@ -1421,9 +1424,7 @@ async function flightsShare(
   );
   if (!result.ok) return result.code;
   if ("unresolved" in result.value) {
-    deps.error(
-      unresolvedShareMessage(result.value.unresolved, "city or airport"),
-    );
+    deps.error(unresolvedShareMessage(result.value.unresolved));
     return EXIT.PERMANENT;
   }
   return printJson(result.value.link, deps);
@@ -1436,22 +1437,28 @@ interface ShareCode {
   /** How the message names the code: `from`, `to`, `city`. */
   name: string;
   code: string;
+  /** The place types the code may resolve to. */
+  types: string[];
+}
+
+/** `--from-city` / `--to-city` read the code as a city, so an airport cannot match. */
+function endpointTypes(asCity: boolean | undefined): string[] {
+  return asCity ? ["city"] : ["city", "airport"];
 }
 
 /**
- * The codes Places cannot resolve to an exact `types` match. A durable link is
- * built from the codes alone and no search ever checks them, so an unknown code
- * would hand out a dead link (PET-508).
+ * The codes Places cannot resolve to an exact match of their `types`. A durable
+ * link is built from the codes alone and no search ever checks them, so an
+ * unknown code would hand out a dead link.
  */
 async function unresolvedShareCodes(
   lookup: typeof fetchPlaces,
   apiBaseUrl: string,
   accessToken: string,
   codes: ShareCode[],
-  types: string[],
 ): Promise<ShareCode[]> {
   const found = await Promise.all(
-    codes.map(async ({ code }) => {
+    codes.map(async ({ code, types }) => {
       const wanted = code.trim().toUpperCase();
       const { results } = await lookup(apiBaseUrl, accessToken, {
         query: wanted,
@@ -1471,11 +1478,16 @@ async function unresolvedShareCodes(
   return codes.filter((_, i) => !found[i]);
 }
 
-function unresolvedShareMessage(codes: ShareCode[], wants: string): string {
-  const named = codes.map(({ name, code }) => `${name} code "${code}"`);
-  const subject = named.join(" and the ");
-  const verb = codes.length > 1 ? "resolve" : "resolves";
-  return `No link was built: the ${subject} ${verb} to no ${wants}. Find one with \`${PROG} places <name>\` and pass the code it reports.`;
+function unresolvedShareMessage(codes: ShareCode[]): string {
+  const wants = new Set(codes.map(({ types }) => types.join(" or ")));
+  const named = codes.map(({ name, code }) => `the ${name} code "${code}"`);
+  const what =
+    wants.size === 1
+      ? `${named.join(" and ")} ${codes.length > 1 ? "resolve" : "resolves"} to no ${[...wants][0]}`
+      : codes
+          .map((c, i) => `${named[i]} resolves to no ${c.types.join(" or ")}`)
+          .join(" and ");
+  return `No link was built: ${what}. Find one with \`${PROG} places <name>\` and pass the code it reports.`;
 }
 
 const FARES_FLAGS = new Set(["--currency", "--locale"]);
@@ -2377,8 +2389,7 @@ async function hotelsShare(
         deps.fetchPlaces,
         config.apiBaseUrl,
         accessToken,
-        [{ name: "city", code: query.cityCode ?? "" }],
-        ["city"],
+        [{ name: "city", code: query.cityCode ?? "", types: ["city"] }],
       );
       if (unresolved.length > 0) return { unresolved };
       return {
@@ -2392,7 +2403,7 @@ async function hotelsShare(
   );
   if (!result.ok) return result.code;
   if ("unresolved" in result.value) {
-    deps.error(unresolvedShareMessage(result.value.unresolved, "city"));
+    deps.error(unresolvedShareMessage(result.value.unresolved));
     return EXIT.PERMANENT;
   }
   return printJson(result.value.link, deps);
