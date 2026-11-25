@@ -1,0 +1,8 @@
+{
+  "name": "wego",
+  "description": "Search and compare flights and hotels, then hand back a Wego link.",
+  "homepage": "https://agents.wego.com/plugin",
+  "repository": "https://github.com/wego/skills",
+  "license": "Apache-2.0",
+  "mcpServers": "./mcp.json"
+}

@@ -62,6 +62,9 @@ export interface PluginPublishPair {
  * verbatim Apache 2.0 text carries it. It gets a source file under `plugin/`
  * like every other published path, because "every published path has a verbatim
  * source file" is the rule the after-clone predicate depends on.
+ *
+ * `.claude-plugin/` is what Claude Code and Codex read to install the plugin from
+ * `wego/skills`. Without it both refuse the repo as a marketplace.
  */
 export function pluginPublishPlan(
   skills: readonly { id: string; files: readonly { path: string }[] }[],
@@ -71,6 +74,14 @@ export function pluginPublishPlan(
     { from: `${PLUGIN_SOURCE_DIR}/mcp.json`, to: "mcp.json" },
     { from: `${PLUGIN_SOURCE_DIR}/README.md`, to: "README.md" },
     { from: `${PLUGIN_SOURCE_DIR}/LICENSE`, to: "LICENSE" },
+    {
+      from: `${PLUGIN_SOURCE_DIR}/.claude-plugin/marketplace.json`,
+      to: ".claude-plugin/marketplace.json",
+    },
+    {
+      from: `${PLUGIN_SOURCE_DIR}/.claude-plugin/plugin.json`,
+      to: ".claude-plugin/plugin.json",
+    },
     ...skills.flatMap(({ id, files }) =>
       files.map(({ path }) => ({
         from: `skills/${id}/${path}`,

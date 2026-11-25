@@ -1,0 +1,11 @@
+{
+  "name": "wego-skills",
+  "owner": { "name": "Wego" },
+  "plugins": [
+    {
+      "name": "wego",
+      "source": "./",
+      "description": "Search and compare flights and hotels, then hand back a Wego link."
+    }
+  ]
+}

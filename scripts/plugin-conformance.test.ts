@@ -267,3 +267,40 @@ describe("README.md's claims about the plugin", () => {
     expect(readme).toMatch(/Nothing is ever booked/i);
   });
 });
+
+describe(".claude-plugin/ is installable by Claude Code and Codex", () => {
+  // Both clients refuse `wego/skills` as a marketplace without this folder, and
+  // the install commands on agents.wego.com/plugin name `wego-skills` and `wego`.
+  const read = (name: string) =>
+    JSON.parse(
+      readFileSync(join(cliRoot, "plugin/.claude-plugin", name), "utf8"),
+    ) as Record<string, unknown>;
+  const marketplace = read("marketplace.json") as {
+    name: unknown;
+    plugins: Record<string, unknown>[];
+  };
+  const claudeManifest = read("plugin.json");
+
+  it("lists one plugin, `wego`, from the repo root, in marketplace `wego-skills`", () => {
+    expect(marketplace.name).toBe("wego-skills");
+    expect(marketplace.plugins).toHaveLength(1);
+    expect(marketplace.plugins[0]?.name).toBe("wego");
+    expect(marketplace.plugins[0]?.source).toBe("./");
+  });
+
+  it("agrees with the root manifest on name, repository and licence", () => {
+    expect(claudeManifest.name).toBe(manifest.name);
+    expect(claudeManifest.repository).toBe(manifest.repository);
+    expect(claudeManifest.license).toBe(manifest.license);
+  });
+
+  it("reuses the root mcp.json, so the server is declared once", () => {
+    expect(claudeManifest.mcpServers).toBe("./mcp.json");
+  });
+
+  it("uses one description in both files", () => {
+    expect(marketplace.plugins[0]?.description).toBe(
+      claudeManifest.description,
+    );
+  });
+});
