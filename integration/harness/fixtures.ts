@@ -10,7 +10,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Answer, Route } from "./fake";
+import type { Answer, Route, Seen } from "./fake";
 
 export const FIXTURES_DIR = fileURLToPath(
   new URL("../fixtures/", import.meta.url),
@@ -58,4 +58,30 @@ export function route(
     op: readFixture(first).op,
     answers: answers.map((a) => (typeof a === "string" ? answer(a) : a)),
   };
+}
+
+/**
+ * `getPlaces` routes that know exactly `known` (code to place type). A query
+ * for any other code finds nothing, which is how the API answers an unknown one.
+ */
+export function placesKnowing(known: Record<string, string>): Route[] {
+  const page = (results: unknown[]) =>
+    answer("places", () => ({
+      results,
+      metadata: {
+        resultCount: results.length,
+        totalCandidates: results.length,
+        hasMore: false,
+        hasAmbiguity: false,
+      },
+    }));
+  const op = readFixture("places").op;
+  return [
+    ...Object.entries(known).map(([code, type], i) => ({
+      op,
+      answers: [page([{ id: i + 1, code, name: code, type, cityCode: code }])],
+      when: (seen: Seen) => seen.query.get("query") === code,
+    })),
+    { op, answers: [page([])] },
+  ];
 }

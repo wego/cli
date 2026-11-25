@@ -521,6 +521,7 @@ export function buildRealDeps(): RunDeps {
         fetchFareOptions,
         fetchBookingLink,
         fetchSearchLink,
+        fetchPlaces,
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       }),
     hotels: (config, args) =>
@@ -534,6 +535,7 @@ export function buildRealDeps(): RunDeps {
         fetchHotelReviews,
         fetchHotelBookingLink,
         fetchHotelSearchLink,
+        fetchPlaces,
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       }),
     feedback: (config, args) =>

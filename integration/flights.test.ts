@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { type Answer, problem } from "./harness/fake";
-import { answer, readFixture, route } from "./harness/fixtures";
+import { answer, placesKnowing, readFixture, route } from "./harness/fixtures";
 import { useScenario } from "./harness/scenario";
 import { json, signIn, writeSettings } from "./harness/wego";
 
@@ -1003,10 +1003,13 @@ describe("flights booking-link", () => {
 
 describe("flights share", () => {
   const leg = ["flights", "share", "SIN", "BKK", "2099-09-15"];
+  const SHARE_PLACES = placesKnowing({ SIN: "city", BKK: "city" });
 
   it("maps positionals and every flag to the query and prints the durable URL", async () => {
     signIn(s.home);
-    const fake = s.fake({ routes: [route("flights-search-link")] });
+    const fake = s.fake({
+      routes: [route("flights-search-link"), ...SHARE_PLACES],
+    });
     const result = await s.run([
       ...leg,
       "--return",
@@ -1052,7 +1055,9 @@ describe("flights share", () => {
   it("inherits the stored currency, locale and site, over the account market", async () => {
     signIn(s.home, { accessToken: "access-1", market: "AE" });
     writeSettings(s.home, { currency: "SAR", locale: "ar", site: "SA" });
-    const fake = s.fake({ routes: [route("flights-search-link")] });
+    const fake = s.fake({
+      routes: [route("flights-search-link"), ...SHARE_PLACES],
+    });
     expect((await s.run(leg)).code).toBe(0);
     expect(query(fake.requests("getFlightSearchLink")[0])).toMatchObject({
       currency: "SAR",
@@ -1064,7 +1069,9 @@ describe("flights share", () => {
   it("an explicit flag beats the stored setting", async () => {
     signIn(s.home);
     writeSettings(s.home, { currency: "SAR", site: "SA" });
-    const fake = s.fake({ routes: [route("flights-search-link")] });
+    const fake = s.fake({
+      routes: [route("flights-search-link"), ...SHARE_PLACES],
+    });
     expect(
       (await s.run([...leg, "--currency", "USD", "--site", "SG"])).code,
     ).toBe(0);
@@ -1077,7 +1084,9 @@ describe("flights share", () => {
   for (const cabin of ["economy", "premium_economy", "business", "first"]) {
     it(`accepts the published cabin ${cabin}`, async () => {
       signIn(s.home);
-      const fake = s.fake({ routes: [route("flights-search-link")] });
+      const fake = s.fake({
+        routes: [route("flights-search-link"), ...SHARE_PLACES],
+      });
       expect((await s.run([...leg, "--cabin", cabin])).code).toBe(0);
       expect(fake.requests("getFlightSearchLink")[0]?.query.get("cabin")).toBe(
         cabin,
@@ -1121,6 +1130,72 @@ describe("flights share", () => {
     expect(result.code).toBe(2);
     expect(result.err).toContain("--cabin must be one of");
     expect(fake.seen).toEqual([]);
+  });
+
+  it("refuses a code that resolves to no city or airport: exit 6, no link built (PET-508)", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [route("flights-search-link"), ...SHARE_PLACES],
+    });
+    const result = await s.run([
+      "flights",
+      "share",
+      "ZZZ",
+      "BKK",
+      "2099-09-15",
+    ]);
+
+    expect(result.code).toBe(6);
+    expect(result.out).toBe("");
+    expect(result.err).toContain(
+      'the from code "ZZZ" resolves to no city or airport',
+    );
+    expect(result.err).toContain("wego places <name>");
+    expect(result.err).not.toMatch(/retry/i);
+    expect(fake.requests("getFlightSearchLink")).toHaveLength(0);
+    expect(
+      fake
+        .requests("getPlaces")
+        .map((r) => r.query.get("query"))
+        .sort(),
+    ).toEqual(["BKK", "ZZZ"]);
+  });
+
+  it("names both codes when neither resolves", async () => {
+    signIn(s.home);
+    s.fake({ routes: [route("flights-search-link"), ...SHARE_PLACES] });
+    const result = await s.run([
+      "flights",
+      "share",
+      "ZZZ",
+      "QQQ",
+      "2099-09-15",
+    ]);
+
+    expect(result.code).toBe(6);
+    expect(result.err).toContain(
+      'the from code "ZZZ" and the to code "QQQ" resolve to no city or airport',
+    );
+  });
+
+  it("accepts an airport code Places reports", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [
+        route("flights-search-link"),
+        ...placesKnowing({ LHR: "airport", BKK: "city" }),
+      ],
+    });
+    const result = await s.run([
+      "flights",
+      "share",
+      "LHR",
+      "BKK",
+      "2099-09-15",
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(fake.requests("getFlightSearchLink")).toHaveLength(1);
   });
 
   it("--help prints its usage on stdout with exit 0", async () => {
