@@ -1246,7 +1246,7 @@ describe("hotels share", () => {
   const SHARE = ["hotels", "share", "BKK", ...DATES];
   const SHARE_PLACES = placesKnowing({ BKK: "city" });
 
-  it("refuses a city code that resolves to no city: exit 6, no link built (PET-508)", async () => {
+  it("refuses a city code that resolves to no city: exit 6, no link built", async () => {
     signIn(s.home);
     const fake = s.fake({
       routes: [route("hotels-search-link"), ...SHARE_PLACES],

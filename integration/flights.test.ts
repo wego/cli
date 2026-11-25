@@ -1132,7 +1132,7 @@ describe("flights share", () => {
     expect(fake.seen).toEqual([]);
   });
 
-  it("refuses a code that resolves to no city or airport: exit 6, no link built (PET-508)", async () => {
+  it("refuses a code that resolves to no city or airport: exit 6, no link built", async () => {
     signIn(s.home);
     const fake = s.fake({
       routes: [route("flights-search-link"), ...SHARE_PLACES],
