@@ -410,6 +410,14 @@ describe("pluginPublishPlan", () => {
       { from: "plugin/mcp.json", to: "mcp.json" },
       { from: "plugin/README.md", to: "README.md" },
       { from: "plugin/LICENSE", to: "LICENSE" },
+      {
+        from: "plugin/.claude-plugin/marketplace.json",
+        to: ".claude-plugin/marketplace.json",
+      },
+      {
+        from: "plugin/.claude-plugin/plugin.json",
+        to: ".claude-plugin/plugin.json",
+      },
       { from: "skills/first/SKILL.md", to: "skills/first/SKILL.md" },
       {
         from: "skills/first/references/one.md",

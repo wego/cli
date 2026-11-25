@@ -30,6 +30,25 @@ agent cannot run the CLI, it uses the Wego MCP server that comes with the plugin
 
 ## Install
 
+### As a plugin
+
+The plugin adds the skill and connects the Wego MCP server in one step.
+
+In Claude Code 2.1.292 or later:
+
+```text
+/plugin install wego --marketplace wego/skills
+```
+
+In Codex:
+
+```bash
+codex plugin marketplace add wego/skills
+codex plugin add wego@wego-skills
+```
+
+### The skill on its own
+
 On an agent that can run commands, the skill uses the `wego` CLI, so both need
 to be present, in either order. On an agent that cannot run commands, or that
 cannot install the CLI or reach the network with it, the skill uses the Wego
