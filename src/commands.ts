@@ -2080,7 +2080,8 @@ export interface HotelsDeps extends AuthedCommandDeps {
 }
 
 /** Resolve the positional location arg by shape: 3-letter city code, all-digit
- *  hotelId, or a `lat,lng` pair. */
+ *  hotelId, or a `lat,lng` pair. `hotelsSearch` then sends an all-digit city
+ *  code as `cityCode` (`withNumericCity`). */
 function locationFields(location: string): Partial<HotelsSearchBody> {
   if (/^[A-Z]{3}$/.test(location)) return { cityCode: location };
   if (/^\d+$/.test(location)) return { hotelId: Number(location) };
@@ -2220,6 +2221,56 @@ function parseSearchArgs(args: string[]): HotelsSearchBody {
   return body;
 }
 
+/**
+ * The city code an all-digit location names, when the top place Places returns
+ * is the city with exactly that code. Makkah has no airport and is `8283`.
+ * Any other answer leaves the location a hotelId.
+ */
+export async function numericCityCode(
+  lookup: typeof fetchPlaces,
+  apiBaseUrl: string,
+  accessToken: string,
+  code: string,
+): Promise<string | undefined> {
+  const { results } = await lookup(apiBaseUrl, accessToken, {
+    query: code,
+    types: ["city"],
+  });
+  const top = results[0];
+  if (top?.type !== "city") return undefined;
+  return (top.code ?? top.cityCode) === code ? code : undefined;
+}
+
+/** Send an all-digit location that Places knows as a city code as `cityCode`.
+ *  A failed lookup other than a 401 keeps the hotelId, so a Places outage
+ *  never stops a hotel search. */
+async function withNumericCity(
+  config: CliConfig,
+  body: HotelsSearchBody,
+  deps: HotelsDeps,
+): Promise<
+  { ok: true; value: HotelsSearchBody } | { ok: false; code: number }
+> {
+  const { hotelId, ...rest } = body;
+  if (hotelId === undefined) return { ok: true, value: body };
+  const city = await withAccessToken(config, deps, (accessToken) =>
+    numericCityCode(
+      deps.fetchPlaces,
+      config.apiBaseUrl,
+      accessToken,
+      String(hotelId),
+    ).catch((err: unknown) => {
+      if (err instanceof UnauthorizedError) throw err;
+      return undefined;
+    }),
+  );
+  if (!city.ok) return city;
+  return {
+    ok: true,
+    value: city.value ? { ...rest, cityCode: city.value } : body,
+  };
+}
+
 async function hotelsSearch(
   config: CliConfig,
   args: string[],
@@ -2236,6 +2287,9 @@ async function hotelsSearch(
     deps.error(errorMessage(err));
     return EXIT.USAGE;
   }
+  const located = await withNumericCity(config, body, deps);
+  if (!located.ok) return located.code;
+  body = located.value;
   // ①+③ through the shared engine: create, block-to-settled on candidate-count
   // convergence, stamp `settled` (issue #1084). The `HOTELS` vertical owns the
   // per-vertical pieces (site resolution, the occupancy echo, the empty-page

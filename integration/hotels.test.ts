@@ -440,6 +440,40 @@ describe("hotels usage errors: exit 2, no request", () => {
 });
 
 describe("hotels search", () => {
+  it("sends an all-digit location that Places lists as a city as cityCode", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [
+        ...placesKnowing({ "8283": "city" }),
+        route("hotels-search-create"),
+        route("hotels-search-results"),
+      ],
+    });
+    const result = await s.run(["hotels", "search", "8283", ...DATES]);
+
+    expect(result.code).toBe(0);
+    expect(fake.requests("getPlaces")[0]?.query.get("query")).toBe("8283");
+    expect(createBody(fake)).toMatchObject({ cityCode: "8283" });
+    expect(createBody(fake)).not.toHaveProperty("hotelId");
+  });
+
+  it("keeps an all-digit location that Places lists as no city a hotelId", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [
+        ...placesKnowing({}),
+        route("hotels-search-create"),
+        route("hotels-search-results"),
+      ],
+    });
+    const result = await s.run(["hotels", "search", "999999999", ...DATES]);
+
+    expect(result.code).toBe(0);
+    expect(fake.requests("getPlaces")).toHaveLength(1);
+    expect(createBody(fake)).toMatchObject({ hotelId: 999999999 });
+    expect(createBody(fake)).not.toHaveProperty("cityCode");
+  });
+
   it("creates the search, prints the settled first page, and hints at a currency setting", async () => {
     signIn(s.home);
     const fake = s.fake({
