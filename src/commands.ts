@@ -2197,7 +2197,10 @@ const SEARCH_FLAGS = new Set([
   "--locale",
 ]);
 
-function parseSearchArgs(args: string[]): HotelsSearchBody {
+function parseSearchArgs(args: string[]): {
+  body: HotelsSearchBody;
+  location: string;
+} {
   const { positional, single } = tokenizeFlagSets(
     args,
     HOTELS_SEARCH_USAGE,
@@ -2218,7 +2221,7 @@ function parseSearchArgs(args: string[]): HotelsSearchBody {
   const radius = single.get("--radius");
   if (radius) body.radius = parseIntArg(radius, "--radius");
   applyOccupancyFlags(body, single);
-  return body;
+  return { body, location };
 }
 
 /**
@@ -2242,11 +2245,13 @@ export async function numericCityCode(
 }
 
 /** Send an all-digit location that Places knows as a city code as `cityCode`.
+ *  The lookup uses the digits as typed, so `008283` is no match for `8283`.
  *  A failed lookup other than a 401 keeps the hotelId, so a Places outage
  *  never stops a hotel search. */
 async function withNumericCity(
   config: CliConfig,
   body: HotelsSearchBody,
+  location: string,
   deps: HotelsDeps,
 ): Promise<
   { ok: true; value: HotelsSearchBody } | { ok: false; code: number }
@@ -2258,7 +2263,7 @@ async function withNumericCity(
       deps.fetchPlaces,
       config.apiBaseUrl,
       accessToken,
-      String(hotelId),
+      location,
     ).catch((err: unknown) => {
       if (err instanceof UnauthorizedError) throw err;
       return undefined;
@@ -2280,16 +2285,21 @@ async function hotelsSearch(
     deps.log(HOTELS_SEARCH_USAGE);
     return 0;
   }
-  let body: HotelsSearchBody;
+  let parsed: ReturnType<typeof parseSearchArgs>;
   try {
-    body = parseSearchArgs(args);
+    parsed = parseSearchArgs(args);
   } catch (err) {
     deps.error(errorMessage(err));
     return EXIT.USAGE;
   }
-  const located = await withNumericCity(config, body, deps);
+  const located = await withNumericCity(
+    config,
+    parsed.body,
+    parsed.location,
+    deps,
+  );
   if (!located.ok) return located.code;
-  body = located.value;
+  const body = located.value;
   // ①+③ through the shared engine: create, block-to-settled on candidate-count
   // convergence, stamp `settled` (issue #1084). The `HOTELS` vertical owns the
   // per-vertical pieces (site resolution, the occupancy echo, the empty-page

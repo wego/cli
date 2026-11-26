@@ -474,6 +474,23 @@ describe("hotels search", () => {
     expect(createBody(fake)).not.toHaveProperty("cityCode");
   });
 
+  it("looks up an all-digit location by the digits as typed, so 008283 stays a hotelId", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [
+        ...placesKnowing({ "8283": "city" }),
+        route("hotels-search-create"),
+        route("hotels-search-results"),
+      ],
+    });
+    const result = await s.run(["hotels", "search", "008283", ...DATES]);
+
+    expect(result.code).toBe(0);
+    expect(fake.requests("getPlaces")[0]?.query.get("query")).toBe("008283");
+    expect(createBody(fake)).toMatchObject({ hotelId: 8283 });
+    expect(createBody(fake)).not.toHaveProperty("cityCode");
+  });
+
   it("creates the search, prints the settled first page, and hints at a currency setting", async () => {
     signIn(s.home);
     const fake = s.fake({
