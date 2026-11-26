@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Wego API",
-    "description": "Wego's travel API: places, flights, hotels and fares. Please see https://docs.wego.com for more details.",
-    "version": "0.19.1"
+    "description": "Wego's travel API: places, flights, hotels and fares. Please see https://agents.wego.com for more details.",
+    "version": "0.19.5"
   },
   "tags": [
     {
@@ -57,8 +57,8 @@
         "description": "OAuth2 authorization-code flow (PKCE supported) against the Wego auth server.",
         "flows": {
           "authorizationCode": {
-            "authorizationUrl": "https://auth.wego.com/user-auth/v2/users/oauth/authorize",
-            "tokenUrl": "https://auth.wego.com/user-auth/v2/users/oauth/token",
+            "authorizationUrl": "https://auth.example.invalid/user-auth/v2/users/oauth/authorize",
+            "tokenUrl": "https://auth.example.invalid/user-auth/v2/users/oauth/token",
             "x-scalar-client-id": "251815b9647317f4895122fd4924b7d44541d8fcc27be528435e3ad9bbf7e1ee",
             "x-usePkce": "SHA-256",
             "scopes": {
@@ -582,7 +582,7 @@
         "operationId": "getPlaces",
         "tags": ["Places"],
         "summary": "Resolve travel locations",
-        "description": "Resolves a free-text location query to canonical Wego places (cities, airports, states, districts, hotels) with codes and coordinates, for use in later flight and hotel searches. When metadata.hasAmbiguity is true, clarify with the user before proceeding.",
+        "description": "Resolves a free-text location query to canonical Wego places (cities, airports, states, districts, hotels) with codes and coordinates, for use in later flight and hotel searches. A numeric query also matches a city code. When metadata.hasAmbiguity is true, clarify with the user before proceeding.",
         "responses": {
           "200": {
             "description": "Matching places plus pagination/ambiguity metadata.",
@@ -5006,9 +5006,8 @@
                 "properties": {
                   "cityCode": {
                     "type": "string",
-                    "pattern": "^[A-Z]{3}$",
                     "example": "DXB",
-                    "description": "City code to search. One destination only, see oneOf."
+                    "description": "City code to search: a 3-letter code, or the numeric code some cities carry (Makkah is 8283). One destination only, see oneOf."
                   },
                   "hotelId": {
                     "type": "integer",
