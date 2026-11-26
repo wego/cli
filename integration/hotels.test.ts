@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { type Answer, problem } from "./harness/fake";
-import { answer, readFixture, route } from "./harness/fixtures";
+import { answer, placesKnowing, readFixture, route } from "./harness/fixtures";
 import { useScenario } from "./harness/scenario";
 import { type CliResult, json, signIn, writeSettings } from "./harness/wego";
 
@@ -440,6 +440,57 @@ describe("hotels usage errors: exit 2, no request", () => {
 });
 
 describe("hotels search", () => {
+  it("sends an all-digit location that Places lists as a city as cityCode", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [
+        ...placesKnowing({ "8283": "city" }),
+        route("hotels-search-create"),
+        route("hotels-search-results"),
+      ],
+    });
+    const result = await s.run(["hotels", "search", "8283", ...DATES]);
+
+    expect(result.code).toBe(0);
+    expect(fake.requests("getPlaces")[0]?.query.get("query")).toBe("8283");
+    expect(createBody(fake)).toMatchObject({ cityCode: "8283" });
+    expect(createBody(fake)).not.toHaveProperty("hotelId");
+  });
+
+  it("keeps an all-digit location that Places lists as no city a hotelId", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [
+        ...placesKnowing({}),
+        route("hotels-search-create"),
+        route("hotels-search-results"),
+      ],
+    });
+    const result = await s.run(["hotels", "search", "999999999", ...DATES]);
+
+    expect(result.code).toBe(0);
+    expect(fake.requests("getPlaces")).toHaveLength(1);
+    expect(createBody(fake)).toMatchObject({ hotelId: 999999999 });
+    expect(createBody(fake)).not.toHaveProperty("cityCode");
+  });
+
+  it("looks up an all-digit location by the digits as typed, so 008283 stays a hotelId", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [
+        ...placesKnowing({ "8283": "city" }),
+        route("hotels-search-create"),
+        route("hotels-search-results"),
+      ],
+    });
+    const result = await s.run(["hotels", "search", "008283", ...DATES]);
+
+    expect(result.code).toBe(0);
+    expect(fake.requests("getPlaces")[0]?.query.get("query")).toBe("008283");
+    expect(createBody(fake)).toMatchObject({ hotelId: 8283 });
+    expect(createBody(fake)).not.toHaveProperty("cityCode");
+  });
+
   it("creates the search, prints the settled first page, and hints at a currency setting", async () => {
     signIn(s.home);
     const fake = s.fake({
@@ -1244,10 +1295,68 @@ describe("hotels booking-link", () => {
 
 describe("hotels share", () => {
   const SHARE = ["hotels", "share", "BKK", ...DATES];
+  const SHARE_PLACES = placesKnowing({ BKK: "city" });
+
+  it("refuses a city code that resolves to no city: exit 6, no link built", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [route("hotels-search-link"), ...SHARE_PLACES],
+    });
+    const result = await s.run(["hotels", "share", "ZZZ", ...DATES]);
+
+    expect(result.code).toBe(6);
+    expect(result.out).toBe("");
+    expect(result.err).toContain('the city code "ZZZ" resolves to no city');
+    expect(result.err).not.toMatch(/retry/i);
+    expect(fake.requests("getHotelSearchLink")).toHaveLength(0);
+    expect(fake.requests("getPlaces")[0]?.query.getAll("types")).toEqual([
+      "city",
+    ]);
+  });
+
+  it("accepts a city that Places reports by cityCode alone", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [
+        route("hotels-search-link"),
+        {
+          op: "getPlaces",
+          answers: [
+            answer("places", (b: { results: unknown[] }) => ({
+              ...b,
+              results: [
+                { id: 9, name: "Bangkok", type: "city", cityCode: "BKK" },
+              ],
+            })),
+          ],
+        },
+      ],
+    });
+    const result = await s.run(SHARE);
+
+    expect(result.code).toBe(0);
+    expect(fake.requests("getHotelSearchLink")).toHaveLength(1);
+  });
+
+  it("refuses an airport code, which no hotel link can carry", async () => {
+    signIn(s.home);
+    const fake = s.fake({
+      routes: [
+        route("hotels-search-link"),
+        ...placesKnowing({ LHR: "airport" }),
+      ],
+    });
+    const result = await s.run(["hotels", "share", "LHR", ...DATES]);
+
+    expect(result.code).toBe(6);
+    expect(fake.requests("getHotelSearchLink")).toHaveLength(0);
+  });
 
   it("forwards the city, dates and occupancy, and prints the durable link", async () => {
     signIn(s.home);
-    const fake = s.fake({ routes: [route("hotels-search-link")] });
+    const fake = s.fake({
+      routes: [route("hotels-search-link"), ...SHARE_PLACES],
+    });
     const result = await s.run([...SHARE, "--adults", "2"]);
 
     expect(result.code).toBe(0);
@@ -1265,7 +1374,9 @@ describe("hotels share", () => {
 
   it("sends --rooms, the same occupancy vocabulary as hotels search", async () => {
     signIn(s.home);
-    const fake = s.fake({ routes: [route("hotels-search-link")] });
+    const fake = s.fake({
+      routes: [route("hotels-search-link"), ...SHARE_PLACES],
+    });
     const result = await s.run([...SHARE, "--adults", "4", "--rooms", "2"]);
     expect(result.code).toBe(0);
     expect(query(fake, "getHotelSearchLink")).toMatchObject({
@@ -1276,7 +1387,9 @@ describe("hotels share", () => {
 
   it("packs --children-ages into a CSV the API parses", async () => {
     signIn(s.home);
-    const fake = s.fake({ routes: [route("hotels-search-link")] });
+    const fake = s.fake({
+      routes: [route("hotels-search-link"), ...SHARE_PLACES],
+    });
     const result = await s.run([
       ...SHARE,
       "--children",
@@ -1294,7 +1407,9 @@ describe("hotels share", () => {
   it("inherits the stored currency, locale and site, which the link hands on", async () => {
     signIn(s.home);
     writeSettings(s.home, { currency: "SAR", locale: "ar", site: "SA" });
-    const fake = s.fake({ routes: [route("hotels-search-link")] });
+    const fake = s.fake({
+      routes: [route("hotels-search-link"), ...SHARE_PLACES],
+    });
     const result = await s.run(SHARE);
     expect(result.code).toBe(0);
     expect(query(fake, "getHotelSearchLink")).toMatchObject({
@@ -1307,7 +1422,9 @@ describe("hotels share", () => {
   it("an explicit --site beats the stored one", async () => {
     signIn(s.home);
     writeSettings(s.home, { site: "SA" });
-    const fake = s.fake({ routes: [route("hotels-search-link")] });
+    const fake = s.fake({
+      routes: [route("hotels-search-link"), ...SHARE_PLACES],
+    });
     const result = await s.run([...SHARE, "--site", "AE"]);
     expect(result.code).toBe(0);
     expect(query(fake, "getHotelSearchLink").siteCode).toBe("AE");

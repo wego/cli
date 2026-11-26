@@ -1071,6 +1071,8 @@ export interface FlightsDeps extends AuthedCommandDeps {
   fetchFareOptions: typeof fetchFareOptions;
   fetchBookingLink: typeof fetchBookingLink;
   fetchSearchLink: typeof fetchSearchLink;
+  /** Resolves `flights share` codes before a durable link is built. */
+  fetchPlaces: typeof fetchPlaces;
   /** Delay between `flights results --wait` re-reads (injected for tests). */
   sleep: (ms: number) => Promise<void>;
 }
@@ -1390,14 +1392,102 @@ async function flightsShare(
   // built from a settings-priced funnel must not hand off in USD, and a durable
   // link hands the wrong currency to everyone it is shared with, not just once.
   const withPrefs = applyPreferences(params, settings);
-  const result = await withAccessToken(config, deps, (accessToken, market) =>
-    deps.fetchSearchLink(config.apiBaseUrl, accessToken, {
-      ...withPrefs,
-      siteCode: resolveCliSite(params.siteCode, settings.site, market).siteCode,
-    }),
+  const result = await withAccessToken(
+    config,
+    deps,
+    async (
+      accessToken,
+      market,
+    ): Promise<SharePlan<Awaited<ReturnType<typeof fetchSearchLink>>>> => {
+      const unresolved = await unresolvedShareCodes(
+        deps.fetchPlaces,
+        config.apiBaseUrl,
+        accessToken,
+        [
+          {
+            name: "from",
+            code: params.from,
+            types: endpointTypes(params.fromCity),
+          },
+          { name: "to", code: params.to, types: endpointTypes(params.toCity) },
+        ],
+      );
+      if (unresolved.length > 0) return { unresolved };
+      return {
+        link: await deps.fetchSearchLink(config.apiBaseUrl, accessToken, {
+          ...withPrefs,
+          siteCode: resolveCliSite(params.siteCode, settings.site, market)
+            .siteCode,
+        }),
+      };
+    },
   );
   if (!result.ok) return result.code;
-  return printJson(result.value, deps);
+  if ("unresolved" in result.value) {
+    deps.error(unresolvedShareMessage(result.value.unresolved));
+    return EXIT.PERMANENT;
+  }
+  return printJson(result.value.link, deps);
+}
+
+/** A share either names the codes it refused, or carries the built link. */
+type SharePlan<T> = { unresolved: ShareCode[] } | { link: T };
+
+interface ShareCode {
+  /** How the message names the code: `from`, `to`, `city`. */
+  name: string;
+  code: string;
+  /** The place types the code may resolve to. */
+  types: string[];
+}
+
+/** `--from-city` / `--to-city` read the code as a city, so an airport cannot match. */
+function endpointTypes(asCity: boolean | undefined): string[] {
+  return asCity ? ["city"] : ["city", "airport"];
+}
+
+/**
+ * The codes Places cannot resolve to an exact match of their `types`. A durable
+ * link is built from the codes alone and no search ever checks them, so an
+ * unknown code would hand out a dead link.
+ */
+async function unresolvedShareCodes(
+  lookup: typeof fetchPlaces,
+  apiBaseUrl: string,
+  accessToken: string,
+  codes: ShareCode[],
+): Promise<ShareCode[]> {
+  const found = await Promise.all(
+    codes.map(async ({ code, types }) => {
+      const wanted = code.trim().toUpperCase();
+      const { results } = await lookup(apiBaseUrl, accessToken, {
+        query: wanted,
+        types,
+      });
+      return results.some((place) => {
+        if (!types.includes(place.type)) return false;
+        // A city row may carry its code only as `cityCode`, as the API reads it.
+        const placeCode =
+          place.type === "city" ? (place.code ?? place.cityCode) : place.code;
+        return (
+          typeof placeCode === "string" && placeCode.toUpperCase() === wanted
+        );
+      });
+    }),
+  );
+  return codes.filter((_, i) => !found[i]);
+}
+
+function unresolvedShareMessage(codes: ShareCode[]): string {
+  const wants = new Set(codes.map(({ types }) => types.join(" or ")));
+  const named = codes.map(({ name, code }) => `the ${name} code "${code}"`);
+  const what =
+    wants.size === 1
+      ? `${named.join(" and ")} ${codes.length > 1 ? "resolve" : "resolves"} to no ${[...wants][0]}`
+      : codes
+          .map((c, i) => `${named[i]} resolves to no ${c.types.join(" or ")}`)
+          .join(" and ");
+  return `No link was built: ${what}. Find one with \`${PROG} places <name>\` and pass the code it reports.`;
 }
 
 const FARES_FLAGS = new Set(["--currency", "--locale"]);
@@ -1983,12 +2073,15 @@ export interface HotelsDeps extends AuthedCommandDeps {
   fetchHotelBookingLink: typeof fetchHotelBookingLink;
   fetchHotelSearchLink: typeof fetchHotelSearchLink;
   fetchHotelReviews: typeof fetchHotelReviews;
+  /** Resolves the `hotels share` city before a durable link is built. */
+  fetchPlaces: typeof fetchPlaces;
   /** Injected so tests drive the settle without real timers. */
   sleep: (ms: number) => Promise<void>;
 }
 
 /** Resolve the positional location arg by shape: 3-letter city code, all-digit
- *  hotelId, or a `lat,lng` pair. */
+ *  hotelId, or a `lat,lng` pair. `hotelsSearch` then sends an all-digit city
+ *  code as `cityCode` (`withNumericCity`). */
 function locationFields(location: string): Partial<HotelsSearchBody> {
   if (/^[A-Z]{3}$/.test(location)) return { cityCode: location };
   if (/^\d+$/.test(location)) return { hotelId: Number(location) };
@@ -2104,7 +2197,10 @@ const SEARCH_FLAGS = new Set([
   "--locale",
 ]);
 
-function parseSearchArgs(args: string[]): HotelsSearchBody {
+function parseSearchArgs(args: string[]): {
+  body: HotelsSearchBody;
+  location: string;
+} {
   const { positional, single } = tokenizeFlagSets(
     args,
     HOTELS_SEARCH_USAGE,
@@ -2125,7 +2221,59 @@ function parseSearchArgs(args: string[]): HotelsSearchBody {
   const radius = single.get("--radius");
   if (radius) body.radius = parseIntArg(radius, "--radius");
   applyOccupancyFlags(body, single);
-  return body;
+  return { body, location };
+}
+
+/**
+ * The city code an all-digit location names, when the top place Places returns
+ * is the city with exactly that code. Makkah has no airport and is `8283`.
+ * Any other answer leaves the location a hotelId.
+ */
+export async function numericCityCode(
+  lookup: typeof fetchPlaces,
+  apiBaseUrl: string,
+  accessToken: string,
+  code: string,
+): Promise<string | undefined> {
+  const { results } = await lookup(apiBaseUrl, accessToken, {
+    query: code,
+    types: ["city"],
+  });
+  const top = results[0];
+  if (top?.type !== "city") return undefined;
+  return (top.code ?? top.cityCode) === code ? code : undefined;
+}
+
+/** Send an all-digit location that Places knows as a city code as `cityCode`.
+ *  The lookup uses the digits as typed, so `008283` is no match for `8283`.
+ *  A failed lookup other than a 401 keeps the hotelId, so a Places outage
+ *  never stops a hotel search. */
+async function withNumericCity(
+  config: CliConfig,
+  body: HotelsSearchBody,
+  location: string,
+  deps: HotelsDeps,
+): Promise<
+  { ok: true; value: HotelsSearchBody } | { ok: false; code: number }
+> {
+  const { hotelId, ...rest } = body;
+  if (hotelId === undefined) return { ok: true, value: body };
+  const city = await withAccessToken(config, deps, (accessToken) =>
+    numericCityCode(
+      deps.fetchPlaces,
+      config.apiBaseUrl,
+      accessToken,
+      location,
+    ).catch((err: unknown) => {
+      if (err instanceof UnauthorizedError) throw err;
+      return undefined;
+    }),
+  );
+  if (!city.ok) return city;
+  return {
+    ok: true,
+    value: city.value ? { ...rest, cityCode: city.value } : body,
+  };
 }
 
 async function hotelsSearch(
@@ -2137,13 +2285,21 @@ async function hotelsSearch(
     deps.log(HOTELS_SEARCH_USAGE);
     return 0;
   }
-  let body: HotelsSearchBody;
+  let parsed: ReturnType<typeof parseSearchArgs>;
   try {
-    body = parseSearchArgs(args);
+    parsed = parseSearchArgs(args);
   } catch (err) {
     deps.error(errorMessage(err));
     return EXIT.USAGE;
   }
+  const located = await withNumericCity(
+    config,
+    parsed.body,
+    parsed.location,
+    deps,
+  );
+  if (!located.ok) return located.code;
+  const body = located.value;
   // ①+③ through the shared engine: create, block-to-settled on candidate-count
   // convergence, stamp `settled` (issue #1084). The `HOTELS` vertical owns the
   // per-vertical pieces (site resolution, the occupancy echo, the empty-page
@@ -2286,14 +2442,35 @@ async function hotelsShare(
   const settings = await deps.loadSettings();
   // A durable link hands its currency to everyone it reaches, so it inherits the stored preferences like `flights share`.
   const withPrefs = applyPreferences(query, settings);
-  const result = await withAccessToken(config, deps, (accessToken, market) =>
-    deps.fetchHotelSearchLink(config.apiBaseUrl, accessToken, {
-      ...withPrefs,
-      siteCode: resolveCliSite(query.siteCode, settings.site, market).siteCode,
-    }),
+  const result = await withAccessToken(
+    config,
+    deps,
+    async (
+      accessToken,
+      market,
+    ): Promise<SharePlan<Awaited<ReturnType<typeof fetchHotelSearchLink>>>> => {
+      const unresolved = await unresolvedShareCodes(
+        deps.fetchPlaces,
+        config.apiBaseUrl,
+        accessToken,
+        [{ name: "city", code: query.cityCode ?? "", types: ["city"] }],
+      );
+      if (unresolved.length > 0) return { unresolved };
+      return {
+        link: await deps.fetchHotelSearchLink(config.apiBaseUrl, accessToken, {
+          ...withPrefs,
+          siteCode: resolveCliSite(query.siteCode, settings.site, market)
+            .siteCode,
+        }),
+      };
+    },
   );
   if (!result.ok) return result.code;
-  return printJson(result.value, deps);
+  if ("unresolved" in result.value) {
+    deps.error(unresolvedShareMessage(result.value.unresolved));
+    return EXIT.PERMANENT;
+  }
+  return printJson(result.value.link, deps);
 }
 
 /** Enum/bound guards for the hotels `results`/`details` flags, mirroring

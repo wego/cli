@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseRoomsArgs, settleRates } from "./commands";
+import { numericCityCode, parseRoomsArgs, settleRates } from "./commands";
 import { HOTELS } from "./verticals";
 
 /**
@@ -189,5 +189,38 @@ describe("HOTELS empty-page note", () => {
     expect(
       HOTELS.searchNote(page(false, {}, [{ hotelId: 1 }]), "sid-1"),
     ).toBeUndefined();
+  });
+});
+
+describe("numericCityCode", () => {
+  const places = (results: unknown[]) =>
+    (async () => ({ results, metadata: {} })) as unknown as Parameters<
+      typeof numericCityCode
+    >[0];
+
+  it("answers the code when the top place is that exact city", async () => {
+    const lookup = places([{ type: "city", code: "8283", name: "Makkah" }]);
+    expect(await numericCityCode(lookup, "https://api", "t", "8283")).toBe(
+      "8283",
+    );
+  });
+
+  it("reads a city that carries its code only as cityCode", async () => {
+    const lookup = places([{ type: "city", cityCode: "8283", name: "Makkah" }]);
+    expect(await numericCityCode(lookup, "https://api", "t", "8283")).toBe(
+      "8283",
+    );
+  });
+
+  it("answers nothing when the top place is another code or no city", async () => {
+    for (const results of [
+      [],
+      [{ type: "city", code: "9999", name: "Elsewhere" }],
+      [{ type: "hotel", code: "8283", name: "Hotel 8283" }],
+    ]) {
+      expect(
+        await numericCityCode(places(results), "https://api", "t", "8283"),
+      ).toBeUndefined();
+    }
   });
 });
